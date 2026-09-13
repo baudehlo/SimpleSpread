@@ -46,7 +46,7 @@ public enum CellError: String, Equatable, Hashable, Sendable, CaseIterable, Coda
 }
 
 /// The computed value of a cell.
-public enum CellValue: Equatable, Hashable, Sendable {
+public enum CellValue: Equatable, Hashable, Sendable, Codable {
     case empty
     case number(Double)
     case string(String)

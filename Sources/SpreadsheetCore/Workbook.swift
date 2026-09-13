@@ -2,7 +2,7 @@ import Foundation
 
 /// One cell's stored state. `value` is the computed/stored value; `formula`
 /// (when present) is the formula text without the leading '='.
-public struct Cell: Equatable, Sendable {
+public struct Cell: Equatable, Sendable, Codable {
     public var value: CellValue
     public var formula: String?
     public var styleIndex: Int
@@ -73,6 +73,18 @@ public final class Sheet {
 
     public func rowHeight(_ row: Int) -> CGFloat {
         rowHeights[row] ?? defaultRowHeight
+    }
+
+    /// Copy all content and layout (but not id/name) from another sheet.
+    public func adoptContents(of other: Sheet) {
+        cells = other.cells
+        columnWidths = other.columnWidths
+        rowHeights = other.rowHeights
+        defaultColumnWidth = other.defaultColumnWidth
+        defaultRowHeight = other.defaultRowHeight
+        frozenRows = other.frozenRows
+        frozenColumns = other.frozenColumns
+        mergedRanges = other.mergedRanges
     }
 }
 
