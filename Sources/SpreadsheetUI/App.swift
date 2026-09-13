@@ -59,6 +59,10 @@ public final class DocumentStore: ObservableObject {
 }
 
 public enum SimpleSpreadApp {
+    /// MainActor: App.main() is main-actor-isolated (older compilers don't
+    /// infer this call site's isolation; main.swift top-level code is
+    /// implicitly MainActor, so callers need no change).
+    @MainActor
     public static func run() {
         SimpleSpreadAppMain.main()
     }
