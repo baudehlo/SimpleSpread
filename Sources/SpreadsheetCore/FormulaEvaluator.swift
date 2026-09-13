@@ -16,15 +16,15 @@ public struct AbsoluteAddress: Hashable, Sendable, CustomStringConvertible {
 }
 
 /// Time/randomness providers, injectable for deterministic tests.
-public struct EvalClock {
-    public var todaySerial: () -> Double
-    public var nowSerial: () -> Double
-    public var random: () -> Double
+public struct EvalClock: Sendable {
+    public var todaySerial: @Sendable () -> Double
+    public var nowSerial: @Sendable () -> Double
+    public var random: @Sendable () -> Double
 
     public init(
-        todaySerial: @escaping () -> Double = { ExcelDate.todaySerial() },
-        nowSerial: @escaping () -> Double = { ExcelDate.nowSerial() },
-        random: @escaping () -> Double = { Double.random(in: 0..<1) }
+        todaySerial: @escaping @Sendable () -> Double = { ExcelDate.todaySerial() },
+        nowSerial: @escaping @Sendable () -> Double = { ExcelDate.nowSerial() },
+        random: @escaping @Sendable () -> Double = { Double.random(in: 0..<1) }
     ) {
         self.todaySerial = todaySerial
         self.nowSerial = nowSerial

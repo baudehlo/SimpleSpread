@@ -454,59 +454,58 @@ public enum NumberFormatEngine {
                 fracDigits = String(repeating: "0", count: fracPlaceholders)
             }
         }
-        if intDigits == "0" && intPlaceholders == 0 {
+        // '#'-only integer zones drop a bare zero (0.5 with "#.##" -> ".5").
+        let intZonePlaceholderChars: [Character] = {
+            var chars: [Character] = []
+            var z = 0
+            for t in tokens {
+                switch t {
+                case .decimalPoint: if z == 0 { z = 1 }
+                case .exponent: z = 2
+                case .digit(let c): if z == 0 { chars.append(c) }
+                default: break
+                }
+            }
+            return chars
+        }()
+        if intDigits == "0" && (intPlaceholders == 0 || intZonePlaceholderChars.allSatisfy({ $0 == "#" })) {
             intDigits = ""
         }
         if grouping && !intDigits.isEmpty {
             intDigits = groupDigits(intDigits)
         }
 
-        // Distribute integer digits over placeholders right-to-left; the leftmost
-        // placeholder absorbs all overflow digits.
+        // Distribute the (possibly grouped) integer digit string over the
+        // placeholder slots: the rightmost placeholders take one digit each and
+        // the leftmost absorbs all overflow. Group separators travel with the
+        // digit that FOLLOWS them.
+        var chunks = [String](repeating: "", count: max(intPlaceholders, 1))
+        do {
+            let plainCount = intDigits.filter { $0.isNumber }.count
+            let slots = max(intPlaceholders, 1)
+            var ordinal = 0
+            var pendingSeparator = ""
+            for ch in intDigits {
+                if ch.isNumber {
+                    let slot = max(0, slots - (plainCount - ordinal))
+                    chunks[slot] += pendingSeparator
+                    chunks[slot].append(ch)
+                    pendingSeparator = ""
+                    ordinal += 1
+                } else {
+                    pendingSeparator.append(ch)
+                }
+            }
+        }
+
         var out = ""
-        var intSlotIndex = 0 // counts placeholders seen so far in the int zone
+        var intSlotIndex = 0 // placeholders seen so far in the int zone
         var fracIndex = 0
         zone = 0
         var emittedSign = false
 
         func integerChunk(forSlot slot: Int) -> String {
-            // slot is 0-based from the left among intPlaceholders slots.
-            // Digits (with group separators embedded) are assigned from the right:
-            // last slot gets last digit char (skipping separator ownership rules:
-            // separators attach to the digit on their right's chunk boundary).
-            // Simplest correct approach: compute how many raw digit chars belong
-            // to slots to the right of this one, then take the remainder.
-            let plainCount = intDigits.filter { $0.isNumber }.count
-            let slotsRightOfThis = intPlaceholders - slot - 1
-            let digitsFromRight = min(plainCount, slotsRightOfThis)
-            let digitsForThisSlot: Int
-            if slot == 0 {
-                digitsForThisSlot = max(0, plainCount - (intPlaceholders - 1))
-            } else {
-                digitsForThisSlot = plainCount - digitsFromRight >= 1 && slotsRightOfThis < plainCount ? 1 : 0
-            }
-            // Build chunk by walking intDigits from the left, tracking digit ordinal.
-            var startOrdinal = 0
-            if slot == 0 {
-                startOrdinal = 0
-            } else {
-                startOrdinal = max(0, plainCount - (intPlaceholders - slot))
-            }
-            let endOrdinal = startOrdinal + digitsForThisSlot
-            var chunk = ""
-            var ordinal = 0
-            for ch in intDigits {
-                if ch.isNumber {
-                    if ordinal >= startOrdinal && ordinal < endOrdinal { chunk.append(ch) }
-                    ordinal += 1
-                } else {
-                    // group separator: include if the NEXT digit belongs to this chunk
-                    if ordinal >= startOrdinal && ordinal < endOrdinal && ordinal != startOrdinal { chunk.append(ch) }
-                    else if ordinal == startOrdinal && ordinal > 0 && ordinal < endOrdinal && slot == 0 { /* leading separator dropped */ }
-                    else if ordinal > startOrdinal && ordinal < endOrdinal { chunk.append(ch) }
-                }
-            }
-            return chunk
+            slot < chunks.count ? chunks[slot] : ""
         }
 
         for t in tokens {
@@ -593,11 +592,6 @@ public enum NumberFormatEngine {
             case .textPlaceholder:
                 out += generalString(for: value)
             }
-        }
-        // If pattern had no digit placeholders at all but is numeric, append General.
-        if intPlaceholders == 0 && fracPlaceholders == 0 && !tokens.contains(where: { if case .textPlaceholder = $0 { return true }; return false }) {
-            if negative && !emittedSign { out = "-" + out }
-            return out + generalString(for: abs(value))
         }
         if negative && !emittedSign && intPlaceholders == 0 {
             out = "-" + out
