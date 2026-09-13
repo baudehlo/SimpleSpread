@@ -1,0 +1,3 @@
+import SpreadsheetUI
+
+SimpleSpreadApp.run()
