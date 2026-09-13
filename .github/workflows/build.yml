@@ -1,0 +1,239 @@
+name: Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (e.g. 1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release_notes:
+    runs-on: ubuntu-latest
+    outputs:
+      body: ${{ steps.compose.outputs.body }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Compose release notes
+        id: compose
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+
+          current_tag="v${VERSION}"
+          previous_tag="$(git tag --sort=-version:refname | grep -vx "$current_tag" | head -n 1 || true)"
+
+          if [[ -n "$previous_tag" ]]; then
+            commit_range="${previous_tag}..HEAD"
+            compare_text="Changes since ${previous_tag}"
+          else
+            commit_range="HEAD"
+            compare_text="Initial release"
+          fi
+
+          commit_log="$(git log --no-merges --pretty=format:'- %s (%h)' ${commit_range} | head -n 40 || true)"
+          if [[ -z "$commit_log" ]]; then
+            commit_log='- No commit summaries were available for this build.'
+          fi
+
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          {
+            echo "## SimpleSpread ${current_tag}"
+            echo
+            echo "${compare_text}"
+            echo
+            echo "A native macOS spreadsheet: XLSX native format, CSV import/export,"
+            echo "and a Google-Sheets-level formula engine."
+            echo
+            echo "> **Note:** This build is arm64 (Apple Silicon) only."
+            echo "> If Gatekeeper blocks the app, right-click → Open on first launch."
+            echo
+            echo "### Commit Summary"
+            echo "$commit_log"
+          } > "$notes_file"
+
+          {
+            echo 'body<<EOF'
+            cat "$notes_file"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: release_notes
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Run tests
+        run: swift test
+
+      - name: Build release binary (arm64)
+        run: swift build -c release --arch arm64
+
+      - name: Generate icon
+        run: swift scripts/generate-icon.swift icon.png
+
+      - name: Generate AppIcon.icns
+        run: |
+          set -euo pipefail
+          mkdir -p AppIcon.iconset
+          sips -z 16   16   icon.png --out AppIcon.iconset/icon_16x16.png
+          sips -z 32   32   icon.png --out AppIcon.iconset/icon_16x16@2x.png
+          sips -z 32   32   icon.png --out AppIcon.iconset/icon_32x32.png
+          sips -z 64   64   icon.png --out AppIcon.iconset/icon_32x32@2x.png
+          sips -z 128  128  icon.png --out AppIcon.iconset/icon_128x128.png
+          sips -z 256  256  icon.png --out AppIcon.iconset/icon_128x128@2x.png
+          sips -z 256  256  icon.png --out AppIcon.iconset/icon_256x256.png
+          sips -z 512  512  icon.png --out AppIcon.iconset/icon_256x256@2x.png
+          sips -z 512  512  icon.png --out AppIcon.iconset/icon_512x512.png
+          sips -z 1024 1024 icon.png --out AppIcon.iconset/icon_512x512@2x.png
+          iconutil -c icns AppIcon.iconset -o AppIcon.icns
+
+      - name: Assemble .app bundle
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          APP_NAME="SimpleSpread"
+          BINARY_NAME="SimpleSpread"
+          BUNDLE_ID="com.kikiplan.simplespread"
+          APP_DIR="${APP_NAME}.app"
+          CONTENTS="${APP_DIR}/Contents"
+
+          mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources"
+          cp ".build/release/${BINARY_NAME}" "${CONTENTS}/MacOS/${BINARY_NAME}"
+          cp AppIcon.icns "${CONTENTS}/Resources/AppIcon.icns"
+
+          PLIST="${CONTENTS}/Info.plist"
+          /usr/libexec/PlistBuddy -c "Clear dict"                                                 "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleName               string ${APP_NAME}"         "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName        string ${APP_NAME}"         "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier         string ${BUNDLE_ID}"        "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion            string ${VERSION}"          "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${VERSION}"          "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable         string ${BINARY_NAME}"      "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile           string AppIcon"             "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType        string APPL"                "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSHighResolutionCapable    bool   true"                "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :NSPrincipalClass           string NSApplication"       "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion     string 14.0"                "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes array"                            "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string Excel Workbook" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Editor" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes array"       "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string org.openxmlformats.spreadsheetml.sheet" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:CFBundleTypeName string CSV Document" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:CFBundleTypeRole string Editor" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes array"       "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes:0 string public.comma-separated-values-text" "$PLIST"
+
+      - name: Sign .app
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          APP_DIR="SimpleSpread.app"
+
+          if [[ -n "${APPLE_CERTIFICATE:-}" ]]; then
+            echo "Signing with Developer ID certificate..."
+            KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain"
+            KP="$(openssl rand -hex 16)"
+            echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security create-keychain -p "$KP" "$KEYCHAIN_PATH"
+            security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+            security unlock-keychain -p "$KP" "$KEYCHAIN_PATH"
+            security import "$RUNNER_TEMP/cert.p12" \
+              -k "$KEYCHAIN_PATH" \
+              -P "$APPLE_CERTIFICATE_PASSWORD" \
+              -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: -s -k "$KP" "$KEYCHAIN_PATH"
+            security list-keychain -d user -s "$KEYCHAIN_PATH"
+            codesign --deep --force --options runtime \
+              --entitlements entitlements.plist \
+              --sign "$APPLE_SIGNING_IDENTITY" \
+              "$APP_DIR"
+          else
+            echo "No APPLE_CERTIFICATE secret — ad-hoc signing (Gatekeeper will warn on other machines)"
+            codesign --deep --force --sign - "$APP_DIR"
+          fi
+
+      - name: Create .dmg
+        env:
+          VERSION: ${{ inputs.version }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          APP_NAME="SimpleSpread"
+          DMG_NAME="SimpleSpread-v${VERSION}.dmg"
+          STAGING="$RUNNER_TEMP/dmg-staging"
+          mkdir -p "$STAGING"
+          cp -R "${APP_NAME}.app" "$STAGING/"
+          ln -s /Applications "$STAGING/Applications"
+
+          hdiutil create \
+            -volname "${APP_NAME}" \
+            -srcfolder "$STAGING" \
+            -ov -format UDZO \
+            "$DMG_NAME"
+
+          if [[ -n "${APPLE_CERTIFICATE:-}" && -n "${APPLE_ID:-}" ]]; then
+            echo "Notarizing DMG..."
+            xcrun notarytool submit "$DMG_NAME" \
+              --apple-id "$APPLE_ID" \
+              --password "$APPLE_PASSWORD" \
+              --team-id "$APPLE_TEAM_ID" \
+              --wait
+            xcrun stapler staple "$DMG_NAME"
+            echo "Notarization complete."
+          else
+            echo "No notarization secrets — skipping notarization"
+          fi
+
+          echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
+
+      - name: Create GitHub Release and upload DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --notes "Release v${VERSION} — release notes will be updated shortly." \
+            "$DMG_NAME"
+
+  finalize_release_notes:
+    needs: [release_notes, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          RELEASE_BODY: ${{ needs.release_notes.outputs.body }}
+          RELEASE_TAG: v${{ inputs.version }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const tag = process.env.RELEASE_TAG;
+            const body = process.env.RELEASE_BODY;
+            const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            await github.rest.repos.updateRelease({
+              owner,
+              repo,
+              release_id: release.data.id,
+              body,
+            });

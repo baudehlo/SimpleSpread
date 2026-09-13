@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build
+        run: swift build
+
+      - name: Test
+        run: swift test
+
+      # Renders the real app window to a PNG via the app's self-capture hook.
+      # Warn-only: runner GUI-session quirks must not mask build/test signal.
+      - name: Headless render smoke test
+        continue-on-error: true
+        run: |
+          swift build -c release
+          SIMPLESPREAD_SCREENSHOT="$RUNNER_TEMP/window.png" SIMPLESPREAD_DEMO=1 \
+            .build/release/SimpleSpread || true
+          if [ -s "$RUNNER_TEMP/window.png" ]; then
+            echo "App rendered a $(stat -f%z "$RUNNER_TEMP/window.png") byte window capture"
+          else
+            echo "::warning::App did not produce a window capture on this runner"
+          fi
+
+      - name: Upload render capture
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: window-capture
+          path: ${{ runner.temp }}/window.png
