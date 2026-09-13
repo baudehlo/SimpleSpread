@@ -1,7 +1,11 @@
 import Foundation
 
 enum StatisticalFunctions {
-    static let all: [BuiltinFunction] = [
+    // Split into sub-arrays: one huge literal exceeds older compilers'
+    // type-checking budget (CI runners lag the local toolchain).
+    static let all: [BuiltinFunction] = counting + extremes + distribution + spread
+
+    private static let counting: [BuiltinFunction] = [
         .eager("AVERAGE", min: 1, max: nil) { args, _ in
             let nums = try Coerce.collectNumbers(args)
             guard !nums.isEmpty else { throw CellError.div0 }
@@ -80,6 +84,9 @@ enum StatisticalFunctions {
             }
             return .number(Double(seen.count))
         },
+    ]
+
+    private static let extremes: [BuiltinFunction] = [
         .eager("MAX", min: 1, max: nil) { args, _ in
             let nums = try Coerce.collectNumbers(args)
             return .number(nums.max() ?? 0)
@@ -102,6 +109,9 @@ enum StatisticalFunctions {
         .eager("MINIFS", min: 3, max: nil) { args, _ in
             .number(try filteredExtreme(args, isMax: false))
         },
+    ]
+
+    private static let distribution: [BuiltinFunction] = [
         .eager("MEDIAN", min: 1, max: nil) { args, _ in
             let nums = try Coerce.collectNumbers(args).sorted()
             guard !nums.isEmpty else { throw CellError.num }
@@ -159,6 +169,9 @@ enum StatisticalFunctions {
             guard q >= 0, q <= 4 else { throw CellError.num }
             return .number(try percentileInclusive(nums, Double(q) / 4))
         },
+    ]
+
+    private static let spread: [BuiltinFunction] = [
         .eager("STDEV", min: 1, max: nil) { args, _ in
             .number(try deviation(args, sample: true).squareRoot())
         },

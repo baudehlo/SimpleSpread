@@ -4,7 +4,11 @@ import Foundation
 /// out is negative, money received is positive; `type` 0 = payments at period
 /// end (default), 1 = at period start.
 enum FinancialFunctions {
-    static let all: [BuiltinFunction] = [
+    // Split into sub-arrays: one huge literal exceeds older compilers'
+    // type-checking budget (CI runners lag the local toolchain).
+    static let all: [BuiltinFunction] = annuities + cashflows
+
+    private static let annuities: [BuiltinFunction] = [
         .eager("PMT", min: 3, max: 5) { args, _ in
             let rate = try numArg(args[0])
             let nper = try numArg(args[1])
@@ -98,6 +102,9 @@ enum FinancialFunctions {
             }
             return .number(rate)
         },
+    ]
+
+    private static let cashflows: [BuiltinFunction] = [
         .eager("NPV", min: 2, max: nil) { args, _ in
             let rate = try numArg(args[0])
             guard rate != -1 else { throw CellError.div0 }

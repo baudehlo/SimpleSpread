@@ -1,7 +1,11 @@
 import Foundation
 
 enum LogicalFunctions {
-    static let all: [BuiltinFunction] = [
+    // Split into sub-arrays: one huge literal exceeds older compilers'
+    // type-checking budget (CI runners lag the local toolchain).
+    static let all: [BuiltinFunction] = conditionals + operators
+
+    private static let conditionals: [BuiltinFunction] = [
         .lazy("IF", min: 2, max: 3) { args, ctx in
             let cond = try ctx.evaluateScalar(args[0])
             if case .error(let e) = cond { return .error(e) }
@@ -36,6 +40,9 @@ enum LogicalFunctions {
             }
             return v
         },
+    ]
+
+    private static let operators: [BuiltinFunction] = [
         .eager("AND", min: 1, max: nil) { args, _ in
             .bool(try logicalFold(args, identity: true) { $0 && $1 })
         },

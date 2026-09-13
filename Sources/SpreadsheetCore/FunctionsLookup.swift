@@ -1,7 +1,11 @@
 import Foundation
 
 enum LookupFunctions {
-    static let all: [BuiltinFunction] = [
+    // Split into sub-arrays: one huge literal exceeds older compilers'
+    // type-checking budget (CI runners lag the local toolchain).
+    static let all: [BuiltinFunction] = lookups + referencing
+
+    private static let lookups: [BuiltinFunction] = [
         .eager("VLOOKUP", min: 3, max: 4) { args, _ in
             let key = try args[0].toScalar()
             if case .error(let e) = key { throw e }
@@ -106,6 +110,9 @@ enum LookupFunctions {
             guard index >= 1, index < args.count else { throw CellError.num }
             return try ctx.evaluateScalar(args[index])
         },
+    ]
+
+    private static let referencing: [BuiltinFunction] = [
         .eager("ADDRESS", min: 2, max: 5) { args, _ in
             let row = try intArg(args[0])
             let col = try intArg(args[1])

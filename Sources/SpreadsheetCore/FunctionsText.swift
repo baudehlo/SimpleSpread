@@ -1,7 +1,11 @@
 import Foundation
 
 enum TextFunctions {
-    static let all: [BuiltinFunction] = [
+    // Split into sub-arrays: one huge literal exceeds older compilers'
+    // type-checking budget (CI runners lag the local toolchain).
+    static let all: [BuiltinFunction] = joining + searching + casing + conversion
+
+    private static let joining: [BuiltinFunction] = [
         .eager("CONCATENATE", min: 1, max: nil) { args, _ in
             .string(try joinAll(args, separator: ""))
         },
@@ -48,6 +52,9 @@ enum TextFunctions {
         .eager("LEN", min: 1, max: 1) { args, _ in
             .number(Double(try strArg(args[0]).count))
         },
+    ]
+
+    private static let searching: [BuiltinFunction] = [
         .eager("FIND", min: 2, max: 3) { args, _ in
             let needle = try strArg(args[0])
             let haystack = try strArg(args[1])
@@ -113,6 +120,9 @@ enum TextFunctions {
             let to = min(from + length, chars.count)
             return .string(String(chars[0..<from]) + newText + String(chars[to...]))
         },
+    ]
+
+    private static let casing: [BuiltinFunction] = [
         .eager("UPPER", min: 1, max: 1) { args, _ in
             .string(try strArg(args[0]).uppercased())
         },
@@ -155,6 +165,9 @@ enum TextFunctions {
         .eager("EXACT", min: 2, max: 2) { args, _ in
             .bool(try strArg(args[0]) == (try strArg(args[1])))
         },
+    ]
+
+    private static let conversion: [BuiltinFunction] = [
         .eager("TEXT", min: 2, max: 2) { args, _ in
             let v = try args[0].toScalar()
             if case .error(let e) = v { throw e }

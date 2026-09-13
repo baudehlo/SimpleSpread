@@ -1,7 +1,11 @@
 import Foundation
 
 enum InfoFunctions {
-    static let all: [BuiltinFunction] = [
+    // Split into sub-arrays: one huge literal exceeds older compilers'
+    // type-checking budget (CI runners lag the local toolchain).
+    static let all: [BuiltinFunction] = predicates + valueInfo
+
+    private static let predicates: [BuiltinFunction] = [
         .lazy("ISBLANK", min: 1, max: 1) { args, ctx in
             let v = ctx.evaluateCapturingErrors(args[0])
             if case .empty = v { return .bool(true) }
@@ -42,6 +46,9 @@ enum InfoFunctions {
             if case .error(.na) = v { return .bool(true) }
             return .bool(false)
         },
+    ]
+
+    private static let valueInfo: [BuiltinFunction] = [
         .eager("ISEVEN", min: 1, max: 1) { args, _ in
             let n = try numArg(args[0])
             return .bool(Int(n.rounded(.towardZero)) % 2 == 0)

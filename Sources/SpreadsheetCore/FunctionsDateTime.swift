@@ -1,7 +1,11 @@
 import Foundation
 
 enum DateTimeFunctions {
-    static let all: [BuiltinFunction] = [
+    // Split into sub-arrays: one huge literal exceeds older compilers'
+    // type-checking budget (CI runners lag the local toolchain).
+    static let all: [BuiltinFunction] = construction + components + dateArithmetic
+
+    private static let construction: [BuiltinFunction] = [
         .eager("DATE", min: 3, max: 3) { args, _ in
             var year = try intArg(args[0])
             let month = try intArg(args[1])
@@ -36,6 +40,9 @@ enum DateTimeFunctions {
         .eager("NOW", min: 0, max: 0) { _, ctx in
             .number(ctx.eval.clock.nowSerial())
         },
+    ]
+
+    private static let components: [BuiltinFunction] = [
         .eager("YEAR", min: 1, max: 1) { args, _ in
             .number(Double(try dateComponents(args[0]).year))
         },
@@ -74,6 +81,9 @@ enum DateTimeFunctions {
             let serial = try serialArg(args[0])
             return .number(Double(try weekNumber(serial: serial, type: 21)))
         },
+    ]
+
+    private static let dateArithmetic: [BuiltinFunction] = [
         .eager("EDATE", min: 2, max: 2) { args, _ in
             let serial = try serialArg(args[0])
             let months = try intArg(args[1])

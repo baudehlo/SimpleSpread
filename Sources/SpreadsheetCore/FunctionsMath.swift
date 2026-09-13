@@ -1,7 +1,11 @@
 import Foundation
 
 enum MathFunctions {
-    static let all: [BuiltinFunction] = [
+    // Split into sub-arrays: one huge literal exceeds older compilers'
+    // type-checking budget (CI runners lag the local toolchain).
+    static let all: [BuiltinFunction] = basics + rounding + integers + conditional
+
+    private static let basics: [BuiltinFunction] = [
         .eager("SUM", min: 1, max: nil) { args, _ in
             .number(try Coerce.collectNumbers(args).reduce(0, +))
         },
@@ -45,6 +49,9 @@ enum MathFunctions {
             guard n > 0 else { throw CellError.num }
             return .number(log10(n))
         },
+    ]
+
+    private static let rounding: [BuiltinFunction] = [
         .eager("PI", min: 0, max: 0) { _, _ in .number(Double.pi) },
         .eager("INT", min: 1, max: 1) { args, _ in
             .number((try numArg(args[0])).rounded(.down))
@@ -111,6 +118,9 @@ enum MathFunctions {
             guard b != 0 else { throw CellError.div0 }
             return .number((a / b).rounded(.towardZero))
         },
+    ]
+
+    private static let integers: [BuiltinFunction] = [
         .eager("POWER", min: 2, max: 2) { args, _ in
             let a = try numArg(args[0])
             let b = try numArg(args[1])
@@ -174,6 +184,9 @@ enum MathFunctions {
             let r = ctx.eval.clock.random()
             return .number(Double(low) + (span * r).rounded(.down))
         },
+    ]
+
+    private static let conditional: [BuiltinFunction] = [
         .eager("SUMIF", min: 2, max: 3) { args, _ in
             let range = GridArg(args[0])
             let criterion = Criterion.parse(try args[1].toScalar())
