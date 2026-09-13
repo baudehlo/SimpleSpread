@@ -71,22 +71,24 @@ public struct DocumentWindowView: View {
             Divider().frame(height: 16)
             numberFormatMenu
             Divider().frame(height: 16)
-            HStack(spacing: 3) {
+            // NSColorWell has a fixed intrinsic size — never clamp its frame
+            // (a narrower frame clips and the well overflows onto neighbors).
+            HStack(spacing: 4) {
                 Image(systemName: "character")
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 ColorPicker("", selection: textColorBinding, supportsOpacity: false)
                     .labelsHidden()
-                    .frame(width: 24)
+                    .fixedSize()
             }
             .help("Text color")
-            HStack(spacing: 3) {
+            HStack(spacing: 4) {
                 Image(systemName: "paintbrush.fill")
-                    .font(.system(size: 10))
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 ColorPicker("", selection: fillColorBinding, supportsOpacity: false)
                     .labelsHidden()
-                    .frame(width: 24)
+                    .fixedSize()
             }
             .help("Fill color")
             Spacer()

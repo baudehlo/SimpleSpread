@@ -3,7 +3,7 @@ import Foundation
 enum DateTimeFunctions {
     // Split into sub-arrays: one huge literal exceeds older compilers'
     // type-checking budget (CI runners lag the local toolchain).
-    static let all: [BuiltinFunction] = construction + components + dateArithmetic
+    static let all: [BuiltinFunction] = construction + components + dateArithmetic + workdays
 
     private static let construction: [BuiltinFunction] = [
         .eager("DATE", min: 3, max: 3) { args, _ in
@@ -98,45 +98,16 @@ enum DateTimeFunctions {
             let start = try serialArg(args[0]).rounded(.down)
             let end = try serialArg(args[1]).rounded(.down)
             let unit = try strArg(args[2]).uppercased()
-            guard start <= end else { throw CellError.num }
-            guard let s = ExcelDate.components(fromSerial: start),
-                  let e = ExcelDate.components(fromSerial: end) else { throw CellError.num }
-            switch unit {
-            case "D":
-                return .number(end - start)
-            case "M":
-                return .number(Double(wholeMonthsBetween(s, e)))
-            case "Y":
-                return .number(Double(wholeMonthsBetween(s, e) / 12))
-            case "YM":
-                return .number(Double(wholeMonthsBetween(s, e) % 12))
-            case "MD":
-                // days ignoring months and years
-                if e.day >= s.day {
-                    return .number(Double(e.day - s.day))
-                }
-                // borrow from previous month of the end date
-                let prevMonth = e.month == 1 ? 12 : e.month - 1
-                let prevYear = e.month == 1 ? e.year - 1 : e.year
-                let dim = ExcelDate.daysInMonth(year: prevYear, month: prevMonth)
-                return .number(Double(e.day + max(0, dim - s.day)))
-            case "YD":
-                // days ignoring years: move start's month/day into end's year frame
-                var anchor = ExcelDate.serial(year: s.year, month: e.month, day: e.day)
-                let startSerial = ExcelDate.serial(year: s.year, month: s.month, day: s.day)
-                if anchor < startSerial {
-                    anchor = ExcelDate.serial(year: s.year + 1, month: e.month, day: e.day)
-                }
-                return .number(anchor - startSerial)
-            default:
-                throw CellError.num
-            }
+            return .number(try datedifValue(start: start, end: end, unit: unit))
         },
         .eager("DAYS", min: 2, max: 2) { args, _ in
             let end = try serialArg(args[0])
             let start = try serialArg(args[1])
             return .number(end.rounded(.down) - start.rounded(.down))
         },
+    ]
+
+    private static let workdays: [BuiltinFunction] = [
         .eager("NETWORKDAYS", min: 2, max: 3) { args, _ in
             let start = Int(try serialArg(args[0]).rounded(.down))
             let end = Int(try serialArg(args[1]).rounded(.down))
@@ -166,35 +137,81 @@ enum DateTimeFunctions {
             let start = try serialArg(args[0]).rounded(.down)
             let end = try serialArg(args[1]).rounded(.down)
             let basis = try optionalInt(args, 2, default: 0)
-            let (lo, hi) = start <= end ? (start, end) : (end, start)
-            guard let s = ExcelDate.components(fromSerial: lo),
-                  let e = ExcelDate.components(fromSerial: hi) else { throw CellError.num }
-            switch basis {
-            case 0: // US (NASD) 30/360
-                var d1 = s.day, d2 = e.day
-                if d1 == 31 { d1 = 30 }
-                if d2 == 31 && d1 == 30 { d2 = 30 }
-                let days = Double((e.year - s.year) * 360 + (e.month - s.month) * 30 + (d2 - d1))
-                return .number(days / 360)
-            case 1: // actual/actual
-                let days = hi - lo
-                let yearLength = averageYearLength(from: s.year, to: e.year)
-                return .number(days / yearLength)
-            case 2:
-                return .number((hi - lo) / 360)
-            case 3:
-                return .number((hi - lo) / 365)
-            case 4: // European 30E/360
-                let d1 = min(s.day, 30), d2 = min(e.day, 30)
-                let days = Double((e.year - s.year) * 360 + (e.month - s.month) * 30 + (d2 - d1))
-                return .number(days / 360)
-            default:
-                throw CellError.num
-            }
+            return .number(try yearfracValue(start: start, end: end, basis: basis))
         },
     ]
 
     // MARK: Helpers
+
+    /// DATEDIF body (kept out of the closure: large inline bodies blow older
+    /// compilers' expression type-checking budget).
+    static func datedifValue(start: Double, end: Double, unit: String) throws -> Double {
+        guard start <= end else { throw CellError.num }
+        guard let s = ExcelDate.components(fromSerial: start),
+              let e = ExcelDate.components(fromSerial: end) else { throw CellError.num }
+        switch unit {
+        case "D":
+            return end - start
+        case "M":
+            return Double(wholeMonthsBetween(s, e))
+        case "Y":
+            return Double(wholeMonthsBetween(s, e) / 12)
+        case "YM":
+            return Double(wholeMonthsBetween(s, e) % 12)
+        case "MD":
+            // days ignoring months and years
+            if e.day >= s.day {
+                return Double(e.day - s.day)
+            }
+            // borrow from previous month of the end date
+            let prevMonth = e.month == 1 ? 12 : e.month - 1
+            let prevYear = e.month == 1 ? e.year - 1 : e.year
+            let dim = ExcelDate.daysInMonth(year: prevYear, month: prevMonth)
+            return Double(e.day + max(0, dim - s.day))
+        case "YD":
+            // days ignoring years: move start's month/day into end's year frame
+            var anchor = ExcelDate.serial(year: s.year, month: e.month, day: e.day)
+            let startSerial = ExcelDate.serial(year: s.year, month: s.month, day: s.day)
+            if anchor < startSerial {
+                anchor = ExcelDate.serial(year: s.year + 1, month: e.month, day: e.day)
+            }
+            return anchor - startSerial
+        default:
+            throw CellError.num
+        }
+    }
+
+    /// YEARFRAC body (see datedifValue note).
+    static func yearfracValue(start: Double, end: Double, basis: Int) throws -> Double {
+        let lo = min(start, end)
+        let hi = max(start, end)
+        guard let s = ExcelDate.components(fromSerial: lo),
+              let e = ExcelDate.components(fromSerial: hi) else { throw CellError.num }
+        switch basis {
+        case 0: // US (NASD) 30/360
+            var d1 = s.day
+            var d2 = e.day
+            if d1 == 31 { d1 = 30 }
+            if d2 == 31 && d1 == 30 { d2 = 30 }
+            let days = Double((e.year - s.year) * 360 + (e.month - s.month) * 30 + (d2 - d1))
+            return days / 360
+        case 1: // actual/actual
+            let days = hi - lo
+            let yearLength = averageYearLength(from: s.year, to: e.year)
+            return days / yearLength
+        case 2:
+            return (hi - lo) / 360
+        case 3:
+            return (hi - lo) / 365
+        case 4: // European 30E/360
+            let d1 = min(s.day, 30)
+            let d2 = min(e.day, 30)
+            let days = Double((e.year - s.year) * 360 + (e.month - s.month) * 30 + (d2 - d1))
+            return days / 360
+        default:
+            throw CellError.num
+        }
+    }
 
     /// A date serial from a numeric or date-string argument.
     static func serialArg(_ v: EvalValue) throws -> Double {
