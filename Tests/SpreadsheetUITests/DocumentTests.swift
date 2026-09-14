@@ -215,12 +215,58 @@ struct DocumentTests {
             .appendingPathComponent("simplespread-tests-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        let url = dir.appendingPathComponent("data.csv")
+        let url = dir.appendingPathComponent("pricing.csv")
         try Data("a,b\n1,2\n".utf8).write(to: url)
         let doc = try SpreadsheetDocument.open(url: url)
-        #expect(doc.fileURL == nil) // CSV import: native format stays xlsx
+        // CSV import: never write back to the .csv — force Save-As to XLSX.
+        #expect(doc.fileURL == nil)
+        #expect(doc.suggestedFileName == "pricing.xlsx")
+        #expect(doc.saveFileName == "pricing.xlsx")
+        #expect(doc.displayName == "pricing")
         #expect(doc.activeSheet.value(at: a("A2")) == .number(1))
-        #expect(doc.workbook.sheets[0].name == "data")
+        #expect(doc.workbook.sheets[0].name == "pricing")
+    }
+
+    @Test func openTSVAndTXTAlsoImport() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("simplespread-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        // Tab-separated with a .tsv extension.
+        let tsv = dir.appendingPathComponent("grid.tsv")
+        try Data("x\ty\n3\t4\n".utf8).write(to: tsv)
+        let tdoc = try SpreadsheetDocument.open(url: tsv)
+        #expect(tdoc.fileURL == nil)
+        #expect(tdoc.suggestedFileName == "grid.xlsx")
+        #expect(tdoc.activeSheet.value(at: a("A2")) == .number(3))
+        #expect(tdoc.activeSheet.value(at: a("B2")) == .number(4))
+        // Comma data mislabeled .txt still imports (delimiter sniffed).
+        let txt = dir.appendingPathComponent("list.txt")
+        try Data("m,n\n5,6\n".utf8).write(to: txt)
+        let xdoc = try SpreadsheetDocument.open(url: txt)
+        #expect(xdoc.suggestedFileName == "list.xlsx")
+        #expect(xdoc.activeSheet.value(at: a("B2")) == .number(6))
+    }
+
+    @Test func csvOpenThenSaveGoesToXLSX() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("simplespread-tests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let csv = dir.appendingPathComponent("report.csv")
+        try Data("h\n9\n".utf8).write(to: csv)
+        let doc = try SpreadsheetDocument.open(url: csv)
+        // Simulate the Save-As the UI forces (fileURL is nil so ⌘S routes here).
+        let xlsx = dir.appendingPathComponent(doc.saveFileName)
+        #expect(xlsx.lastPathComponent == "report.xlsx")
+        try doc.save(to: xlsx)
+        // The original CSV is untouched; now bound to the XLSX for future saves.
+        #expect(doc.fileURL == xlsx)
+        #expect(doc.suggestedFileName == nil)
+        #expect(FileManager.default.fileExists(atPath: csv.path))
+        let reopened = try SpreadsheetDocument.open(url: xlsx)
+        #expect(reopened.fileURL == xlsx) // XLSX opens bound to its file
+        #expect(reopened.activeSheet.value(at: a("A2")) == .number(9))
     }
 
     @Test func csvSheetImportAndExport() throws {

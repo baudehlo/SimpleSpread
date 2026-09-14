@@ -74,11 +74,26 @@ public enum SimpleSpreadApp {
 
 struct SimpleSpreadAppMain: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Scene {
         WindowGroup(for: Int.self) { $docID in
             DocumentWindowView(document: DocumentStore.shared.document(for: docID ?? 0))
                 .frame(minWidth: 640, minHeight: 400)
+                // Finder double-click / `open <file>` / drag-onto-icon: route
+                // each URL through the same open flow the File menu uses.
+                .onReceive(NotificationCenter.default.publisher(for: .simpleSpreadOpenURL)) { note in
+                    guard let url = note.object as? URL else { return }
+                    do {
+                        let doc = try SpreadsheetDocument.open(url: url)
+                        openWindow(value: DocumentStore.shared.register(doc))
+                    } catch {
+                        let alert = NSAlert()
+                        alert.messageText = "Could not open \(url.lastPathComponent)"
+                        alert.informativeText = error.localizedDescription
+                        alert.runModal()
+                    }
+                }
         } defaultValue: {
             DocumentStore.shared.create()
         }
@@ -93,11 +108,55 @@ struct SimpleSpreadAppMain: App {
     }
 }
 
+extension Notification.Name {
+    static let simpleSpreadOpenURL = Notification.Name("SimpleSpreadOpenURL")
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// URLs delivered before a scene is listening (e.g. launch-to-open).
+    private var queuedURLs: [URL] = []
+    private var ready = false
+
+    /// Finder double-click, `open <file>`, drag-onto-Dock-icon.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            if ready {
+                NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
+            } else {
+                queuedURLs.append(url)
+            }
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Running as a bare SwiftPM binary (no bundle): become a regular app.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+
+        // A scene is now listening; flush any launch-time open requests.
+        ready = true
+        let pending = queuedURLs
+        queuedURLs.removeAll()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            for url in pending {
+                NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
+            }
+        }
+
+        // Headless open hook: drive the real open→window flow. With a
+        // screenshot request the capture hook terminates; otherwise quit after
+        // a moment so the hook never leaves an app running.
+        if let openPath = ProcessInfo.processInfo.environment["SIMPLESPREAD_OPEN"] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                NotificationCenter.default.post(name: .simpleSpreadOpenURL,
+                                                object: URL(fileURLWithPath: openPath))
+                if ProcessInfo.processInfo.environment["SIMPLESPREAD_SCREENSHOT"] == nil {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        NSApp.terminate(nil)
+                    }
+                }
+            }
+        }
 
         // Headless smoke-test hook: render the main window to a PNG and quit.
         if let path = ProcessInfo.processInfo.environment["SIMPLESPREAD_SCREENSHOT"] {
@@ -106,11 +165,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.terminate(nil)
             }
         }
+
     }
 
     @MainActor
     static func captureMainWindow(to path: String) {
-        guard let window = NSApp.windows.first(where: { $0.isVisible }),
+        // Prefer the key/main window (the most recently opened one) so open
+        // hooks screenshot the document they just loaded, not the launch window.
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+            ?? NSApp.windows.first(where: { $0.isVisible })
+        guard let window,
               let contentView = window.contentView,
               let root = contentView.superview ?? window.contentView else { return }
         guard let rep = root.bitmapImageRepForCachingDisplay(in: root.bounds) else { return }
@@ -174,15 +238,18 @@ struct FileCommands: Commands {
 
     @MainActor private func openDocument() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [xlsxType, .commaSeparatedText]
+        // Accept XLSX plus any delimited-text type. Some CSV/TSV files resolve
+        // to public.plain-text on disk, so allowing plain text (and matching by
+        // extension) keeps them selectable instead of greyed out.
+        panel.allowedContentTypes = [xlsxType, .commaSeparatedText, .tabSeparatedText,
+                                     .plainText, .text]
+        panel.allowsOtherFileTypes = true
         panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            let doc = try SpreadsheetDocument.open(url: url)
-            openWindow(value: DocumentStore.shared.register(doc))
-        } catch {
-            presentError(error, message: "Could not open \(url.lastPathComponent)")
-        }
+        // Route through the same notification the Finder-open path uses; its
+        // handler lives in the scene's view hierarchy where openWindow is
+        // reliably wired (openWindow from a Commands struct can no-op).
+        NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
     }
 
     @MainActor private func save(as forceAs: Bool) {
@@ -197,7 +264,8 @@ struct FileCommands: Commands {
         }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [xlsxType]
-        panel.nameFieldStringValue = document.displayName + ".xlsx"
+        // Pre-fill the source name (e.g. pricing.xlsx after opening pricing.csv).
+        panel.nameFieldStringValue = document.saveFileName
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try document.save(to: url)

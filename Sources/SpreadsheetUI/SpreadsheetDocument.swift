@@ -30,7 +30,13 @@ public final class SpreadsheetDocument: ObservableObject {
 
     @Published public var selection = SelectionState()
     @Published public var activeSheetID: Int
+    /// The XLSX file this document saves to. Nil until first saved — including
+    /// for documents opened from CSV, which must Save-As to XLSX rather than
+    /// overwrite the source.
     @Published public var fileURL: URL?
+    /// Pre-filled name for the Save panel when there is no fileURL yet
+    /// (e.g. "pricing.xlsx" after opening pricing.csv).
+    @Published public var suggestedFileName: String?
     @Published public private(set) var isModified = false
     /// Incremented whenever cell content/layout changes; grid views observe it.
     @Published public private(set) var revision = 0
@@ -55,8 +61,22 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public var displayName: String {
-        fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled"
+        if let fileURL { return fileURL.deletingPathExtension().lastPathComponent }
+        if let suggestedFileName {
+            return (suggestedFileName as NSString).deletingPathExtension
+        }
+        return "Untitled"
     }
+
+    /// The default filename to offer in a Save panel.
+    public var saveFileName: String {
+        if let fileURL { return fileURL.lastPathComponent }
+        if let suggestedFileName { return suggestedFileName }
+        return "Untitled.xlsx"
+    }
+
+    /// File extensions treated as delimited-text imports (sniffed on load).
+    public static let textImportExtensions: Set<String> = ["csv", "tsv", "txt", "tab"]
 
     // MARK: - Display / edit strings
 
@@ -593,21 +613,27 @@ public final class SpreadsheetDocument: ObservableObject {
         let data = try XLSXWriter.data(for: workbook)
         try data.write(to: url, options: .atomic)
         fileURL = url
+        suggestedFileName = nil
         isModified = false
     }
 
     public static func open(url: URL) throws -> SpreadsheetDocument {
         let data = try Data(contentsOf: url)
+        let ext = url.pathExtension.lowercased()
+        let baseName = url.deletingPathExtension().lastPathComponent
         let workbook: Workbook
-        if url.pathExtension.lowercased() == "csv" {
-            workbook = CSV.importWorkbook(data: data,
-                                          sheetName: url.deletingPathExtension().lastPathComponent)
+        let isTextImport = textImportExtensions.contains(ext)
+        if isTextImport {
+            workbook = CSV.importWorkbook(data: data, sheetName: baseName)
         } else {
             workbook = try XLSXReader.read(data: data)
         }
         let doc = SpreadsheetDocument(workbook: workbook)
-        // CSV opens as an unsaved xlsx-native document.
-        if url.pathExtension.lowercased() != "csv" {
+        if isTextImport {
+            // Delimited-text opens as an unsaved XLSX-native document: never
+            // write back over the source file. Save-As pre-fills <base>.xlsx.
+            doc.suggestedFileName = baseName + ".xlsx"
+        } else {
             doc.fileURL = url
         }
         return doc
