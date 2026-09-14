@@ -273,7 +273,10 @@ for manual Excel/Numbers/Sheets checks.
 
 Shipped since v1 core: view zoom (⌘+/⌘−/⌘0, status-bar control, pinch sync);
 Find (⌘F with match navigation, ⌘G/⇧⌘G); Finder/`open` file-association
-opening; CSV/TSV/TXT open routing with forced Save-As to XLSX.
+opening; CSV/TSV/TXT open routing with forced Save-As to XLSX; a GitHub
+Releases-based software updater (Check for Updates… menu item, throttled
+silent launch check, Download/Skip/Later dialog — no Sparkle dependency;
+needs the network-client entitlement, now in entitlements.plist).
 
 Known gaps and the intended next steps, in priority order:
 

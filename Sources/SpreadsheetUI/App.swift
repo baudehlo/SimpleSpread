@@ -103,6 +103,7 @@ struct SimpleSpreadAppMain: App {
         }
         .defaultSize(width: 1100, height: 720)
         .commands {
+            AppInfoCommands()
             FileCommands()
             EditCommands()
             ViewCommands()
@@ -144,6 +145,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             for url in pending {
                 NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
+            }
+        }
+
+        // Headless updater check: run the real GitHub query and print, then quit.
+        if let repo = ProcessInfo.processInfo.environment["SIMPLESPREAD_UPDATE_CHECK"] {
+            let current = ProcessInfo.processInfo.environment["SIMPLESPREAD_UPDATE_CURRENT"] ?? "0.0.0"
+            Task { @MainActor in
+                do {
+                    let outcome = try await UpdateChecker(repository: repo, currentVersion: current).check()
+                    FileHandle.standardError.write(Data("UPDATE_CHECK: \(outcome)\n".utf8))
+                } catch {
+                    FileHandle.standardError.write(Data("UPDATE_CHECK error: \(error)\n".utf8))
+                }
+                NSApp.terminate(nil)
+            }
+            return
+        }
+
+        // Silent, throttled background update check (skipped for headless hooks).
+        if ProcessInfo.processInfo.environment["SIMPLESPREAD_SCREENSHOT"] == nil,
+           ProcessInfo.processInfo.environment["SIMPLESPREAD_OPEN"] == nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                UpdateController.shared.checkOnLaunchIfDue()
             }
         }
 
@@ -196,6 +220,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - Menu commands
 
 let xlsxType = UTType(filenameExtension: "xlsx") ?? .data
+
+/// App-menu items: "Check for Updates…" plus the automatic-check toggle,
+/// placed just under "About SimpleSpread".
+struct AppInfoCommands: Commands {
+    @ObservedObject private var updater = UpdateController.shared
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") {
+                updater.checkForUpdates()
+            }
+            .disabled(updater.isChecking)
+
+            Toggle("Automatically Check for Updates", isOn: $updater.automaticallyChecksForUpdates)
+        }
+    }
+}
 
 struct FileCommands: Commands {
     @FocusedValue(\.spreadsheetDocument) var document

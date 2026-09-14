@@ -30,6 +30,10 @@ exports. The formula engine covers Google Sheets' core feature set —
 - **Navigation**: Find (⌘F) with match navigation (⌘G / ⇧⌘G), a name box for
   jump-to-cell, and view zoom from 25%–400% (⌘+/⌘−/⌘0, status-bar control,
   and trackpad pinch).
+- **Software updates**: a built-in updater (no Sparkle) driven by GitHub
+  Releases — a "Check for Updates…" menu item, a throttled silent check on
+  launch (toggleable), and an update dialog with release notes and
+  Download / Skip This Version / Remind Me Later.
 - **Formatting**: bold/italic/underline/strikethrough, colors, alignment,
   and the number-format menu (automatic, number, percent, currency, date,
   time, scientific, plain text) backed by a full Excel format-code renderer.
