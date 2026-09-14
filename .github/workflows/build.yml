@@ -137,6 +137,14 @@ jobs:
           /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes array"       "$PLIST"
           /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes:0 string public.comma-separated-values-text" "$PLIST"
 
+      - name: Embed Sparkle
+        env:
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          FEED="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/main/appcast.xml"
+          ./scripts/embed-sparkle.sh "SimpleSpread.app" "$FEED"
+
       - name: Sign .app
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -160,13 +168,16 @@ jobs:
               -T /usr/bin/codesign
             security set-key-partition-list -S apple-tool:,apple: -s -k "$KP" "$KEYCHAIN_PATH"
             security list-keychain -d user -s "$KEYCHAIN_PATH"
-            codesign --deep --force --options runtime \
+            # Sign Sparkle's nested helpers inside-out first, then the app.
+            ./scripts/sign-sparkle.sh "$APP_DIR" "$APPLE_SIGNING_IDENTITY"
+            codesign --force --options runtime \
               --entitlements entitlements.plist \
               --sign "$APPLE_SIGNING_IDENTITY" \
               "$APP_DIR"
           else
             echo "No APPLE_CERTIFICATE secret — ad-hoc signing (Gatekeeper will warn on other machines)"
-            codesign --deep --force --sign - "$APP_DIR"
+            ./scripts/sign-sparkle.sh "$APP_DIR" "-"
+            codesign --force --sign - "$APP_DIR"
           fi
 
       - name: Create .dmg
@@ -215,6 +226,28 @@ jobs:
             --title "v${VERSION}" \
             --notes "Release v${VERSION} — release notes will be updated shortly." \
             "$DMG_NAME"
+
+      # Sign the DMG with the Sparkle key and publish the appcast so existing
+      # installs can auto-update. No-ops until SPARKLE_PRIVATE_KEY is configured.
+      - name: Publish Sparkle appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SPARKLE_PRIVATE_KEY:-}" ]]; then
+            echo "No SPARKLE_PRIVATE_KEY secret — skipping appcast publish."
+            echo "Add the key (see docs/UPDATES.md) to enable in-place auto-updates."
+            exit 0
+          fi
+          DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/${DMG_NAME}"
+          ./scripts/update-appcast.sh "$DMG_NAME" "$VERSION" "$DOWNLOAD_URL" "appcast.xml"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "appcast: SimpleSpread ${VERSION}"
+          git push origin HEAD:main
 
   finalize_release_notes:
     needs: [release_notes, build]

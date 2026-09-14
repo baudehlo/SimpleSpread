@@ -148,28 +148,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Headless updater check: run the real GitHub query and print, then quit.
-        if let repo = ProcessInfo.processInfo.environment["SIMPLESPREAD_UPDATE_CHECK"] {
-            let current = ProcessInfo.processInfo.environment["SIMPLESPREAD_UPDATE_CURRENT"] ?? "0.0.0"
-            Task { @MainActor in
-                do {
-                    let outcome = try await UpdateChecker(repository: repo, currentVersion: current).check()
-                    FileHandle.standardError.write(Data("UPDATE_CHECK: \(outcome)\n".utf8))
-                } catch {
-                    FileHandle.standardError.write(Data("UPDATE_CHECK error: \(error)\n".utf8))
-                }
-                NSApp.terminate(nil)
-            }
-            return
-        }
-
-        // Silent, throttled background update check (skipped for headless hooks).
-        if ProcessInfo.processInfo.environment["SIMPLESPREAD_SCREENSHOT"] == nil,
-           ProcessInfo.processInfo.environment["SIMPLESPREAD_OPEN"] == nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                UpdateController.shared.checkOnLaunchIfDue()
-            }
-        }
+        // Sparkle schedules its own automatic checks (per the Info.plist
+        // SUEnableAutomaticChecks / SUScheduledCheckInterval settings); no
+        // manual launch check is needed. Touching SparkleUpdater.shared here
+        // would start it before a scene exists, so leave it to first menu use.
 
         // Headless open hook: drive the real open→window flow. With a
         // screenshot request the capture hook terminates; otherwise quit after
@@ -222,18 +204,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 let xlsxType = UTType(filenameExtension: "xlsx") ?? .data
 
 /// App-menu items: "Check for Updates…" plus the automatic-check toggle,
-/// placed just under "About SimpleSpread".
+/// placed just under "About SimpleSpread". Backed by Sparkle.
 struct AppInfoCommands: Commands {
-    @ObservedObject private var updater = UpdateController.shared
+    @ObservedObject private var updater = SparkleUpdater.shared
 
     var body: some Commands {
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…") {
                 updater.checkForUpdates()
             }
-            .disabled(updater.isChecking)
+            .disabled(!updater.canCheckForUpdates)
 
-            Toggle("Automatically Check for Updates", isOn: $updater.automaticallyChecksForUpdates)
+            Toggle("Automatically Check for Updates",
+                   isOn: Binding(
+                    get: { updater.automaticallyChecksForUpdates },
+                    set: { updater.automaticallyChecksForUpdates = $0 }))
         }
     }
 }

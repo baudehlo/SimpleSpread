@@ -71,8 +71,13 @@ PLIST="${CONTENTS}/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes array"       "$PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes:0 string public.comma-separated-values-text" "$PLIST"
 
+echo "==> Embedding Sparkle..."
+APPCAST_URL="${SPARKLE_FEED_URL:-https://raw.githubusercontent.com/baudehlo/SimpleSpread/main/appcast.xml}"
+"${SCRIPT_DIR}/embed-sparkle.sh" "$APP_DIR" "$APPCAST_URL"
+
 echo "==> Ad-hoc signing..."
-codesign --deep --force --sign - "$APP_DIR"
+"${SCRIPT_DIR}/sign-sparkle.sh" "$APP_DIR" "-"
+codesign --force --sign - "$APP_DIR"
 
 echo "==> Creating ${DMG_NAME}..."
 STAGING="$(mktemp -d)"

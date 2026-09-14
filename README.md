@@ -1,9 +1,11 @@
 # SimpleSpread
 
-A native macOS spreadsheet app written entirely in Swift with **zero
-third-party dependencies**. Native file format is XLSX; CSV imports and
-exports. The formula engine covers Google Sheets' core feature set —
-156 functions, real coercion semantics, incremental recalculation.
+A native macOS spreadsheet app written entirely in Swift. Native file format
+is XLSX; CSV imports and exports. The formula engine covers Google Sheets'
+core feature set — 156 functions, real coercion semantics, incremental
+recalculation. The spreadsheet stack (model, formula engine, XLSX/ZIP/CSV I/O,
+grid) is built from scratch with no third-party libraries; the sole external
+dependency is [Sparkle](https://sparkle-project.org) for software updates.
 
 ![CI](https://github.com/baudehlo/SimpleSpread/actions/workflows/ci.yml/badge.svg)
 
@@ -30,10 +32,10 @@ exports. The formula engine covers Google Sheets' core feature set —
 - **Navigation**: Find (⌘F) with match navigation (⌘G / ⇧⌘G), a name box for
   jump-to-cell, and view zoom from 25%–400% (⌘+/⌘−/⌘0, status-bar control,
   and trackpad pinch).
-- **Software updates**: a built-in updater (no Sparkle) driven by GitHub
-  Releases — a "Check for Updates…" menu item, a throttled silent check on
-  launch (toggleable), and an update dialog with release notes and
-  Download / Skip This Version / Remind Me Later.
+- **Software updates**: in-place auto-update via [Sparkle](https://sparkle-project.org),
+  driven by GitHub Releases — a "Check for Updates…" menu item, automatic
+  background checks, and one-click download-verify-replace-relaunch. See
+  [docs/UPDATES.md](docs/UPDATES.md) for the signing-key and release setup.
 - **Formatting**: bold/italic/underline/strikethrough, colors, alignment,
   and the number-format menu (automatic, number, percent, currency, date,
   time, scientific, plain text) backed by a full Excel format-code renderer.

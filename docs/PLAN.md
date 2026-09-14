@@ -1,7 +1,9 @@
 # SimpleSpread — Architecture & Execution Plan
 
 A native macOS spreadsheet application written entirely in Swift, built from
-scratch with **zero third-party dependencies**. Native file format is XLSX;
+scratch — the spreadsheet stack has **no third-party dependencies** (Sparkle,
+added later, is the only external library, and only for software updates).
+Native file format is XLSX;
 CSV is import/export. The formula engine targets Google Sheets' core feature
 level, not full Excel.
 
@@ -55,7 +57,7 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
 | Decision | Choice | Rationale |
 |---|---|---|
 | Project layout | SwiftPM only, no .xcodeproj | Matches questrade-mac-menu; CI is `swift build`/`swift test`; app bundle assembled by script/workflow with PlistBuddy |
-| Dependencies | None | "From scratch" requirement; ZIP via Compression framework raw DEFLATE, XML via Foundation XMLParser, UI via SwiftUI+AppKit |
+| Dependencies | Sparkle only | Spreadsheet stack is from-scratch (ZIP via Compression framework raw DEFLATE, XML via Foundation XMLParser, UI via SwiftUI+AppKit); Sparkle added later for in-place software updates (docs/UPDATES.md) |
 | Module split | 4 targets: Core / Files / UI / app shell | Everything except the ~40-line executable is a testable library |
 | Concurrency | Swift 6 language mode; engine synchronous on the document's actor | Spreadsheet recalc is CPU-bound and fast at this scale; a background-calc actor is a roadmap item, not a v1 risk |
 | Grid rendering | Custom AppKit NSView in NSScrollView, virtualized draw | SwiftUI-only grids can't hit spreadsheet interaction/performance targets; this is the industry-standard shape |
@@ -273,10 +275,12 @@ for manual Excel/Numbers/Sheets checks.
 
 Shipped since v1 core: view zoom (⌘+/⌘−/⌘0, status-bar control, pinch sync);
 Find (⌘F with match navigation, ⌘G/⇧⌘G); Finder/`open` file-association
-opening; CSV/TSV/TXT open routing with forced Save-As to XLSX; a GitHub
-Releases-based software updater (Check for Updates… menu item, throttled
-silent launch check, Download/Skip/Later dialog — no Sparkle dependency;
-needs the network-client entitlement, now in entitlements.plist).
+opening; CSV/TSV/TXT open routing with forced Save-As to XLSX; in-place
+software updates via Sparkle driven by GitHub Releases (Check for Updates…
+menu item + automatic background checks; appcast published by the release
+workflow — see docs/UPDATES.md; needs the network-client entitlement, now in
+entitlements.plist). Sparkle is the project's one third-party dependency; the
+spreadsheet stack itself remains dependency-free.
 
 Known gaps and the intended next steps, in priority order:
 
