@@ -175,6 +175,73 @@ struct DocumentTests {
         #expect(doc.zoomLevel == 1.0)
     }
 
+    @Test func findMatchesValuesAndFormulas() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("apple", at: a("A1"))
+        doc.commitInput("banana", at: a("A2"))
+        doc.commitInput("Apple pie", at: a("A3"))
+        doc.commitInput("10", at: a("B1"))
+        doc.presentFind()
+        doc.setFindQuery("apple")
+        // Case-insensitive; matches A1 and A3, in row-major order.
+        #expect(doc.findMatches == [a("A1"), a("A3")])
+        #expect(doc.findStatus == "1 of 2")
+        #expect(doc.selection.activeCell == a("A1"))
+        doc.findNext()
+        #expect(doc.selection.activeCell == a("A3"))
+        #expect(doc.findStatus == "2 of 2")
+        doc.findNext() // wraps
+        #expect(doc.selection.activeCell == a("A1"))
+        doc.findPrevious() // wraps back
+        #expect(doc.selection.activeCell == a("A3"))
+    }
+
+    @Test func findMatchesComputedFormulaValue() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("apple", at: a("A1"))
+        doc.commitInput("=A1", at: a("C1")) // displays "apple"
+        doc.setFindQuery("apple")
+        // Both the literal and the formula cell (by its displayed value) match.
+        #expect(doc.findMatches == [a("A1"), a("C1")])
+    }
+
+    @Test func findMatchesFormulaText() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("1", at: a("A1"))
+        doc.commitInput("=SUM(A1:A5)", at: a("B1"))
+        doc.setFindQuery("sum")
+        #expect(doc.findMatches == [a("B1")])
+    }
+
+    @Test func findNoResults() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("hello", at: a("A1"))
+        doc.setFindQuery("zzz")
+        #expect(doc.findMatches.isEmpty)
+        #expect(doc.findStatus == "No results")
+        doc.findNext() // no crash, no selection change
+        #expect(doc.selection.activeCell == a("A1"))
+    }
+
+    @Test func findStartsFromSelection() {
+        let doc = SpreadsheetDocument()
+        for r in 1...5 { doc.commitInput("x", at: a("A\(r)")) }
+        doc.selection.select(a("A3"))
+        doc.setFindQuery("x")
+        // First match at or after A3.
+        #expect(doc.selection.activeCell == a("A3"))
+        #expect(doc.findStatus == "3 of 5")
+    }
+
+    @Test func findScrollRequestBumps() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("target", at: a("Z40"))
+        let before = doc.scrollTick
+        doc.setFindQuery("target")
+        #expect(doc.scrollTick > before)
+        #expect(doc.selection.activeCell == a("Z40"))
+    }
+
     @Test func selectionStatistics() {
         let doc = SpreadsheetDocument()
         doc.commitInput("1", at: a("A1"))

@@ -12,6 +12,7 @@ public struct DocumentWindowView: View {
     @State private var renamingSheetID: Int?
     @State private var renameText = ""
     @State private var gridRevision = 0
+    @FocusState private var findFieldFocused: Bool
 
     public init(document: SpreadsheetDocument) {
         self.document = document
@@ -26,15 +27,95 @@ public struct DocumentWindowView: View {
             GridContainer(document: document, revision: gridRevision) {
                 syncFromDocument()
             }
+            .overlay(alignment: .topTrailing) {
+                if document.isFindPresented {
+                    findBar
+                        .padding(10)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
             Divider()
             bottomBar
         }
         .onAppear { syncFromDocument() }
         .onReceive(document.$revision) { _ in syncFromDocument() }
         .onReceive(document.$selection) { _ in syncFromDocument() }
+        .onChange(of: document.isFindPresented) { _, presented in
+            if presented {
+                DispatchQueue.main.async { findFieldFocused = true }
+            }
+        }
         .focusedSceneValue(\.spreadsheetDocument, document)
         .navigationTitle(document.displayName)
         .navigationSubtitle(document.isModified ? "— Edited" : "")
+    }
+
+    // MARK: Find bar
+
+    private var findBar: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+                .font(.system(size: 11))
+            TextField("Find in sheet", text: Binding(
+                get: { document.findQuery },
+                set: { document.setFindQuery($0) }
+            ))
+            .textFieldStyle(.plain)
+            .frame(width: 170)
+            .focused($findFieldFocused)
+            .onSubmit { document.findNext() }
+            Text(document.findStatus)
+                .font(.system(size: 11))
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 58, alignment: .trailing)
+            Divider().frame(height: 16)
+            Button { document.findPrevious() } label: {
+                Image(systemName: "chevron.up")
+            }
+            .buttonStyle(.borderless)
+            .disabled(document.findMatches.isEmpty)
+            .help("Previous match (⇧⌘G)")
+            Button { document.findNext() } label: {
+                Image(systemName: "chevron.down")
+            }
+            .buttonStyle(.borderless)
+            .disabled(document.findMatches.isEmpty)
+            .help("Next match (⌘G)")
+            Button { closeFind() } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .help("Close (Esc)")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor)))
+        .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+        .onExitCommand { closeFind() }
+    }
+
+    private func closeFind() {
+        document.dismissFind()
+        findFieldFocused = false
+        refocusGrid()
+    }
+
+    /// Return keyboard focus to the AppKit grid after the find bar closes.
+    private func refocusGrid() {
+        guard let window = NSApp.keyWindow else { return }
+        func findGrid(_ view: NSView) -> SpreadsheetGridView? {
+            if let grid = view as? SpreadsheetGridView { return grid }
+            for sub in view.subviews {
+                if let g = findGrid(sub) { return g }
+            }
+            return nil
+        }
+        if let content = window.contentView, let grid = findGrid(content) {
+            window.makeFirstResponder(grid)
+        }
     }
 
     private func syncFromDocument() {
@@ -223,6 +304,7 @@ public struct DocumentWindowView: View {
         let text = nameBoxText.trimmingCharacters(in: .whitespaces)
         if let range = CellRange(a1: text) {
             document.selection.select(range: range)
+            document.requestScrollToActiveCell()
         }
         syncFromDocument()
     }

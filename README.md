@@ -27,6 +27,9 @@ exports. The formula engine covers Google Sheets' core feature set —
   jumps, header selection and resizing with autofit, fill handle with
   formula translation, lossless internal clipboard plus TSV interop, and
   per-gesture undo — including undo of row/column/sheet operations.
+- **Navigation**: Find (⌘F) with match navigation (⌘G / ⇧⌘G), a name box for
+  jump-to-cell, and view zoom from 25%–400% (⌘+/⌘−/⌘0, status-bar control,
+  and trackpad pinch).
 - **Formatting**: bold/italic/underline/strikethrough, colors, alignment,
   and the number-format menu (automatic, number, percent, currency, date,
   time, scientific, plain text) backed by a full Excel format-code renderer.
@@ -68,5 +71,8 @@ swift run SimpleSpread # run the app directly
 ```bash
 SIMPLESPREAD_DEMO=1 swift run SimpleSpread            # seed demo content
 SIMPLESPREAD_SCREENSHOT=/tmp/win.png swift run SimpleSpread  # render window to PNG and exit
+SIMPLESPREAD_OPEN=/path/file.csv swift run SimpleSpread      # drive the real open→window flow
+SIMPLESPREAD_ZOOM=1.5 SIMPLESPREAD_DEMO=1 swift run SimpleSpread  # launch at a zoom level
+SIMPLESPREAD_FIND=term SIMPLESPREAD_DEMO=1 swift run SimpleSpread # open the find bar on a term
 SIMPLESPREAD_SAMPLE_DIR=/tmp swift test --filter SampleFileGeneration  # emit sample .xlsx/.csv
 ```

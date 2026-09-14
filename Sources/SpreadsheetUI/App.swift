@@ -44,6 +44,10 @@ public final class DocumentStore: ObservableObject {
            let zoom = Double(z) {
             doc.setZoom(CGFloat(zoom))
         }
+        if let q = ProcessInfo.processInfo.environment["SIMPLESPREAD_FIND"] {
+            doc.presentFind()
+            doc.setFindQuery(q)
+        }
         doc.undoManager.removeAllActions()
     }
 
@@ -208,6 +212,15 @@ struct FileCommands: Commands {
                 openDocument()
             }
             .keyboardShortcut("o", modifiers: .command)
+
+            Divider()
+
+            // SwiftUI doesn't always supply a working Close item for a
+            // WindowGroup with custom commands (⌘W was beeping); provide it.
+            Button("Close") {
+                NSApp.keyWindow?.performClose(nil)
+            }
+            .keyboardShortcut("w", modifiers: .command)
         }
         CommandGroup(replacing: .saveItem) {
             Button("Save") {
@@ -360,6 +373,26 @@ struct EditCommands: Commands {
             }
             .keyboardShortcut("a", modifiers: .command)
             .disabled(document == nil)
+        }
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button("Find…") {
+                document?.presentFind()
+            }
+            .keyboardShortcut("f", modifiers: .command)
+            .disabled(document == nil)
+
+            Button("Find Next") {
+                document?.findNext()
+            }
+            .keyboardShortcut("g", modifiers: .command)
+            .disabled((document?.findMatches.isEmpty ?? true))
+
+            Button("Find Previous") {
+                document?.findPrevious()
+            }
+            .keyboardShortcut("g", modifiers: [.command, .shift])
+            .disabled((document?.findMatches.isEmpty ?? true))
         }
     }
 }

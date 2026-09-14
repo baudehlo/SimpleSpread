@@ -582,6 +582,100 @@ public final class SpreadsheetDocument: ObservableObject {
         setZoom(1.0)
     }
 
+    // MARK: - Find
+
+    @Published public var isFindPresented = false
+    @Published public var findQuery = ""
+    @Published public private(set) var findMatches: [CellAddress] = []
+    @Published public private(set) var findCurrentIndex = 0
+    /// Bumped when the grid should scroll the active cell into view (find /
+    /// name-box navigation, which change selection without a key event).
+    @Published public private(set) var scrollTick = 0
+
+    public func requestScrollToActiveCell() {
+        scrollTick += 1
+    }
+
+    public func presentFind() {
+        isFindPresented = true
+        recomputeFind(preferringSelection: true)
+    }
+
+    public func dismissFind() {
+        isFindPresented = false
+    }
+
+    public func setFindQuery(_ query: String) {
+        findQuery = query
+        recomputeFind(preferringSelection: true)
+    }
+
+    /// "3 of 12" / "No results" / "" — for the find bar.
+    public var findStatus: String {
+        if findQuery.isEmpty { return "" }
+        if findMatches.isEmpty { return "No results" }
+        return "\(findCurrentIndex + 1) of \(findMatches.count)"
+    }
+
+    /// Recompute matches in the active sheet. Searches both the displayed value
+    /// and the formula text, case-insensitively.
+    public func recomputeFind(preferringSelection: Bool) {
+        let query = findQuery.lowercased()
+        guard !query.isEmpty else {
+            findMatches = []
+            findCurrentIndex = 0
+            return
+        }
+        var results: [CellAddress] = []
+        for (addr, cell) in activeSheet.cells where cellMatchesFind(cell, query: query) {
+            results.append(addr)
+        }
+        results.sort() // CellAddress is Comparable (row-major)
+        findMatches = results
+        guard !results.isEmpty else {
+            findCurrentIndex = 0
+            return
+        }
+        if preferringSelection {
+            // Start at the first match at or after the current selection.
+            let anchor = selection.activeCell
+            findCurrentIndex = results.firstIndex { $0 >= anchor } ?? 0
+        } else {
+            findCurrentIndex = min(findCurrentIndex, results.count - 1)
+        }
+        selectCurrentMatch()
+    }
+
+    private func cellMatchesFind(_ cell: Cell, query: String) -> Bool {
+        let format = workbook.style(at: cell.styleIndex).numberFormat
+        if NumberFormatEngine.displayString(for: cell.value, format: format)
+            .lowercased().contains(query) {
+            return true
+        }
+        if let formula = cell.formula, formula.lowercased().contains(query) {
+            return true
+        }
+        return false
+    }
+
+    public func findNext() {
+        guard !findMatches.isEmpty else { return }
+        findCurrentIndex = (findCurrentIndex + 1) % findMatches.count
+        selectCurrentMatch()
+    }
+
+    public func findPrevious() {
+        guard !findMatches.isEmpty else { return }
+        findCurrentIndex = (findCurrentIndex - 1 + findMatches.count) % findMatches.count
+        selectCurrentMatch()
+    }
+
+    private func selectCurrentMatch() {
+        guard findCurrentIndex < findMatches.count else { return }
+        selection.select(findMatches[findCurrentIndex])
+        requestScrollToActiveCell()
+    }
+
     // MARK: - Selection statistics (status bar)
 
     public struct SelectionStats {

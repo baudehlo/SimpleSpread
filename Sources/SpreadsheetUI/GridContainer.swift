@@ -16,6 +16,7 @@ struct GridContainer: NSViewRepresentable {
         let gridView = SpreadsheetGridView()
         weak var document: SpreadsheetDocument?
         var magnificationObservation: NSKeyValueObservation?
+        var lastScrollTick = 0
 
         /// Pinch/smart-magnify gestures change magnification directly; mirror
         /// them into the document so menus and the status bar stay in sync.
@@ -69,6 +70,11 @@ struct GridContainer: NSViewRepresentable {
             let visible = nsView.contentView.documentVisibleRect
             let center = CGPoint(x: visible.midX, y: visible.midY)
             nsView.setMagnification(document.zoomLevel, centeredAt: center)
+        }
+        // Scroll the active cell into view when asked (find / name-box jumps).
+        if context.coordinator.lastScrollTick != document.scrollTick {
+            context.coordinator.lastScrollTick = document.scrollTick
+            DispatchQueue.main.async { grid.scrollActiveCellToVisible() }
         }
     }
 }

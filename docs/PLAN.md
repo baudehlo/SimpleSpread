@@ -269,19 +269,23 @@ for manual Excel/Numbers/Sheets checks.
 
 ## 12. Status & roadmap
 
-**Everything in §1 "in scope" is implemented and tested.** Known gaps and
-the intended next steps, in priority order:
+**Everything in §1 "in scope" is implemented and tested.**
+
+Shipped since v1 core: view zoom (⌘+/⌘−/⌘0, status-bar control, pinch sync);
+Find (⌘F with match navigation, ⌘G/⇧⌘G); Finder/`open` file-association
+opening; CSV/TSV/TXT open routing with forced Save-As to XLSX.
+
+Known gaps and the intended next steps, in priority order:
 
 1. **Interop bake-off:** open generated files in real Excel/Numbers/Sheets
    and fix nits (the writer follows the researched profile; nothing beats
    the real apps).
 2. Frozen-pane and merged-cell rendering in the grid (model+file already
    round-trip).
-3. Find & replace (Cmd+F).
+3. Find & Replace (Find is done; add Replace / Replace All).
 4. Paste Special (values only), range-tiling paste.
 5. Autofill series inference (1,2→3; dates; weekday names).
 6. INDIRECT/OFFSET with dynamic dependency re-extraction per recalc.
 7. Background calculation actor for six-figure-cell workbooks.
-8. Close-window "unsaved changes" prompt; Open Recent menu; file-association
-   opening (bundle Info.plist already declares document types).
+8. Close-window "unsaved changes" prompt; Open Recent menu.
 9. Localized input parsing (decimal comma, D/M dates).
