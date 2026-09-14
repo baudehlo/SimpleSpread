@@ -158,6 +158,23 @@ struct DocumentTests {
         #expect(doc.activeSheet.value(at: a("B1")) == .number(99))
     }
 
+    @Test func zoomControls() {
+        let doc = SpreadsheetDocument()
+        #expect(doc.zoomLevel == 1.0)
+        doc.zoomIn()
+        #expect(abs(doc.zoomLevel - 1.25) < 0.0001)
+        doc.zoomOut()
+        #expect(abs(doc.zoomLevel - 1.0) < 0.0001)
+        doc.setZoom(10)
+        #expect(doc.zoomLevel == SpreadsheetDocument.zoomRange.upperBound)
+        doc.setZoom(0.01)
+        #expect(doc.zoomLevel == SpreadsheetDocument.zoomRange.lowerBound)
+        doc.zoomOut() // clamped at the floor
+        #expect(doc.zoomLevel == SpreadsheetDocument.zoomRange.lowerBound)
+        doc.resetZoom()
+        #expect(doc.zoomLevel == 1.0)
+    }
+
     @Test func selectionStatistics() {
         let doc = SpreadsheetDocument()
         doc.commitInput("1", at: a("A1"))

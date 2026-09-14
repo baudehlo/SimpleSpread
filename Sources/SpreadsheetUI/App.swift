@@ -40,6 +40,10 @@ public final class DocumentStore: ObservableObject {
         doc.selection.select(range: CellRange(a1: "D2:D8")!)
         doc.setNumberFormat(.currency)
         doc.selection.select(CellAddress(a1: "D8")!)
+        if let z = ProcessInfo.processInfo.environment["SIMPLESPREAD_ZOOM"],
+           let zoom = Double(z) {
+            doc.setZoom(CGFloat(zoom))
+        }
         doc.undoManager.removeAllActions()
     }
 
@@ -82,6 +86,7 @@ struct SimpleSpreadAppMain: App {
         .commands {
             FileCommands()
             EditCommands()
+            ViewCommands()
             InsertCommands()
             FormatCommands()
         }
@@ -287,6 +292,35 @@ struct EditCommands: Commands {
             }
             .keyboardShortcut("a", modifiers: .command)
             .disabled(document == nil)
+        }
+    }
+}
+
+struct ViewCommands: Commands {
+    @FocusedValue(\.spreadsheetDocument) var document
+
+    var body: some Commands {
+        // .toolbar placement lands these in the standard View menu.
+        CommandGroup(before: .toolbar) {
+            Button("Zoom In") {
+                document?.zoomIn()
+            }
+            .keyboardShortcut("=", modifiers: .command) // acts as the conventional ⌘+
+            .disabled(document == nil)
+
+            Button("Zoom Out") {
+                document?.zoomOut()
+            }
+            .keyboardShortcut("-", modifiers: .command)
+            .disabled(document == nil)
+
+            Button("Actual Size") {
+                document?.resetZoom()
+            }
+            .keyboardShortcut("0", modifiers: .command)
+            .disabled(document == nil)
+
+            Divider()
         }
     }
 }

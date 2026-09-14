@@ -249,10 +249,48 @@ public struct DocumentWindowView: View {
             }
             Spacer()
             statusText
-                .padding(.trailing, 12)
+            zoomControl
+                .padding(.leading, 14)
+                .padding(.trailing, 10)
         }
         .frame(height: 28)
         .background(Color(NSColor.windowBackgroundColor))
+    }
+
+    private var zoomControl: some View {
+        HStack(spacing: 2) {
+            Button {
+                document.zoomOut()
+            } label: {
+                Image(systemName: "minus.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .help("Zoom out (⌘-)")
+
+            Menu {
+                ForEach(SpreadsheetDocument.zoomPresets, id: \.self) { preset in
+                    Button("\(Int(preset * 100))%") {
+                        document.setZoom(preset)
+                    }
+                }
+            } label: {
+                Text("\(Int((document.zoomLevel * 100).rounded()))%")
+                    .font(.system(size: 11))
+                    .monospacedDigit()
+                    .frame(minWidth: 38)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Zoom level")
+
+            Button {
+                document.zoomIn()
+            } label: {
+                Image(systemName: "plus.magnifyingglass")
+            }
+            .buttonStyle(.borderless)
+            .help("Zoom in (⌘+)")
+        }
     }
 
     private func sheetTab(_ sheet: Sheet) -> some View {

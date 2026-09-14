@@ -34,6 +34,11 @@ public final class SpreadsheetDocument: ObservableObject {
     @Published public private(set) var isModified = false
     /// Incremented whenever cell content/layout changes; grid views observe it.
     @Published public private(set) var revision = 0
+    /// View zoom (1.0 = 100%). Applied as NSScrollView magnification.
+    @Published public var zoomLevel: CGFloat = 1.0
+
+    public static let zoomRange: ClosedRange<CGFloat> = 0.25...4.0
+    public static let zoomPresets: [CGFloat] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
 
     public init(workbook: Workbook? = nil) {
         let wb = workbook ?? Workbook.newDocument()
@@ -534,6 +539,27 @@ public final class SpreadsheetDocument: ObservableObject {
         registerCellUndo(snaps, actionName: "Fill")
         selection.select(range: source.union(targetRange))
         markChanged()
+    }
+
+    // MARK: - Zoom
+
+    public func setZoom(_ zoom: CGFloat) {
+        let clamped = min(max(zoom, Self.zoomRange.lowerBound), Self.zoomRange.upperBound)
+        if abs(clamped - zoomLevel) > 0.0001 {
+            zoomLevel = clamped
+        }
+    }
+
+    public func zoomIn() {
+        setZoom(zoomLevel * 1.25)
+    }
+
+    public func zoomOut() {
+        setZoom(zoomLevel / 1.25)
+    }
+
+    public func resetZoom() {
+        setZoom(1.0)
     }
 
     // MARK: - Selection statistics (status bar)
