@@ -561,6 +561,45 @@ public final class SpreadsheetDocument: ObservableObject {
         markChanged()
     }
 
+    /// Fill Down (⌘D): copy the selection's top row into the rows below it,
+    /// adjusting relative formula references. No-op on a single-row selection.
+    public func fillDown() {
+        let r = selection.range
+        guard r.rowCount > 1 else { return }
+        let topRow = CellRange(start: r.start,
+                               end: CellAddress(row: r.start.row, column: r.end.column))
+        fill(from: topRow, to: r)
+    }
+
+    /// Fill Right (⌘R): copy the selection's left column into the columns to
+    /// its right. No-op on a single-column selection.
+    public func fillRight() {
+        let r = selection.range
+        guard r.columnCount > 1 else { return }
+        let leftColumn = CellRange(start: r.start,
+                                   end: CellAddress(row: r.end.row, column: r.start.column))
+        fill(from: leftColumn, to: r)
+    }
+
+    /// Clear Formatting (⌘\): reset every selected cell to the default style,
+    /// leaving values and formulas intact.
+    public func clearFormattingInSelection() {
+        let addresses = selection.range.addresses
+        let snaps = snapshot(addresses)
+        var changed = false
+        for addr in addresses {
+            var cell = activeSheet.cell(at: addr)
+            if cell.styleIndex != 0 {
+                cell.styleIndex = 0
+                activeSheet.setCell(cell, at: addr)
+                changed = true
+            }
+        }
+        guard changed else { return }
+        registerCellUndo(snaps, actionName: "Clear Formatting")
+        markChanged()
+    }
+
     // MARK: - Zoom
 
     public func setZoom(_ zoom: CGFloat) {

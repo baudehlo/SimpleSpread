@@ -242,6 +242,70 @@ struct DocumentTests {
         #expect(doc.selection.activeCell == a("Z40"))
     }
 
+    @Test func fillDownCopiesAndAdjustsFormulas() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("10", at: a("A1"))
+        doc.commitInput("20", at: a("A2"))
+        doc.commitInput("30", at: a("A3"))
+        doc.commitInput("=A1*2", at: a("B1"))
+        // Select B1:B3 and Fill Down from the top row (B1).
+        doc.selection.select(range: CellRange(a1: "B1:B3")!)
+        doc.fillDown()
+        #expect(doc.activeSheet.cell(at: a("B2")).formula == "A2*2")
+        #expect(doc.activeSheet.cell(at: a("B3")).formula == "A3*2")
+        #expect(doc.activeSheet.value(at: a("B2")) == .number(40))
+        #expect(doc.activeSheet.value(at: a("B3")) == .number(60))
+        doc.undoManager.undo()
+        #expect(doc.activeSheet.value(at: a("B2")) == .empty)
+        #expect(doc.activeSheet.value(at: a("B1")) == .number(20)) // source kept
+    }
+
+    @Test func fillRightCopiesAndAdjustsFormulas() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("5", at: a("A1"))
+        doc.commitInput("6", at: a("B1"))
+        doc.commitInput("7", at: a("C1"))
+        doc.commitInput("=A1*10", at: a("A2"))
+        doc.selection.select(range: CellRange(a1: "A2:C2")!)
+        doc.fillRight()
+        #expect(doc.activeSheet.cell(at: a("B2")).formula == "B1*10")
+        #expect(doc.activeSheet.value(at: a("C2")) == .number(70))
+    }
+
+    @Test func fillDownSingleRowIsNoOp() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("x", at: a("A1"))
+        doc.selection.select(a("A1"))
+        doc.fillDown() // nothing to fill
+        #expect(doc.activeSheet.value(at: a("A2")) == .empty)
+    }
+
+    @Test func fillCarriesFormatting() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("1", at: a("A1"))
+        doc.selection.select(a("A1"))
+        doc.toggleBold()
+        doc.commitInput("2", at: a("A2"))
+        doc.selection.select(range: CellRange(a1: "A1:A2")!)
+        doc.fillDown()
+        #expect(doc.style(at: a("A2")).bold)
+    }
+
+    @Test func clearFormatting() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("keep me", at: a("A1"))
+        doc.selection.select(a("A1"))
+        doc.toggleBold()
+        doc.setNumberFormat(.currency)
+        #expect(doc.style(at: a("A1")).bold)
+        doc.clearFormattingInSelection()
+        #expect(!doc.style(at: a("A1")).bold)
+        #expect(doc.style(at: a("A1")).numberFormat.isGeneral)
+        #expect(doc.activeSheet.value(at: a("A1")) == .string("keep me")) // value kept
+        doc.undoManager.undo()
+        #expect(doc.style(at: a("A1")).bold) // formatting restored
+    }
+
     @Test func selectionStatistics() {
         let doc = SpreadsheetDocument()
         doc.commitInput("1", at: a("A1"))

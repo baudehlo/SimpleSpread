@@ -29,8 +29,9 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
 - **Spreadsheet-grade editing**: Excel's Ready/Enter/Edit state machine,
   type-to-replace, F2/double-click in-place editing, Cmd+arrow data-edge
   jumps, header selection and resizing with autofit, fill handle with
-  formula translation, lossless internal clipboard plus TSV interop, and
-  per-gesture undo — including undo of row/column/sheet operations.
+  formula translation, Fill Down / Fill Right (⌘D / ⌘R), Clear Formatting
+  (⌘\), lossless internal clipboard plus TSV interop, and per-gesture undo —
+  including undo of row/column/sheet operations.
 - **Navigation**: Find (⌘F) with match navigation (⌘G / ⇧⌘G), a name box for
   jump-to-cell, and view zoom from 25%–400% (⌘+/⌘−/⌘0, status-bar control,
   and trackpad pinch).

@@ -436,6 +436,19 @@ struct EditCommands: Commands {
         }
         CommandGroup(after: .pasteboard) {
             Divider()
+            Button("Fill Down") {
+                document?.fillDown()
+            }
+            .keyboardShortcut("d", modifiers: .command)
+            .disabled(document == nil)
+
+            Button("Fill Right") {
+                document?.fillRight()
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(document == nil)
+
+            Divider()
             Button("Find…") {
                 document?.presentFind()
             }
@@ -549,6 +562,10 @@ struct FormatCommands: Commands {
                 }
                 .disabled(document == nil)
             }
+            Divider()
+            Button("Clear Formatting") { document?.clearFormattingInSelection() }
+                .keyboardShortcut("\\", modifiers: .command)
+                .disabled(document == nil)
         }
     }
 }
