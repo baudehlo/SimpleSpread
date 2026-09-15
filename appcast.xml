@@ -5,6 +5,14 @@
     <link>https://raw.githubusercontent.com/baudehlo/SimpleSpread/main/appcast.xml</link>
     <description>Software updates for SimpleSpread.</description>
     <language>en</language>
+    <item>
+      <title>Version 1.2.0</title>
+      <sparkle:version>1.2.0</sparkle:version>
+      <sparkle:shortVersionString>1.2.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Tue, 15 Sep 2026 15:22:32 +0000</pubDate>
+      <enclosure url="https://github.com/baudehlo/SimpleSpread/releases/download/v1.2.0/SimpleSpread-v1.2.0.dmg" type="application/octet-stream" sparkle:edSignature="lFc7YcpqF45BPDSZEdFTnCvNRrN8VP/f+6u+fvtj8hj2+64cokr6d7J/Rk8+XDnW9Zqf+UkqNAa+HdK0zBiZAA==" length="2007195" />
+    </item>
     <!-- Release items are inserted here by scripts/update-appcast.sh from the release workflow. -->
   </channel>
 </rss>
