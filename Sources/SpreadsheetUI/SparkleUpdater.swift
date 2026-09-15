@@ -24,24 +24,36 @@ public final class SparkleUpdater: ObservableObject {
     public static let shared = SparkleUpdater()
 
     private let controller: SPUStandardUpdaterController
+    /// False in unbundled/dev/CI runs where Sparkle has no feed configured;
+    /// the updater is never started there, so it can't block on a modal error.
+    private let isConfigured: Bool
 
     /// True once Sparkle is configured and idle enough to start a check
     /// (drives the menu item's enabled state).
     @Published public private(set) var canCheckForUpdates = false
 
     private init() {
+        // Only start the updater when the bundle actually carries a Sparkle
+        // feed URL. A bare `swift run` / CI binary has no Info.plist feed, and
+        // starting Sparkle there can surface a modal "not configured" error
+        // that blocks a headless process forever.
+        isConfigured = (Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String)?
+            .isEmpty == false
         controller = SPUStandardUpdaterController(
-            startingUpdater: true,
+            startingUpdater: isConfigured,
             updaterDelegate: nil,
             userDriverDelegate: nil)
-        controller.updater.publisher(for: \.canCheckForUpdates)
-            .receive(on: RunLoop.main)
-            .assign(to: &$canCheckForUpdates)
+        if isConfigured {
+            controller.updater.publisher(for: \.canCheckForUpdates)
+                .receive(on: RunLoop.main)
+                .assign(to: &$canCheckForUpdates)
+        }
     }
 
     /// Manual "Check for Updates…" — shows Sparkle's standard UI (progress,
     /// release notes, install & relaunch, or an up-to-date/error alert).
     public func checkForUpdates() {
+        guard isConfigured else { return }
         controller.updater.checkForUpdates()
     }
 

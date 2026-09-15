@@ -30,10 +30,12 @@ jobs:
       # Warn-only: runner GUI-session quirks must not mask build/test signal.
       - name: Headless render smoke test
         continue-on-error: true
+        timeout-minutes: 8
         run: |
           swift build -c release
+          # Hard cap the launch so a GUI/updater hiccup can never wedge the job.
           SIMPLESPREAD_SCREENSHOT="$RUNNER_TEMP/window.png" SIMPLESPREAD_DEMO=1 \
-            .build/release/SimpleSpread || true
+            timeout 60 .build/release/SimpleSpread || true
           if [ -s "$RUNNER_TEMP/window.png" ]; then
             echo "App rendered a $(stat -f%z "$RUNNER_TEMP/window.png") byte window capture"
           else
