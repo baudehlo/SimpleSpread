@@ -28,14 +28,18 @@ jobs:
 
       # Renders the real app window to a PNG via the app's self-capture hook.
       # Warn-only: runner GUI-session quirks must not mask build/test signal.
+      # continue-on-error + a step timeout are the safety net: the app
+      # self-terminates via the screenshot hook (~2s), and Sparkle stays inert
+      # in this unbundled binary, so it can't wedge. The step timeout is a
+      # GitHub-native hard cap (no reliance on a `timeout` binary, which macOS
+      # runners don't ship).
       - name: Headless render smoke test
         continue-on-error: true
-        timeout-minutes: 8
+        timeout-minutes: 5
         run: |
           swift build -c release
-          # Hard cap the launch so a GUI/updater hiccup can never wedge the job.
           SIMPLESPREAD_SCREENSHOT="$RUNNER_TEMP/window.png" SIMPLESPREAD_DEMO=1 \
-            timeout 60 .build/release/SimpleSpread || true
+            .build/release/SimpleSpread || true
           if [ -s "$RUNNER_TEMP/window.png" ]; then
             echo "App rendered a $(stat -f%z "$RUNNER_TEMP/window.png") byte window capture"
           else
