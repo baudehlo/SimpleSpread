@@ -95,6 +95,22 @@ struct DocumentTests {
         #expect(doc.activeSheet.value(at: a("A1")) == .string("x"))
     }
 
+    @Test func toggleStrikethrough() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("x", at: a("A1"))
+        doc.selection.select(a("A1"))
+        doc.toggleStrikethrough()
+        #expect(doc.style(at: a("A1")).strikethrough)
+        doc.toggleStrikethrough()
+        #expect(!doc.style(at: a("A1")).strikethrough)
+        // Independent of the other type toggles.
+        doc.toggleBold()
+        doc.toggleStrikethrough()
+        #expect(doc.style(at: a("A1")).bold && doc.style(at: a("A1")).strikethrough)
+        doc.undoManager.undo()
+        #expect(!doc.style(at: a("A1")).strikethrough)
+    }
+
     @Test func styleUndo() {
         let doc = SpreadsheetDocument()
         doc.commitInput("x", at: a("A1"))

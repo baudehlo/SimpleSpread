@@ -142,6 +142,8 @@ public struct DocumentWindowView: View {
                     .keyboardShortcut("i", modifiers: .command)
                 styleToggle("underline", active: activeStyle.underline) { document.toggleUnderline() }
                     .keyboardShortcut("u", modifiers: .command)
+                styleToggle("strikethrough", active: activeStyle.strikethrough) { document.toggleStrikethrough() }
+                    .keyboardShortcut("x", modifiers: [.command, .shift])
             }
             Divider().frame(height: 16)
             HStack(spacing: 2) {

@@ -555,6 +555,9 @@ struct FormatCommands: Commands {
                 .disabled(document == nil)
             Button("Underline") { document?.toggleUnderline() }
                 .disabled(document == nil)
+            Button("Strikethrough") { document?.toggleStrikethrough() }
+                .keyboardShortcut("x", modifiers: [.command, .shift])
+                .disabled(document == nil)
             Divider()
             ForEach(DocumentWindowView.formatChoices, id: \.0) { name, format in
                 Button(name) {

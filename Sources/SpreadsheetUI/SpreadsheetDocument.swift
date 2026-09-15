@@ -296,6 +296,11 @@ public final class SpreadsheetDocument: ObservableObject {
         applyStyleToSelection("Underline") { $0.underline = target }
     }
 
+    public func toggleStrikethrough() {
+        let target = !style(at: selection.activeCell).strikethrough
+        applyStyleToSelection("Strikethrough") { $0.strikethrough = target }
+    }
+
     public func setNumberFormat(_ format: NumberFormat) {
         applyStyleToSelection("Number Format") { $0.numberFormat = format }
     }
