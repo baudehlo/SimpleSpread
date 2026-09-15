@@ -13,5 +13,13 @@
     <!-- Outgoing connections for the GitHub Releases update check. -->
     <key>com.apple.security.network.client</key>
     <true/>
+    <!-- Sparkle: allow the sandboxed app to reach its installer/status XPC
+         services (names are <bundle-id>-spki / -spks). Required for in-place
+         updates or Sparkle fails with "error launching the installer". -->
+    <key>com.apple.security.temporary-exception.mach-lookup.global-name</key>
+    <array>
+        <string>com.kikiplan.simplespread-spks</string>
+        <string>com.kikiplan.simplespread-spki</string>
+    </array>
 </dict>
 </plist>

@@ -37,6 +37,9 @@ set_key() { /usr/libexec/PlistBuddy -c "Delete :$1" "${PLIST}" 2>/dev/null || tr
 set_key "SUFeedURL"              "string ${FEED_URL}"
 set_key "SUEnableAutomaticChecks" "bool true"
 set_key "SUScheduledCheckInterval" "integer 86400"
+# Mandatory for sandboxed apps: launch Sparkle's Installer XPC service to
+# perform the in-place update (paired with the mach-lookup entitlements).
+set_key "SUEnableInstallerLauncherService" "bool true"
 if [[ -n "${PUBLIC_KEY}" ]]; then
   set_key "SUPublicEDKey" "string ${PUBLIC_KEY}"
   echo "==> SUPublicEDKey set"
