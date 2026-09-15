@@ -196,11 +196,25 @@ jobs:
           cp -R "${APP_NAME}.app" "$STAGING/"
           ln -s /Applications "$STAGING/Applications"
 
-          hdiutil create \
-            -volname "${APP_NAME}" \
-            -srcfolder "$STAGING" \
-            -ov -format UDZO \
-            "$DMG_NAME"
+          # hdiutil intermittently fails with "Resource busy" on CI runners
+          # (Spotlight/volume race), so retry a few times.
+          for attempt in 1 2 3 4 5; do
+            if hdiutil create \
+                 -volname "${APP_NAME}" \
+                 -srcfolder "$STAGING" \
+                 -fs HFS+ \
+                 -ov -format UDZO \
+                 "$DMG_NAME"; then
+              echo "DMG created on attempt ${attempt}."
+              break
+            fi
+            if [[ ${attempt} -eq 5 ]]; then
+              echo "hdiutil failed after ${attempt} attempts" >&2
+              exit 1
+            fi
+            echo "hdiutil attempt ${attempt} failed (Resource busy?); retrying in 15s…"
+            sleep 15
+          done
 
           if [[ -n "${APPLE_CERTIFICATE:-}" && -n "${APPLE_ID:-}" ]]; then
             echo "Notarizing DMG..."
