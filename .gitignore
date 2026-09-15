@@ -10,3 +10,4 @@ DerivedData/
 /*.dmg
 /AppIcon.icns
 /AppIcon.iconset
+.env

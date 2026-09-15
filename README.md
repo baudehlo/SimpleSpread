@@ -9,6 +9,8 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
 
 ![CI](https://github.com/baudehlo/SimpleSpread/actions/workflows/ci.yml/badge.svg)
 
+![SimpleSpread](docs/screenshot.png)
+
 ## Features
 
 - **XLSX native**: reads and writes OOXML SpreadsheetML interoperable with
@@ -32,6 +34,9 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
 - **Navigation**: Find (⌘F) with match navigation (⌘G / ⇧⌘G), a name box for
   jump-to-cell, and view zoom from 25%–400% (⌘+/⌘−/⌘0, status-bar control,
   and trackpad pinch).
+- **File handling**: Open Recent (File menu) that actually reopens files under
+  the sandbox via security-scoped bookmarks, Finder/`open` file association,
+  and CSV/TSV/TXT import that forces Save-As to XLSX.
 - **Software updates**: in-place auto-update via [Sparkle](https://sparkle-project.org),
   driven by GitHub Releases — a "Check for Updates…" menu item, automatic
   background checks, and one-click download-verify-replace-relaunch. See

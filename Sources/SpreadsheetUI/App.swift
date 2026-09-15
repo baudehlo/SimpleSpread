@@ -90,6 +90,7 @@ struct SimpleSpreadAppMain: App {
                     guard let url = note.object as? URL else { return }
                     do {
                         let doc = try SpreadsheetDocument.open(url: url)
+                        RecentFilesManager.shared.record(url)
                         openWindow(value: DocumentStore.shared.register(doc))
                     } catch {
                         let alert = NSAlert()
@@ -194,6 +195,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Relinquish security-scoped resources opened via Open Recent.
+        MainActor.assumeIsolated { RecentFilesManager.shared.releaseAllScopes() }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
@@ -226,6 +232,7 @@ struct AppInfoCommands: Commands {
 struct FileCommands: Commands {
     @FocusedValue(\.spreadsheetDocument) var document
     @Environment(\.openWindow) private var openWindow
+    @ObservedObject private var recent = RecentFilesManager.shared
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -238,6 +245,20 @@ struct FileCommands: Commands {
                 openDocument()
             }
             .keyboardShortcut("o", modifiers: .command)
+
+            Menu("Open Recent") {
+                ForEach(recent.entries, id: \.path) { entry in
+                    Button(entry.displayName) {
+                        openRecent(entry)
+                    }
+                    .disabled(!entry.exists)
+                }
+                if !recent.entries.isEmpty {
+                    Divider()
+                    Button("Clear Menu") { recent.clear() }
+                }
+            }
+            .disabled(recent.entries.isEmpty)
 
             Divider()
 
@@ -291,11 +312,23 @@ struct FileCommands: Commands {
         NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
     }
 
+    @MainActor private func openRecent(_ entry: RecentEntry) {
+        guard let url = RecentFilesManager.shared.urlForOpening(entry) else {
+            let alert = NSAlert()
+            alert.messageText = "Can’t open “\(entry.displayName)”"
+            alert.informativeText = "The file may have been moved, renamed, or deleted."
+            alert.runModal()
+            return
+        }
+        NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
+    }
+
     @MainActor private func save(as forceAs: Bool) {
         guard let document else { return }
         if let url = document.fileURL, !forceAs {
             do {
                 try document.save(to: url)
+                RecentFilesManager.shared.record(url)
             } catch {
                 presentError(error, message: "Could not save")
             }
@@ -308,6 +341,7 @@ struct FileCommands: Commands {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             try document.save(to: url)
+            RecentFilesManager.shared.record(url)
         } catch {
             presentError(error, message: "Could not save")
         }

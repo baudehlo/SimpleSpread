@@ -275,7 +275,8 @@ for manual Excel/Numbers/Sheets checks.
 
 Shipped since v1 core: view zoom (⌘+/⌘−/⌘0, status-bar control, pinch sync);
 Find (⌘F with match navigation, ⌘G/⇧⌘G); Finder/`open` file-association
-opening; CSV/TSV/TXT open routing with forced Save-As to XLSX; in-place
+opening; File → Open Recent (security-scoped bookmarks so a sandboxed app can
+truly reopen files, not just list names); CSV/TSV/TXT open routing with forced Save-As to XLSX; in-place
 software updates via Sparkle driven by GitHub Releases (Check for Updates…
 menu item + automatic background checks; appcast published by the release
 workflow — see docs/UPDATES.md; needs the network-client entitlement, now in
@@ -294,5 +295,5 @@ Known gaps and the intended next steps, in priority order:
 5. Autofill series inference (1,2→3; dates; weekday names).
 6. INDIRECT/OFFSET with dynamic dependency re-extraction per recalc.
 7. Background calculation actor for six-figure-cell workbooks.
-8. Close-window "unsaved changes" prompt; Open Recent menu.
+8. Close-window "unsaved changes" prompt.
 9. Localized input parsing (decimal comma, D/M dates).
