@@ -45,6 +45,7 @@ public struct DocumentWindowView: View {
                 DispatchQueue.main.async { findFieldFocused = true }
             }
         }
+        .background(DocumentWindowHook(document: document))
         .focusedSceneValue(\.spreadsheetDocument, document)
         .navigationTitle(document.displayName)
         .navigationSubtitle(document.isModified ? "— Edited" : "")

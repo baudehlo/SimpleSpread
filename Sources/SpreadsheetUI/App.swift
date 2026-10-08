@@ -200,6 +200,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated { RecentFilesManager.shared.releaseAllScopes() }
     }
 
+    /// Quit with unsaved documents: ask before throwing edits away. The
+    /// headless screenshot/open hooks quit on their own and must never block.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let env = ProcessInfo.processInfo.environment
+        if env["SIMPLESPREAD_SCREENSHOT"] != nil || env["SIMPLESPREAD_OPEN"] != nil {
+            return .terminateNow
+        }
+        return MainActor.assumeIsolated {
+            if DocumentSaving.modifiedDocumentWindows().isEmpty { return .terminateNow }
+            DocumentSaving.reviewBeforeQuit { ok in
+                sender.reply(toApplicationShouldTerminate: ok)
+            }
+            return .terminateLater
+        }
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
@@ -325,26 +341,7 @@ struct FileCommands: Commands {
 
     @MainActor private func save(as forceAs: Bool) {
         guard let document else { return }
-        if let url = document.fileURL, !forceAs {
-            do {
-                try document.save(to: url)
-                RecentFilesManager.shared.record(url)
-            } catch {
-                presentError(error, message: "Could not save")
-            }
-            return
-        }
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [xlsxType]
-        // Pre-fill the source name (e.g. pricing.xlsx after opening pricing.csv).
-        panel.nameFieldStringValue = document.saveFileName
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try document.save(to: url)
-            RecentFilesManager.shared.record(url)
-        } catch {
-            presentError(error, message: "Could not save")
-        }
+        DocumentSaving.save(document, as: forceAs, in: NSApp.keyWindow)
     }
 
     @MainActor private func importCSV() {

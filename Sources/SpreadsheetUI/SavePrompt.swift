@@ -1,0 +1,197 @@
+import SwiftUI
+import AppKit
+import SpreadsheetCore
+
+/// Saving plus the standard macOS "Do you want to save the changes…?" flow
+/// for closing a window or quitting with unsaved edits. Prompts are sheets on
+/// the document's window when there is one, app-modal otherwise.
+@MainActor
+enum DocumentSaving {
+    /// Save in place, or ask for a location when the document has no file
+    /// yet (or `forceAs`). `completion(true)` only once the file is written.
+    static func save(_ document: SpreadsheetDocument, as forceAs: Bool = false,
+                     in window: NSWindow?, completion: @escaping (Bool) -> Void = { _ in }) {
+        if let url = document.fileURL, !forceAs {
+            completion(write(document, to: url))
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [xlsxType]
+        // Pre-fill the source name (e.g. pricing.xlsx after opening pricing.csv).
+        panel.nameFieldStringValue = document.saveFileName
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .OK, let url = panel.url else { return completion(false) }
+            completion(write(document, to: url))
+        }
+        if let window {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(panel.runModal())
+        }
+    }
+
+    private static func write(_ document: SpreadsheetDocument, to url: URL) -> Bool {
+        do {
+            try document.save(to: url)
+            RecentFilesManager.shared.record(url)
+            return true
+        } catch {
+            let alert = NSAlert()
+            alert.messageText = "Could not save"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
+            return false
+        }
+    }
+
+    /// Ask whether to save unsaved changes. `completion(true)` means the
+    /// document may now go away (saved, or the user chose Don't Save);
+    /// false means Cancel (or a failed/cancelled save).
+    static func confirmDiscard(_ document: SpreadsheetDocument, in window: NSWindow?,
+                               completion: @escaping (Bool) -> Void) {
+        guard document.isModified else { return completion(true) }
+        let alert = NSAlert()
+        alert.messageText = "Do you want to save the changes made to the document “\(document.displayName)”?"
+        alert.informativeText = "Your changes will be lost if you don’t save them."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Cancel")
+        let dontSave = alert.addButton(withTitle: "Don’t Save")
+        dontSave.keyEquivalent = "d"
+        dontSave.keyEquivalentModifierMask = .command
+        let handle: (NSApplication.ModalResponse) -> Void = { response in
+            switch response {
+            case .alertFirstButtonReturn:
+                // Take the alert sheet down before the save panel sheet goes up.
+                alert.window.orderOut(nil)
+                save(document, in: window, completion: completion)
+            case .alertThirdButtonReturn:
+                completion(true)
+            default:
+                completion(false)
+            }
+        }
+        if let window {
+            window.makeKeyAndOrderFront(nil)
+            alert.beginSheetModal(for: window, completionHandler: handle)
+        } else {
+            handle(alert.runModal())
+        }
+    }
+
+    /// Windows whose documents have unsaved changes, front-most first.
+    static func modifiedDocumentWindows() -> [(NSWindow, SpreadsheetDocument)] {
+        NSApp.orderedWindows.compactMap { window in
+            guard window.isVisible || window.isMiniaturized,
+                  let proxy = window.delegate as? DocumentWindowDelegate,
+                  let document = proxy.document, document.isModified else { return nil }
+            return (window, document)
+        }
+    }
+
+    /// Quit-time review (applicationShouldTerminate). One modified document
+    /// gets the usual save prompt; several get Finder-style "Review Changes…
+    /// / Cancel / Discard Changes" first, then a prompt per document.
+    static func reviewBeforeQuit(completion: @escaping (Bool) -> Void) {
+        let pending = modifiedDocumentWindows()
+        if pending.count > 1 {
+            let alert = NSAlert()
+            alert.messageText = "You have \(pending.count) SimpleSpread documents with unsaved changes. Do you want to review these changes before quitting?"
+            alert.informativeText = "If you don’t review your documents, all your changes will be lost."
+            alert.addButton(withTitle: "Review Changes…")
+            alert.addButton(withTitle: "Cancel")
+            alert.addButton(withTitle: "Discard Changes")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn: break
+            case .alertThirdButtonReturn: return completion(true)
+            default: return completion(false)
+            }
+        }
+        func next(_ remaining: ArraySlice<(NSWindow, SpreadsheetDocument)>) {
+            guard let (window, document) = remaining.first else { return completion(true) }
+            confirmDiscard(document, in: window) { ok in
+                ok ? next(remaining.dropFirst()) : completion(false)
+            }
+        }
+        next(pending[...])
+    }
+}
+
+/// Sits in front of SwiftUI's own window delegate to intercept
+/// windowShouldClose; every other delegate message is forwarded untouched.
+@MainActor
+final class DocumentWindowDelegate: NSObject, NSWindowDelegate {
+    weak var document: SpreadsheetDocument?
+    /// nonisolated: read from the NSObject forwarding overrides; only ever
+    /// touched on the main thread (AppKit delegate traffic).
+    nonisolated(unsafe) private weak var original: NSWindowDelegate?
+    /// Set once the user has answered the prompt, so the re-issued close goes through.
+    private var closeConfirmed = false
+
+    init(document: SpreadsheetDocument, original: NSWindowDelegate?) {
+        self.document = document
+        self.original = original
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        let originalAllows = original?.windowShouldClose?(sender) ?? true
+        guard originalAllows, !closeConfirmed, let document, document.isModified else {
+            return originalAllows
+        }
+        DocumentSaving.confirmDiscard(document, in: sender) { [weak self] ok in
+            guard ok else { return }
+            self?.closeConfirmed = true
+            // The sheet is still attached while its completion runs, and a
+            // window with a sheet refuses to close; retry on the next turn.
+            DispatchQueue.main.async { sender.performClose(nil) }
+        }
+        return false
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || (original?.responds(to: aSelector) ?? false)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        if original?.responds(to: aSelector) == true { return original }
+        return super.forwardingTarget(for: aSelector)
+    }
+}
+
+/// Invisible view that finds its NSWindow, installs DocumentWindowDelegate,
+/// and mirrors isModified into the close button's "edited" dot.
+struct DocumentWindowHook: NSViewRepresentable {
+    @ObservedObject var document: SpreadsheetDocument
+
+    final class HookView: NSView {
+        var document: SpreadsheetDocument?
+        private var proxy: DocumentWindowDelegate?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            install()
+        }
+
+        func install() {
+            guard let window, let document else { return }
+            // SwiftUI may swap its delegate; re-wrap whenever we're not in front.
+            if let proxy, window.delegate === proxy {
+                proxy.document = document
+            } else {
+                proxy = DocumentWindowDelegate(document: document, original: window.delegate)
+                window.delegate = proxy
+            }
+            window.isDocumentEdited = document.isModified
+        }
+    }
+
+    func makeNSView(context: Context) -> HookView {
+        let view = HookView()
+        view.document = document
+        return view
+    }
+
+    func updateNSView(_ view: HookView, context: Context) {
+        view.document = document
+        view.install()
+    }
+}
