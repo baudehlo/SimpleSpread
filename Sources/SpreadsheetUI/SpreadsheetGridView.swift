@@ -339,6 +339,13 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
     override func mouseDown(with event: NSEvent) {
         guard let document else { return }
+        // Control-click arrives as a plain mouseDown; route it to the context menu.
+        if event.modifierFlags.contains(.control) {
+            if let menu = menu(for: event) {
+                NSMenu.popUpContextMenu(menu, with: event, for: self)
+            }
+            return
+        }
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
         let visible = enclosingScrollView?.documentVisibleRect ?? bounds
@@ -505,6 +512,76 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         pendingFillTarget = nil
         dragMode = .none
         needsDisplay = true
+    }
+
+    // MARK: Context menu
+
+    /// Right-click on a row/column header: insert or delete rows/columns.
+    /// Like Excel, clicking outside the current selection selects that
+    /// row/column first; clicking inside it acts on the whole selection.
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let document else { return nil }
+        let point = convert(event.locationInWindow, from: nil)
+        let visible = enclosingScrollView?.documentVisibleRect ?? bounds
+        let l = layout
+        let inColumnHeader = point.y < visible.minY + GridLayout.headerHeight
+        let inRowHeader = point.x < visible.minX + GridLayout.headerWidth
+        guard inColumnHeader != inRowHeader else { return nil }
+
+        commitEditorIfNeeded()
+        let content = contentPoint(point)
+        let menu = NSMenu()
+
+        if inRowHeader {
+            let row = l.row(atY: content.y)
+            var range = document.selection.range
+            if !(range.start.row...range.end.row).contains(row) {
+                range = CellRange(start: CellAddress(row: row, column: 0),
+                                  end: CellAddress(row: row, column: l.columnCount - 1))
+                document.selection.select(range: range, active: CellAddress(row: row, column: 0))
+                stateChanged()
+            }
+            let start = range.start.row, end = range.end.row, count = range.rowCount
+            let noun = count == 1 ? "Row" : "\(count) Rows"
+            menu.addItem(ActionMenuItem("Insert \(noun) Above") { [weak self] in
+                self?.document?.insertRows(at: start, count: count)
+                self?.stateChanged()
+            })
+            menu.addItem(ActionMenuItem("Insert \(noun) Below") { [weak self] in
+                self?.document?.insertRows(at: end + 1, count: count)
+                self?.stateChanged()
+            })
+            menu.addItem(.separator())
+            menu.addItem(ActionMenuItem("Delete \(noun)") { [weak self] in
+                self?.document?.deleteRows(at: start, count: count)
+                self?.stateChanged()
+            })
+        } else {
+            let col = l.column(atX: content.x)
+            var range = document.selection.range
+            if !(range.start.column...range.end.column).contains(col) {
+                range = CellRange(start: CellAddress(row: 0, column: col),
+                                  end: CellAddress(row: l.rowCount - 1, column: col))
+                document.selection.select(range: range, active: CellAddress(row: 0, column: col))
+                stateChanged()
+            }
+            let start = range.start.column, end = range.end.column, count = range.columnCount
+            let noun = count == 1 ? "Column" : "\(count) Columns"
+            menu.addItem(ActionMenuItem("Insert \(noun) Left") { [weak self] in
+                self?.document?.insertColumns(at: start, count: count)
+                self?.stateChanged()
+            })
+            menu.addItem(ActionMenuItem("Insert \(noun) Right") { [weak self] in
+                self?.document?.insertColumns(at: end + 1, count: count)
+                self?.stateChanged()
+            })
+            menu.addItem(.separator())
+            menu.addItem(ActionMenuItem("Delete \(noun)") { [weak self] in
+                self?.document?.deleteColumns(at: start, count: count)
+                self?.stateChanged()
+            })
+        }
+        return menu
     }
 
     override func resetCursorRects() {
@@ -788,5 +865,25 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 return false
             }
         }
+    }
+}
+
+/// A menu item that runs a closure (keeps context-menu code free of @objc selectors).
+@MainActor
+private final class ActionMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(_ title: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(run), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func run() {
+        handler()
     }
 }
