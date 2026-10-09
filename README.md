@@ -52,7 +52,7 @@ Requires Xcode 16+ on macOS 14+.
 
 ```bash
 swift build            # debug build
-swift test             # 312 tests
+swift test             # 343 tests
 swift run SimpleSpread # run the app directly
 ./scripts/build-app.sh # assemble SimpleSpread.app + DMG (ad-hoc signed)
 ```

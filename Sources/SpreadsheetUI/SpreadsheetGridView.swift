@@ -95,7 +95,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let selection = document.selection
         let selectionRange = selection.range
 
-        // --- Cell backgrounds & content ---
+        // --- Cell backgrounds ---
         for row in rows {
             for col in cols {
                 let addr = CellAddress(row: row, column: col)
@@ -112,8 +112,25 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                     SpreadsheetGridView.selectionFill.setFill()
                     rect.fill()
                 }
-                if !cell.value.isEmpty {
-                    drawCellText(cell: cell, style: style, in: rect)
+            }
+        }
+
+        // --- Cell text ---
+        // Drawn after every background so text that spills into an empty
+        // neighbour (Excel-style overflow) is not painted over by that
+        // neighbour's fill. A spilled run hides the grid lines inside it.
+        var hiddenBoundaries: [Int: Set<Int>] = [:]
+        for row in rows {
+            for col in textSourceColumns(row: row, visible: cols, layout: l) {
+                let addr = CellAddress(row: row, column: col)
+                let cell = document.activeSheet.cell(at: addr)
+                guard !cell.value.isEmpty else { continue }
+                let style = document.workbook.style(at: cell.styleIndex)
+                let span = drawCellText(cell: cell, style: style, at: addr, layout: l)
+                if span.count > 1 {
+                    for boundary in (span.lowerBound + 1)...span.upperBound {
+                        hiddenBoundaries[row, default: []].insert(boundary)
+                    }
                 }
             }
         }
@@ -122,10 +139,36 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         SpreadsheetGridView.gridLineColor.setStroke()
         let path = NSBezierPath()
         path.lineWidth = 1
+        let lineTop = max(visible.minY, contentOrigin.y)
+        let lineBottom = min(visible.maxY, contentOrigin.y + l.totalHeight)
+        // Row tops for the visible rows, so vertical lines can skip the rows
+        // where overflowing text runs across a boundary.
+        var rowTops: [CGFloat] = []
+        var rowTop = contentOrigin.y + l.yOffset(ofRow: rows.lowerBound)
+        for row in rows {
+            rowTops.append(rowTop)
+            rowTop += l.rowHeight(row)
+        }
         var x = contentOrigin.x + l.xOffset(ofColumn: cols.lowerBound)
         for col in cols.lowerBound...(cols.upperBound + 1) {
-            path.move(to: CGPoint(x: x, y: max(visible.minY, contentOrigin.y)))
-            path.line(to: CGPoint(x: x, y: min(visible.maxY, contentOrigin.y + l.totalHeight)))
+            if hiddenBoundaries.isEmpty {
+                path.move(to: CGPoint(x: x, y: lineTop))
+                path.line(to: CGPoint(x: x, y: lineBottom))
+            } else {
+                var segmentStart: CGFloat? = lineTop
+                for (index, row) in rows.enumerated() where hiddenBoundaries[row]?.contains(col) == true {
+                    let top = max(lineTop, rowTops[index])
+                    if let start = segmentStart, top > start {
+                        path.move(to: CGPoint(x: x, y: start))
+                        path.line(to: CGPoint(x: x, y: top))
+                    }
+                    segmentStart = rowTops[index] + l.rowHeight(row)
+                }
+                if let start = segmentStart, lineBottom > start {
+                    path.move(to: CGPoint(x: x, y: start))
+                    path.line(to: CGPoint(x: x, y: lineBottom))
+                }
+            }
             if col <= cols.upperBound { x += l.columnWidth(col) }
         }
         var y = contentOrigin.y + l.yOffset(ofRow: rows.lowerBound)
@@ -174,11 +217,43 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                     selectionRange: selectionRange)
     }
 
-    private func drawCellText(cell: Cell, style: CellStyle, in rect: CGRect) {
-        guard let document else { return }
+    /// The columns whose text can show in `row`: every visible column, plus
+    /// the nearest non-empty cell on each side, whose text may spill into view.
+    private func textSourceColumns(row: Int, visible cols: ClosedRange<Int>,
+                                   layout l: GridLayout) -> ClosedRange<Int> {
+        guard let sheet = document?.activeSheet else { return cols }
+        let scanLimit = 256
+        var first = cols.lowerBound
+        var c = cols.lowerBound - 1
+        while c >= max(0, cols.lowerBound - scanLimit) {
+            if !sheet.cell(at: CellAddress(row: row, column: c)).value.isEmpty {
+                first = c
+                break
+            }
+            c -= 1
+        }
+        var last = cols.upperBound
+        c = cols.upperBound + 1
+        while c < min(l.columnCount, cols.upperBound + 1 + scanLimit) {
+            if !sheet.cell(at: CellAddress(row: row, column: c)).value.isEmpty {
+                last = c
+                break
+            }
+            c += 1
+        }
+        return first...last
+    }
+
+    /// Draws a cell's text and returns the columns it covered (more than one
+    /// when non-wrapped text spills into empty neighbours, as in Excel).
+    @discardableResult
+    private func drawCellText(cell: Cell, style: CellStyle, at address: CellAddress,
+                              layout l: GridLayout) -> ClosedRange<Int> {
+        let own = address.column...address.column
+        guard let document else { return own }
+        let rect = cellRect(address, layout: l)
         let text = NumberFormatEngine.displayString(for: cell.value, format: style.numberFormat)
-        guard !text.isEmpty else { return }
-        _ = document
+        guard !text.isEmpty else { return own }
 
         var font = NSFont(name: style.fontName ?? CellStyle.defaultFontName,
                           size: style.fontSize ?? CellStyle.defaultFontSize)
@@ -214,22 +289,63 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         paragraph.alignment = alignment
         attributes[.paragraphStyle] = paragraph
 
-        let inset = rect.insetBy(dx: 3, dy: 2)
+        let horizontalInset: CGFloat = 3
+        let inset = rect.insetBy(dx: horizontalInset, dy: 2)
         let attributed = NSAttributedString(string: text, attributes: attributes)
-        let textHeight = attributed.size().height
+        let textSize = attributed.size()
         var drawRect = inset
         if !style.wrapText {
             // Vertical alignment for single-line content.
             switch style.verticalAlignment {
             case .top: break
-            case .middle: drawRect.origin.y += max(0, (inset.height - textHeight) / 2)
-            case .bottom: drawRect.origin.y += max(0, inset.height - textHeight)
+            case .middle: drawRect.origin.y += max(0, (inset.height - textSize.height) / 2)
+            case .bottom: drawRect.origin.y += max(0, inset.height - textSize.height)
             }
-            drawRect.size.height = min(inset.height, textHeight)
+            drawRect.size.height = min(inset.height, textSize.height)
         }
-        // .usesLineFragmentOrigin is required for rect-based drawing; without
-        // it the origin is interpreted as a text BASELINE.
+
+        // Only text overflows. Numbers, booleans and errors stay in their cell.
+        var span = own
+        if !style.wrapText, case .string = cell.value {
+            let needed = ceil(textSize.width) + 2 * horizontalInset + 1
+            let direction: TextOverflow.Direction
+            switch alignment {
+            case .right: direction = .left
+            case .center: direction = .both
+            default: direction = .right
+            }
+            let sheet = document.activeSheet
+            span = TextOverflow.span(
+                column: address.column, neededWidth: needed, direction: direction,
+                columnCount: l.columnCount,
+                columnWidth: { l.columnWidth($0) },
+                isEmpty: { sheet.cell(at: CellAddress(row: address.row, column: $0)).value.isEmpty })
+        }
+
+        if span == own {
+            // .usesLineFragmentOrigin is required for rect-based drawing;
+            // without it the origin is interpreted as a text BASELINE.
+            attributed.draw(with: drawRect, options: [.usesLineFragmentOrigin])
+            return own
+        }
+
+        // Spilled text: lay it out at its full width, anchored the way its
+        // alignment says, and clip it to the run of cells it may use.
+        let first = cellRect(CellAddress(row: address.row, column: span.lowerBound), layout: l)
+        let last = cellRect(CellAddress(row: address.row, column: span.upperBound), layout: l)
+        let spanRect = first.union(last)
+        let fullWidth = ceil(textSize.width) + 1
+        switch alignment {
+        case .right: drawRect.origin.x = inset.maxX - fullWidth
+        case .center: drawRect.origin.x = rect.midX - fullWidth / 2
+        default: break
+        }
+        drawRect.size.width = fullWidth
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: spanRect.insetBy(dx: 1, dy: 0)).setClip()
         attributed.draw(with: drawRect, options: [.usesLineFragmentOrigin])
+        NSGraphicsContext.restoreGraphicsState()
+        return span
     }
 
     private func drawHeaders(layout l: GridLayout, visible: CGRect,
@@ -297,6 +413,17 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             tick.line(to: CGPoint(x: rect.maxX, y: rect.maxY))
             tick.stroke()
         }
+
+        // Header edges. When the sheet is scrolled, part of a column sits
+        // right next to the row headers; without these lines that slice of
+        // cells looked like part of the header (most visible when zoomed).
+        SpreadsheetGridView.gridLineColor.setStroke()
+        let edges = NSBezierPath()
+        edges.move(to: CGPoint(x: rowStrip.maxX, y: visible.minY))
+        edges.line(to: CGPoint(x: rowStrip.maxX, y: visible.maxY))
+        edges.move(to: CGPoint(x: visible.minX, y: colStrip.maxY))
+        edges.line(to: CGPoint(x: visible.maxX, y: colStrip.maxY))
+        edges.stroke()
 
         // Corner (select-all) box.
         let corner = CGRect(x: visible.minX, y: visible.minY,

@@ -64,12 +64,19 @@ struct GridContainer: NSViewRepresentable {
         grid.document = document
         grid.onStateChange = onStateChange
         grid.refreshSize()
-        // Apply document zoom (menu / status bar) to the scroll view, keeping
-        // the visible center stable.
+        // Apply document zoom (menu / status bar) to the scroll view. Keep the
+        // TOP-LEFT of the view fixed, as Excel and Numbers do: zooming about
+        // the centre pushed column A and rows 1-2 off screen from A1.
+        // (Pinch gestures set magnification directly and zoom about the
+        // pointer; they do not come through here.)
         if abs(nsView.magnification - document.zoomLevel) > 0.001 {
-            let visible = nsView.contentView.documentVisibleRect
-            let center = CGPoint(x: visible.midX, y: visible.midY)
-            nsView.setMagnification(document.zoomLevel, centeredAt: center)
+            let visible = nsView.contentView.bounds
+            nsView.setMagnification(document.zoomLevel,
+                                    centeredAt: CGPoint(x: visible.minX, y: visible.minY))
+            grid.needsDisplay = true
+            // Zooming in can push the active cell out of view; bring it back
+            // (a no-op when it is still visible).
+            DispatchQueue.main.async { grid.scrollActiveCellToVisible() }
         }
         // Scroll the active cell into view when asked (find / name-box jumps).
         if context.coordinator.lastScrollTick != document.scrollTick {

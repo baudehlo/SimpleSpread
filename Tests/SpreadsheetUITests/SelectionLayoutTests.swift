@@ -129,3 +129,37 @@ struct GridLayoutTests {
         #expect(cols == 1...4)
     }
 }
+
+@Suite("Text overflow")
+struct TextOverflowTests {
+    func span(_ col: Int, _ need: CGFloat, _ dir: TextOverflow.Direction,
+              filled: Set<Int> = [], count: Int = 26) -> ClosedRange<Int> {
+        TextOverflow.span(column: col, neededWidth: need, direction: dir, columnCount: count,
+                          columnWidth: { _ in 100 }, isEmpty: { !filled.contains($0) })
+    }
+
+    @Test func fitsInItsOwnCell() {
+        #expect(span(2, 80, .right) == 2...2)
+        #expect(span(2, 100, .both) == 2...2)
+    }
+
+    @Test func leftAlignedSpillsRightUntilANonEmptyCell() {
+        #expect(span(0, 250, .right) == 0...2)
+        #expect(span(0, 250, .right, filled: [2]) == 0...1)
+        #expect(span(0, 250, .right, filled: [1]) == 0...0)
+        // Never beyond the last column.
+        #expect(span(24, 900, .right) == 24...25)
+    }
+
+    @Test func rightAlignedSpillsLeft() {
+        #expect(span(5, 250, .left) == 3...5)
+        #expect(span(5, 250, .left, filled: [3]) == 4...5)
+        #expect(span(0, 250, .left) == 0...0)
+    }
+
+    @Test func centeredSpillsBothWays() {
+        // 300 needed in a 100 cell: 100 of excess each side.
+        #expect(span(5, 300, .both) == 4...6)
+        #expect(span(5, 300, .both, filled: [4]) == 5...6)
+    }
+}
