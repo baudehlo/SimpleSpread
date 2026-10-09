@@ -43,6 +43,8 @@ public struct DocumentWindowView: View {
         .onChange(of: document.isFindPresented) { _, presented in
             if presented {
                 DispatchQueue.main.async { findFieldFocused = true }
+            } else {
+                refocusGrid()
             }
         }
         .background(DocumentWindowHook(document: document))
@@ -105,8 +107,24 @@ public struct DocumentWindowView: View {
     }
 
     /// Return keyboard focus to the AppKit grid after the find bar closes.
+    /// SwiftUI moves focus to the next focusable control (the Bold button)
+    /// while it removes the find field, AFTER this call returns, so a
+    /// synchronous makeFirstResponder is undone. Try now, on the next turn of
+    /// the run loop, and once more after the bar's removal transition.
     private func refocusGrid() {
+        focusGridNow(unlessTyping: false)
+        DispatchQueue.main.async { focusGridNow(unlessTyping: true) }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { focusGridNow(unlessTyping: true) }
+    }
+
+    /// `unlessTyping`: leave focus alone if the user has since clicked into a
+    /// text field (the formula bar or name box).
+    private func focusGridNow(unlessTyping: Bool) {
         guard let window = NSApp.keyWindow else { return }
+        if window.firstResponder is SpreadsheetGridView { return }
+        if unlessTyping, let editor = window.firstResponder as? NSTextView, editor.isFieldEditor {
+            return
+        }
         func findGrid(_ view: NSView) -> SpreadsheetGridView? {
             if let grid = view as? SpreadsheetGridView { return grid }
             for sub in view.subviews {
