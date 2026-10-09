@@ -562,3 +562,23 @@ struct ClipboardFillTests {
         #expect(decoded.entries[0].cell.formula == "SUM(A1:A5)")
     }
 }
+
+@MainActor
+@Suite("Open requests")
+struct OpenRequestTests {
+    /// Every window receives the open notification; only one may act on it,
+    /// or N open windows open N copies of the file.
+    @Test func onlyTheFirstWindowClaimsARequest() {
+        let request = OpenRequest(url: URL(fileURLWithPath: "/tmp/a.csv"))
+        #expect(request.claim())
+        #expect(!request.claim())
+        #expect(!request.claim())
+    }
+
+    @Test func fiveWindowsOneOpen() {
+        // What five windows' handlers do with one posted request.
+        let request = OpenRequest(url: URL(fileURLWithPath: "/tmp/a.csv"))
+        let opened = (0..<5).filter { _ in request.claim() }.count
+        #expect(opened == 1)
+    }
+}

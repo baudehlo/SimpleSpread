@@ -87,7 +87,11 @@ struct SimpleSpreadAppMain: App {
                 // Finder double-click / `open <file>` / drag-onto-icon: route
                 // each URL through the same open flow the File menu uses.
                 .onReceive(NotificationCenter.default.publisher(for: .simpleSpreadOpenURL)) { note in
-                    guard let url = note.object as? URL else { return }
+                    // Every open window gets this notification. Only the first
+                    // one to claim the request opens the file; without this, N
+                    // windows opened N copies.
+                    guard let request = note.object as? OpenRequest, request.claim() else { return }
+                    let url = request.url
                     do {
                         let doc = try SpreadsheetDocument.open(url: url)
                         RecentFilesManager.shared.record(url)
@@ -118,6 +122,30 @@ extension Notification.Name {
     static let simpleSpreadOpenURL = Notification.Name("SimpleSpreadOpenURL")
 }
 
+/// One request to open a file. Posted to every window; the first window to
+/// `claim()` it does the open, the rest ignore it.
+@MainActor
+final class OpenRequest {
+    let url: URL
+    private var claimed = false
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    /// True for the first caller only.
+    func claim() -> Bool {
+        if claimed { return false }
+        claimed = true
+        return true
+    }
+
+    /// Ask the open windows to open `url` (exactly once).
+    static func post(_ url: URL) {
+        NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: OpenRequest(url: url))
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// URLs delivered before a scene is listening (e.g. launch-to-open).
     private var queuedURLs: [URL] = []
@@ -127,11 +155,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
             if ready {
-                NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
+                OpenRequest.post(url)
             } else {
                 queuedURLs.append(url)
             }
         }
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        // Restoration runs before didFinishLaunching, so opt out here.
+        UserDefaults.standard.register(defaults: ["NSQuitAlwaysKeepsWindows": false])
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -145,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         queuedURLs.removeAll()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             for url in pending {
-                NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
+                OpenRequest.post(url)
             }
         }
 
@@ -159,8 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // a moment so the hook never leaves an app running.
         if let openPath = ProcessInfo.processInfo.environment["SIMPLESPREAD_OPEN"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                NotificationCenter.default.post(name: .simpleSpreadOpenURL,
-                                                object: URL(fileURLWithPath: openPath))
+                OpenRequest.post(URL(fileURLWithPath: openPath))
                 if ProcessInfo.processInfo.environment["SIMPLESPREAD_SCREENSHOT"] == nil {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                         NSApp.terminate(nil)
@@ -217,6 +249,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+
+    /// No window restoration: files are not reopened at launch, so restored
+    /// windows were empty sheets (and piled up after crashes or forced quits).
+    func application(_ app: NSApplication, shouldSaveSecureApplicationState coder: NSCoder) -> Bool {
+        false
+    }
+
+    func application(_ app: NSApplication, shouldRestoreSecureApplicationState coder: NSCoder) -> Bool {
+        false
+    }
+
+    func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
         true
     }
 }
@@ -325,7 +371,7 @@ struct FileCommands: Commands {
         // Route through the same notification the Finder-open path uses; its
         // handler lives in the scene's view hierarchy where openWindow is
         // reliably wired (openWindow from a Commands struct can no-op).
-        NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
+        OpenRequest.post(url)
     }
 
     @MainActor private func openRecent(_ entry: RecentEntry) {
@@ -336,7 +382,7 @@ struct FileCommands: Commands {
             alert.runModal()
             return
         }
-        NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: url)
+        OpenRequest.post(url)
     }
 
     @MainActor private func save(as forceAs: Bool) {

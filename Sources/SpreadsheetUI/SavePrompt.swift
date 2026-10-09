@@ -181,6 +181,10 @@ struct DocumentWindowHook: NSViewRepresentable {
                 window.delegate = proxy
             }
             window.isDocumentEdited = document.isModified
+            // Documents are not reopened at launch, so a restored window would
+            // only be an empty sheet. After a crash or a forced quit macOS
+            // restored every window (once 255 of them); never restore.
+            window.isRestorable = false
         }
     }
 
