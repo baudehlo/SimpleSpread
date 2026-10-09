@@ -42,6 +42,12 @@ struct NumberFormatTests {
     @Test func currencyFormats() {
         #expect(NumberFormatEngine.formatNumber(1234.5, code: "$#,##0.00") == "$1,234.50")
         #expect(NumberFormatEngine.formatNumber(0.99, code: "$#,##0.00") == "$0.99")
+        // One-section formats put the minus in front of the whole result,
+        // currency symbol included (Excel and Sheets both show -$14.62).
+        #expect(NumberFormatEngine.formatNumber(-14.62, code: "$#,##0.00") == "-$14.62")
+        #expect(NumberFormatEngine.formatNumber(-1234.5, code: "$#,##0.00") == "-$1,234.50")
+        #expect(NumberFormatEngine.formatNumber(-14.62, code: "\"USD \"0.00") == "-USD 14.62")
+        #expect(NumberFormatEngine.displayString(for: .number(-14.62), format: .currency) == "-$14.62")
     }
 
     @Test func multiSectionFormats() {
@@ -61,6 +67,7 @@ struct NumberFormatTests {
     @Test func literalsAndEscapes() {
         #expect(NumberFormatEngine.formatNumber(42, code: "0\" units\"") == "42 units")
         #expect(NumberFormatEngine.formatNumber(5, code: "0.0 \"kg\"") == "5.0 kg")
+        #expect(NumberFormatEngine.formatNumber(-5, code: "0.0 \"kg\"") == "-5.0 kg")
     }
 
     @Test func dateFormats() {

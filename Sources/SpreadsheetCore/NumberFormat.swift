@@ -502,7 +502,6 @@ public enum NumberFormatEngine {
         var intSlotIndex = 0 // placeholders seen so far in the int zone
         var fracIndex = 0
         zone = 0
-        var emittedSign = false
 
         func integerChunk(forSlot slot: Int) -> String {
             slot < chunks.count ? chunks[slot] : ""
@@ -512,7 +511,6 @@ public enum NumberFormatEngine {
             switch t {
             case .digit(let placeholder):
                 if zone == 0 {
-                    if !emittedSign && negative { out += "-"; emittedSign = true }
                     let chunk = integerChunk(forSlot: intSlotIndex)
                     if chunk.isEmpty {
                         switch placeholder {
@@ -569,9 +567,6 @@ public enum NumberFormatEngine {
                 }
                 if willShowFrac { out += "." }
             case .literal(let s):
-                if !emittedSign && negative && zone == 0 && intSlotIndex == 0 && !s.trimmingCharacters(in: .whitespaces).isEmpty && s != "(" {
-                    // sign goes before the first digits, after leading currency symbols
-                }
                 out += s
             case .percent:
                 out += "%"
@@ -593,7 +588,10 @@ public enum NumberFormatEngine {
                 out += generalString(for: value)
             }
         }
-        if negative && !emittedSign && intPlaceholders == 0 {
+        // Excel and Sheets put the minus sign in front of the whole rendered
+        // section, literals included: "$#,##0.00" shows -14.62 as "-$14.62"
+        // (not "$-14.62"), and 0.00" kg" shows "-5.00 kg".
+        if negative {
             out = "-" + out
         }
         return out
