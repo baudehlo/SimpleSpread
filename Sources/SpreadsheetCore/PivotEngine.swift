@@ -602,7 +602,8 @@ public struct PivotEngine {
         case .number(let n), .date(let n): return .number(n)
         case .bool(let b): return .string(b ? "TRUE" : "FALSE")
         case .missing: return .string(captions.blank)
-        case .error(let e): return .error(e)
+        // Excel writes an error item's label as text ("#N/A"), checked in Excel.
+        case .error(let e): return .string(e.xlsxRepresentation)
         }
     }
 
@@ -676,7 +677,10 @@ public struct PivotEngine {
         let colConditions = column.kind == .grand ? [] : conditions(definition.columnFields, column.tuple)
         let all = rowConditions + colConditions
         let matching = records.filter { r in all.allSatisfy { itemIndex(r, $0.0) == $0.1 } }
-        guard !matching.isEmpty else { return nil }
+        guard !matching.isEmpty else {
+            // Shown as a share or index, an empty intersection is 0 (checked in Excel).
+            return dataField.showDataAs == .normal ? nil : .number(0)
+        }
         var function = dataField.subtotal
         for kind in [row.kind, column.kind] { if let fn = Self.function(for: kind) { function = fn } }
         guard let v = value(field: dataField.field, subtotal: function, records: matching) else { return nil }
