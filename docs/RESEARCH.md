@@ -176,11 +176,11 @@ autofill, find/replace, Cmd+click discontiguous selection, marching ants.
   BOM (Windows Excel double-click); numbers full-precision machine form;
   dates ISO 8601; formulas export results; display-mode as option.
 
-## Track 4 — Pivot table preservation
+## Track 4 — Pivot tables
 
 Goal: open an XLSX with pivot tables, edit elsewhere, save, and have Excel
-open it with the pivots intact and no repair prompt. SimpleSpread never
-computes pivots.
+open it with the pivots intact and no repair prompt; then compute, refresh,
+create and edit pivots so Excel lays them out the same way.
 
 ### Package facts
 - Parts and relationships: worksheet → `pivotTable`; workbook →
@@ -217,12 +217,31 @@ Apache POI keeps unmodelled parts byte-for-byte and keeps style ids stable.
 We follow POI: carry parts verbatim, patch only what edits invalidate, and
 keep the stylesheet entries they reference under their original ids.
 
-### Unverified (no Excel on the build machine)
+### Verified in Excel for the web (2026-10-11)
+- All 22 edited fixture round trips and all 17 regenerated fixtures (37
+  pivots) open without a repair prompt, and refresh.
+- Rules learned from Excel and now encoded (each has a test):
+  - show values as: the base item's own cells are blank (% of shows 100%
+    only where that cell has data); difference treats a missing base as 0;
+    % of / % difference are blank on a missing base; previous/next are
+    baseItem 1048828/1048829; running totals restart in each parent, with
+    subtotals of the parent and the grand total blank; an empty
+    intersection shows 0 rather than blank.
+  - error values used as item labels display as text;
+  - a columns-only pivot keeps a label column for the Values caption;
+  - number ranges over whole numbers are closed ("1-5", "6-10", last range
+    holds the end); over fractions they are continuous ("0-1", "1-2",
+    ceil((end−start)/by) ranges, ">end" after);
+  - date groups put coarser levels (Years, Quarters) in new non-database
+    cache fields chained by `par`, placed before the grouped field.
+
+### Still unverified
 - Whether Excel repairs or silently tolerates a dangling numFmtId, a missing
   source (deleted sheet or unresolvable name), duplicate pivot names, or an
   unreferenced cache. Our writer never produces the first or the last of these.
 - What Excel itself writes in `worksheetSource` after the source sheet is
   deleted. We keep the last known sheet/ref and clear `refreshOnLoad`.
+- Excel desktop (Windows/Mac) rather than Excel for the web.
 
 ### Sources
 ECMA-376 Part 1 §18.10 and transitional `sml.xsd`; [MS-OI29500] §2.1.737–803;

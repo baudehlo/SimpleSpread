@@ -17,7 +17,14 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
   Excel, Numbers, and Google Sheets — including a from-scratch ZIP layer,
   shared strings, styles, number formats, formulas with cached values,
   merged ranges, frozen panes, and 1904-date-system normalization on read.
-  Pivot tables in files from Excel survive editing and saving intact.
+- **Pivot tables**: Insert ▸ PivotTable… and a PivotTable Fields panel
+  like Excel's: drag fields into rows, columns, values and filters;
+  summarize by sum/count/average/…; show values as % of total/row/column,
+  difference, % of, running total; filter, sort, subtotals, blank lines,
+  compact/outline/tabular layouts; group dates by years/quarters/months/days
+  and numbers into ranges; Data ▸ Refresh (⌥F5). Pivots in files from Excel
+  open, recompute, refresh and save intact, and GETPIVOTDATA reads them.
+  Layouts are checked cell by cell against real Excel.
 - **CSV done right**: delimiter sniffing, BOM/CP1252 encoding detection,
   quote-aware parsing, injection-safe import (a `=cmd` field is data, not a
   formula), leading-zero preservation, and RFC 4180 export with UTF-8 BOM,

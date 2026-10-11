@@ -44,8 +44,10 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
   dynamic dependency tracking).
 - Charts, images, comments, conditional formatting, data validation,
   merged-cell *rendering* (model + file round-trip supported).
-- Pivot table *creation, editing and refresh*. Pivot tables in opened files
-  are preserved through save (§7), not computed.
+- Pivot tables: OLAP/Data Model sources, calculated items, label/value
+  filters, slicers and timelines, and Excel 2010+ show-values-as modes
+  (rank, % of parent). Pivots that use them are kept intact for Excel but
+  can't be recomputed or edited (§7); everything else is supported.
 - Frozen-pane *rendering* (model + file round-trip supported).
 - Localization: en-US only (decimal point, M/D dates, comma argument
   separator). The file format layer is locale-invariant per OOXML rules.
@@ -90,14 +92,24 @@ Sources/
     Functions*.swift          9 category files, 157 functions
     CalculationEngine.swift   dependency graph, dirty propagation, cycles
     WorkbookOperations.swift  structural edits with formula rewriting
-    PivotTables.swift         preserved pivot tables/caches (typed facts + opaque XML)
+    PivotTables.swift         pivot tables/caches: typed facts + preserved XML
+    PivotModel.swift          parsed cache (fields, shared items, groups, records) + definition
+    PivotEngine.swift         computes a pivot's layout (axis items, totals, show-as, geometry)
+    PivotCalculatedField.swift calculated fields through the formula engine
+    PivotRendering.swift      writes a computed layout into the sheet (conflicts, placement)
+    PivotRefresh.swift        rebuilds a cache from its source; remaps the definition
+    PivotEditing.swift        field placement, summaries, filters, sort, layout; new pivots
+    PivotGrouping.swift       date-part and number-range grouping
+    FunctionsPivot.swift      GETPIVOTDATA
     ValueParser.swift         shared input-parsing pipeline
   SpreadsheetFiles/
     ZipArchive.swift          minimal ZIP reader/writer + CRC32 + DEFLATE
     XMLSupport.swift          escaping + _xHHHH_ encoding
     XLSXWriter.swift          OPC package writer (interop profile)
     XLSXReader.swift          SAX reader (rels-driven, tolerant)
-    XLSXPivotTables.swift     pivot part read (keep/drop decisions) + write (patching)
+    XLSXPivotTables.swift     pivot part read (keep/drop decisions) + write (patch or generate)
+    PivotXMLParser.swift      cache/table XML → PivotCacheData/PivotDefinition
+    PivotXMLWriter.swift      PivotCacheData/PivotDefinition → XML (carrying over the unmodelled)
     XMLRewriter.swift         streaming XML rewrite/scan/fragment extraction
     CSV.swift                 parser/sniffer/decoder/importer/exporter
   SpreadsheetUI/
@@ -108,6 +120,9 @@ Sources/
     Clipboard.swift           NSPasteboard integration
     ContentView.swift         window chrome (format bar, formula bar, tabs)
     App.swift                 App scene, DocumentStore, menu commands
+    SpreadsheetDocument+Pivots.swift  insert/edit/group/refresh with one undo step each
+    PivotFieldsPanel.swift    the PivotTable Fields panel + Insert PivotTable sheet
+    PivotGridStyle.swift      Excel-style pivot drawing (bands, bold totals, field buttons)
   SimpleSpread/
     main.swift                calls SimpleSpreadApp.run()
 ```
@@ -186,9 +201,13 @@ builtin/custom numFmts, and normalizes 1904-system dates (+1462 on
 date-formatted numerics). Cells with formulas we can't evaluate surface
 #NAME? after recalc — deliberate honesty over stale cached values.
 
-**Pivot tables** are preserved, not modelled. The reader keeps each pivot
-table, cache definition and records part verbatim; the model holds only the
-facts edits can invalidate — the table's location and report-filter area,
+**Pivot tables** are preserved *and* modelled. The reader keeps each pivot
+table, cache definition and records part verbatim, and also parses them into
+a typed cache (fields, shared items, groups, records) and definition (fields,
+axes, items, data fields, layout). An unchanged pivot is written back from
+its verbatim parts; one that was edited, refreshed or created is generated
+from the model, carrying over the attributes and extensions we don't model.
+For the verbatim path the model holds the facts edits can invalidate — the table's location and report-filter area,
 the cache's source ranges (tracked by sheet id), cache ids. On save the
 writer lays the parts out afresh (Overrides, workbook/sheet/table/cache
 rels, `<pivotCaches>` after `<sheets>`) and patches just those facts plus
@@ -213,6 +232,26 @@ pivot renders: it decodes the definition's row/column items into item tuples,
 picks the line the field/item pairs name (all of an axis's fields = an item
 line, a leading part = its subtotal, none = the grand total) and returns the
 cell at their crossing, so it works for any pivot with a parsed definition.
+
+*Computing* a pivot (`PivotEngine`) is a port of the research prototype,
+checked cell by cell against Excel: axis items and their `rowItems`/
+`colItems` encoding, compact/outline/tabular geometry, subtotals top or
+bottom, custom subtotal functions, grand totals, hidden items and report
+filters, top-N filters, grouping (date parts, number ranges, discrete
+groups), calculated fields (through the formula engine), show values as
+(% of total/row/column, index, difference, % of, % difference, running
+total — with Excel's blank/zero rules for missing base items), items with no
+data, blank lines, Values on rows, and localized captions. A pivot using
+something outside that (OLAP, calculated items, label/value filters, newer
+show-as modes, hidden items in totals) is kept verbatim and refuses edits
+with the reason. *Refresh* rebuilds the cache from the source range (Excel's
+first-appearance shared items, case-insensitive matching), keeps groups and
+calculated fields, and remaps the definition by field name and item value
+(manual order kept, new items appended in Excel's collation). *Editing*
+goes through `SpreadsheetDocument.editPivot`/`regroupPivot`: each change is
+one transaction that recomputes every affected pivot, rolls back on error
+or overlap with another pivot, asks before overwriting cells, and registers
+one undo step. Grouping edits the shared cache, so all pivots on it change.
 
 ### CSV (import/export)
 Import: BOM/UTF-16/UTF-8-validation/CP1252 decode chain; delimiter sniffing
@@ -286,6 +325,13 @@ rejects CFB (encrypted/legacy .xls) containers with a clear error.
   patched attributes), byte-identical second saves, and the same checks
   after renames and row/column edits; hand-built packages for irregular
   inputs; structural-edit geometry; document-level refusal/removal/undo.
+  The engine recomputes all 38 computable fixture pivots exactly as Excel
+  laid them out, and refresh reproduces Excel's layout for every refreshable
+  fixture. **Excel oracle:** three workbooks of pivots created in SimpleSpread
+  (38 pivots: layouts, show-as modes, subtotals, filters, errors and blanks,
+  grouping) were refreshed by Excel for the web; Excel's result is checked
+  in (Fixtures/ExcelOracle) and `PivotOracleComparisonTests` compares every
+  cell, indent, field button, axis line and item order with ours.
 
 External validation: generated XLSX passes `unzip -t` and per-part
 `xmllint`; a sample-file generation hook (`SIMPLESPREAD_SAMPLE_DIR`) exists
@@ -327,8 +373,8 @@ software updates via Sparkle driven by GitHub Releases (Check for Updates…
 menu item + automatic background checks; appcast published by the release
 workflow — see docs/UPDATES.md; needs the network-client entitlement, now in
 entitlements.plist). Sparkle is the project's one third-party dependency; the
-spreadsheet stack itself remains dependency-free. Pivot tables in opened
-XLSX files survive editing and saving (§7).
+spreadsheet stack itself remains dependency-free. Pivot tables: create,
+edit, group, refresh and save, and recompute pivots from Excel (§7).
 
 Known gaps and the intended next steps, in priority order:
 
@@ -344,7 +390,7 @@ Known gaps and the intended next steps, in priority order:
 7. Background calculation actor for six-figure-cell workbooks.
 8. Close-window "unsaved changes" prompt.
 9. Localized input parsing (decimal comma, D/M dates).
-10. Pivot fidelity follow-ups: preserve tables (ListObjects), defined names
+10. Pivot follow-ups: label/value filters, calculated items, Excel 2010+
+    show-as modes, slicers; preserve tables (ListObjects), defined names
     and sheet conditional formatting so table/name sources and pivot
-    conditional formats survive as-is; an Excel open-and-repair check of
-    the fixture round trips (only schema/reader checks so far).
+    conditional formats survive as-is; pivot formats (pivot-area styling).
