@@ -51,6 +51,10 @@ public final class SpreadsheetDocument: ObservableObject {
     @Published public var zoomLevel: CGFloat = 1.0
     /// An alert for the window to show; the window clears it on dismissal.
     @Published public var notice: DocumentNotice?
+    /// Show the PivotTable Fields panel when the active cell is in a pivot.
+    @Published public var isPivotPanelVisible = true
+    /// Insert ▸ PivotTable… sheet.
+    @Published public var isInsertPivotPresented = false
     /// Asks the user to confirm (message, detail); nil refuses. The app
     /// installs an alert; tests install a closure.
     public var confirm: ((String, String) -> Bool)?

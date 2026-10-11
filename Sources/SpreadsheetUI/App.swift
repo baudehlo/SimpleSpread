@@ -113,6 +113,7 @@ struct SimpleSpreadAppMain: App {
             EditCommands()
             ViewCommands()
             InsertCommands()
+            DataCommands()
             FormatCommands()
         }
     }
@@ -583,6 +584,36 @@ struct InsertCommands: Commands {
                 document?.addSheet()
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+            Divider()
+            Button("PivotTable…") {
+                document?.isInsertPivotPresented = true
+            }
+            .disabled(document == nil)
+        }
+    }
+}
+
+struct DataCommands: Commands {
+    @FocusedValue(\.spreadsheetDocument) var document
+
+    var body: some Commands {
+        CommandMenu("Data") {
+            Button("Refresh") {
+                guard let document, let pivot = document.activePivotIndex else { return }
+                document.refreshPivot(pivot)
+            }
+            .keyboardShortcut(KeyEquivalent(Character(UnicodeScalar(NSF5FunctionKey)!)), modifiers: .option)
+            .disabled(document?.activePivotIndex == nil)
+            Button("Refresh All") {
+                document?.refreshAllPivots()
+            }
+            .keyboardShortcut(KeyEquivalent(Character(UnicodeScalar(NSF5FunctionKey)!)), modifiers: [.control, .option])
+            .disabled(document?.workbook.pivotTables.isEmpty ?? true)
+            Divider()
+            Button(document?.isPivotPanelVisible == false ? "Show PivotTable Fields" : "Hide PivotTable Fields") {
+                document?.isPivotPanelVisible.toggle()
+            }
+            .disabled(document == nil)
         }
     }
 }

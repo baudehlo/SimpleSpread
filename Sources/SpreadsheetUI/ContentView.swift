@@ -19,6 +19,33 @@ public struct DocumentWindowView: View {
     }
 
     public var body: some View {
+        HStack(spacing: 0) {
+            mainColumn
+            if document.isPivotPanelVisible, let pivot = document.activePivotIndex {
+                Divider()
+                PivotFieldsPanel(document: document, index: pivot)
+                    .id(pivot)
+            }
+        }
+        .sheet(isPresented: $document.isInsertPivotPresented) {
+            InsertPivotSheet(document: document)
+        }
+        .onAppear { installConfirmation() }
+    }
+
+    /// Confirmations (e.g. a pivot growing over data) as window alerts.
+    private func installConfirmation() {
+        document.confirm = { message, detail in
+            let alert = NSAlert()
+            alert.messageText = message
+            alert.informativeText = detail
+            alert.addButton(withTitle: "Replace")
+            alert.addButton(withTitle: "Cancel")
+            return alert.runModal() == .alertFirstButtonReturn
+        }
+    }
+
+    private var mainColumn: some View {
         VStack(spacing: 0) {
             formatBar
             Divider()
