@@ -451,10 +451,21 @@ extension XLSXReader {
         }
 
         guard !keptTables.isEmpty else { return dropped }
+        // Typed views for the engine (nil where a part doesn't parse).
+        let formats = PivotXMLParser.FormatTable(custom: ctx.customFormats)
         for path in cacheOrder where usedCaches.contains(path) {
-            guard let loaded = caches[path] else { continue }
-            workbook.pivotCaches.append(loaded.cache)
+            guard var cache = caches[path]?.cache, let loaded = caches[path] else { continue }
+            if let payload = cache.payload as? PivotCachePayload {
+                cache.data = try? PivotXMLParser.parseCache(definition: payload.definition,
+                                                            records: payload.records, formats: formats)
+            }
+            workbook.pivotCaches.append(cache)
             numberFormatIDs.formUnion(loaded.numberFormatIDs)
+        }
+        for i in keptTables.indices {
+            if let payload = keptTables[i].payload as? PivotTablePayload {
+                keptTables[i].definition = try? PivotXMLParser.parseTable(payload.definition, formats: formats)
+            }
         }
         workbook.pivotTables = keptTables
 

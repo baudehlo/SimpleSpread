@@ -44,11 +44,19 @@ public struct PivotCache: Sendable {
     /// range set for a consolidation).
     public var sourceRanges: [PivotSourceRange]
     public var payload: any PreservedPartPayload
+    /// The cache's data, typed (nil when it couldn't be read).
+    public var data: PivotCacheData?
+    /// True once `data` differs from `payload` (refreshed or newly made):
+    /// the writer then generates the parts instead of copying them.
+    public var isModified: Bool
 
-    public init(cacheID: Int, sourceRanges: [PivotSourceRange], payload: any PreservedPartPayload) {
+    public init(cacheID: Int, sourceRanges: [PivotSourceRange], payload: any PreservedPartPayload,
+                data: PivotCacheData? = nil, isModified: Bool = false) {
         self.cacheID = cacheID
         self.sourceRanges = sourceRanges
         self.payload = payload
+        self.data = data
+        self.isModified = isModified
     }
 
     /// True when any source range no longer points at live data.
@@ -68,10 +76,15 @@ public struct PivotTable: Sendable {
     public var pageFieldRows: Int
     public var pageFieldColumns: Int
     public var payload: any PreservedPartPayload
+    /// The table's definition, typed (nil when it couldn't be read).
+    public var definition: PivotDefinition?
+    /// True once `definition` differs from `payload` (see PivotCache.isModified).
+    public var isModified: Bool
 
     public init(sheetID: Int, name: String, cacheID: Int, location: CellRange,
                 pageFieldRows: Int = 0, pageFieldColumns: Int = 0,
-                payload: any PreservedPartPayload) {
+                payload: any PreservedPartPayload, definition: PivotDefinition? = nil,
+                isModified: Bool = false) {
         self.sheetID = sheetID
         self.name = name
         self.cacheID = cacheID
@@ -79,6 +92,8 @@ public struct PivotTable: Sendable {
         self.pageFieldRows = max(0, pageFieldRows)
         self.pageFieldColumns = max(0, pageFieldColumns)
         self.payload = payload
+        self.definition = definition
+        self.isModified = isModified
     }
 
     /// Every cell the pivot table draws into: the body plus, when it has
