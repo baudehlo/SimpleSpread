@@ -10,3 +10,10 @@ pivots with Excel's, cell by cell.
 If `PivotOracleWorkbook` changes, regenerate this file the same way: write the
 workbook with `SIMPLESPREAD_PIVOT_ORACLE_OUT=<file> swift test --filter
 PivotOracleWorkbookTests`, then repeat the Excel steps.
+
+`round2-refreshed-by-excel.xlsx` is the same for `PivotOracleRound2.make()` (19
+pivots: column-only and value-only layouts, show values as difference / % of /
+% difference / running total, custom subtotals, blank rows, items with no data,
+wrapped report filters, Values on rows, summaries over errors and blanks),
+written with `SIMPLESPREAD_PIVOT_ORACLE2_OUT=<file> swift test --filter
+PivotOracleRound2Tests`.

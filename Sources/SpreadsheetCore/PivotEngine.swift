@@ -141,28 +141,19 @@ public struct PivotEngine {
         if cache.hasCalculatedItems { return "it has calculated items" }
         if !cache.hasRecords { return "its cache has no saved records" }
         if definition.fields.count != cache.fields.count { return "its fields don't match its cache" }
-        for f in definition.fields where f.showAll && f.axis != nil && f.axis != .values {
-            _ = f // showAll="1" (items with no data) isn't verified against Excel yet
-            return "it shows items with no data"
-        }
         for filter in definition.filters where !Self.supportsFilter(filter) {
             return "it uses a \(filter.type) filter"
         }
         for d in definition.dataFields {
             switch d.showDataAs {
-            case .normal, .percentOfTotal, .percentOfRow, .percentOfCol, .index:
+            case .normal, .percentOfTotal, .percentOfRow, .percentOfCol, .index,
+                 .difference, .percent, .percentDiff, .runTotal:
                 break
-            case .difference, .percent, .percentDiff, .runTotal:
-                // Verified only when the base field isn't on an axis (#N/A).
-                let onAxis = definition.rowFields.contains(d.baseField) || definition.columnFields.contains(d.baseField)
-                if onAxis { return "it shows values as \(d.showDataAs.rawValue)" }
             default:
                 return "it shows values as \(d.showDataAs.rawValue)"
             }
         }
         if definition.layout.subtotalHiddenItems { return "it includes hidden items in totals" }
-        if definition.layout.pageWrap > 0 { return "its report filters wrap" }
-        if definition.fields.contains(where: \.insertBlankRow) { return "it inserts blank rows" }
         return nil
     }
 
@@ -463,6 +454,21 @@ public struct PivotEngine {
                 }
             }
         }
+        // Fields showing items with no data list every visible item.
+        let nonValues = fields.filter { $0 != pivotValuesFieldIndex }
+        func augment(_ node: Node, _ depth: Int) {
+            guard depth < nonValues.count else { return }
+            let f = nonValues[depth]
+            if definition.fields[f].showAll {
+                for (p, item) in definition.fields[f].items.enumerated()
+                where item.kind == .data && !item.hidden && node.children[p] == nil {
+                    node.children[p] = Node()
+                }
+            }
+            for child in node.children.values { augment(child, depth + 1) }
+        }
+        augment(root, 0)
+
         var out: [AxisEntry] = []
         func emit(_ level: Int, _ path: [Int], _ node: Node, _ dataField: Int) {
             let f = fields[level]
@@ -491,6 +497,9 @@ public struct PivotEngine {
                             out.append(AxisEntry(kind: kind, tuple: tuple, dataField: current))
                         }
                     }
+                }
+                if isRow && f != pivotValuesFieldIndex && definition.fields[f].insertBlankRow {
+                    out.append(AxisEntry(kind: .blank, tuple: tuple, dataField: current))
                 }
             }
         }
@@ -555,7 +564,11 @@ public struct PivotEngine {
             if k > 0 && !fieldCompact(rowFields[k - 1]) { c += 1 }
             labelColumns.append(c)
         }
-        let firstDataCol = rowFields.isEmpty ? 0 : (labelColumns.last! + 1)
+        // With column fields but no row fields Excel keeps a label column for
+        // the value field's name (checked in Excel).
+        let firstDataCol = rowFields.isEmpty
+            ? (colFields.contains { $0 != pivotValuesFieldIndex } ? 1 : 0)
+            : (labelColumns.last! + 1)
         return Geometry(captionRow: captionRow, firstHeaderRow: firstHeaderRow, firstDataRow: firstDataRow,
                         firstDataCol: firstDataCol, labelColumns: labelColumns)
     }
@@ -676,13 +689,20 @@ public struct PivotEngine {
         let rowConditions = row.kind == .grand ? [] : conditions(definition.rowFields, row.tuple)
         let colConditions = column.kind == .grand ? [] : conditions(definition.columnFields, column.tuple)
         let all = rowConditions + colConditions
+        var function = dataField.subtotal
+        for kind in [row.kind, column.kind] { if let fn = Self.function(for: kind) { function = fn } }
+        switch dataField.showDataAs {
+        case .difference, .percent, .percentDiff, .runTotal:
+            return baseFieldValue(dataField, function: function, row: row, column: column,
+                                  conditions: all, records: records)
+        default:
+            break
+        }
         let matching = records.filter { r in all.allSatisfy { itemIndex(r, $0.0) == $0.1 } }
         guard !matching.isEmpty else {
             // Shown as a share or index, an empty intersection is 0 (checked in Excel).
             return dataField.showDataAs == .normal ? nil : .number(0)
         }
-        var function = dataField.subtotal
-        for kind in [row.kind, column.kind] { if let fn = Self.function(for: kind) { function = fn } }
         guard let v = value(field: dataField.field, subtotal: function, records: matching) else { return nil }
         guard dataField.showDataAs != .normal, case .number(let n) = v else { return v }
         func total(_ conds: [(Int, Int)]) -> Double? {
@@ -708,6 +728,63 @@ public struct PivotEngine {
         }
     }
 
+    /// Show-values-as relative to an item of a base field: difference from,
+    /// % of, % difference from, and running total. Rules checked in Excel:
+    /// the base item's own cells and totals along the base field are blank
+    /// (% of shows 1 for the base item); a missing base counts as 0 for a
+    /// difference and blanks a percentage; "previous"/"next" use neighbouring
+    /// visible items; running totals sum down the base field within each
+    /// parent and leave parents and the grand total blank.
+    private func baseFieldValue(_ dataField: PivotDataField, function: PivotSubtotal, row: AxisEntry,
+                                column: AxisEntry, conditions all: [(Int, Int)], records: [Int]) -> CellValue? {
+        let bf = dataField.baseField
+        let entry: AxisEntry, level: Int
+        if let l = definition.rowFields.firstIndex(of: bf) {
+            entry = row; level = l
+        } else if let l = definition.columnFields.firstIndex(of: bf) {
+            entry = column; level = l
+        } else {
+            return .error(.na)
+        }
+        guard entry.kind == .data, entry.tuple.count > level else { return nil }
+        let items = definition.fields[bf].items
+        let ordered = items.indices.filter { items[$0].kind == .data && !items[$0].hidden }
+        let p = entry.tuple[level]
+        func valueAt(_ q: Int) -> Double? {
+            guard let x = items[q].index else { return nil }
+            let conds = all.filter { $0.0 != bf } + [(bf, x)]
+            let recs = records.filter { r in conds.allSatisfy { itemIndex(r, $0.0) == $0.1 } }
+            guard !recs.isEmpty, case .number(let n)? = value(field: dataField.field, subtotal: function, records: recs)
+            else { return nil }
+            return n
+        }
+        if dataField.showDataAs == .runTotal {
+            guard let i = ordered.firstIndex(of: p) else { return nil }
+            let values = ordered[...i].compactMap(valueAt)
+            return values.isEmpty ? nil : .number(values.reduce(0, +))
+        }
+        let b: Int?
+        switch dataField.baseItem {
+        case 1048828: b = ordered.firstIndex(of: p).flatMap { $0 > 0 ? ordered[$0 - 1] : nil }
+        case 1048829: b = ordered.firstIndex(of: p).flatMap { $0 + 1 < ordered.count ? ordered[$0 + 1] : nil }
+        default: b = items.indices.contains(dataField.baseItem) ? dataField.baseItem : nil
+        }
+        guard let b else { return nil }
+        if b == p { return dataField.showDataAs == .percent && valueAt(p) != nil ? .number(1) : nil }
+        let v = valueAt(p), base = valueAt(b)
+        switch dataField.showDataAs {
+        case .difference:
+            guard v != nil || base != nil else { return nil }
+            return .number((v ?? 0) - (base ?? 0))
+        case .percent:
+            guard let base else { return nil }
+            return base == 0 ? .error(.div0) : .number((v ?? 0) / base)
+        default: // percentDiff
+            guard let base else { return nil }
+            return base == 0 ? .error(.div0) : .number(((v ?? 0) - base) / base)
+        }
+    }
+
     private func render(rows: [AxisEntry], rowLines: [PivotAxisLine], cols: [AxisEntry], columnLines: [PivotAxisLine],
                         records: [Int], geometry g: Geometry, into cells: inout [PivotOffset: PivotRenderedCell]) {
         let layout = definition.layout
@@ -724,7 +801,12 @@ public struct PivotEngine {
 
         // Caption row.
         if g.captionRow && !colFields.isEmpty {
-            if dataFieldCount == 1 && showHeaders { put(0, 0, .string(dataFieldName(0)), button: true) }
+            if dataFieldCount == 1 && showHeaders && !rowFields.isEmpty {
+                put(0, 0, .string(dataFieldName(0)), button: true)
+            }
+            if rowFields.isEmpty && fdc > 0 && dataFieldCount == 1 {
+                put(fdr, 0, .string(dataFieldName(0)), role: .header)
+            }
             if showHeaders {
                 if layout.compact {
                     let caption = colFields == [pivotValuesFieldIndex]
@@ -788,6 +870,7 @@ public struct PivotEngine {
         let valuesOnRows = rowFields.contains(pivotValuesFieldIndex)
         for (ri, (entry, line)) in zip(rows, rowLines).enumerated() {
             let r = fdr + ri
+            if entry.kind == .blank { continue }
             if !rowFields.isEmpty {
                 if entry.kind == .grand {
                     put(r, 0, .string(grandCaption(onAxis: rowFields, dataField: entry.dataField)), role: .grandTotalLabel)

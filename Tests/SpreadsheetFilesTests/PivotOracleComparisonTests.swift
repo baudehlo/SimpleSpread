@@ -7,14 +7,20 @@ import Testing
 /// (see Fixtures/ExcelOracle/README.md).
 @Suite("Pivot tables: Excel oracle", .serialized)
 struct PivotOracleComparisonTests {
-    static func excel() throws -> Workbook {
-        let url = Bundle.module.resourceURL!.appendingPathComponent("Fixtures/ExcelOracle/created-pivots-refreshed-by-excel.xlsx")
+    static func excel(_ name: String) throws -> Workbook {
+        let url = Bundle.module.resourceURL!.appendingPathComponent("Fixtures/ExcelOracle/\(name)")
         return try XLSXReader.read(data: Data(contentsOf: url))
     }
 
     @Test func everyCreatedPivotMatchesExcel() throws {
-        let ours = try PivotOracleWorkbook.make()
-        let excel = try Self.excel()
+        try Self.compare(ours: PivotOracleWorkbook.make(), excel: Self.excel("created-pivots-refreshed-by-excel.xlsx"))
+    }
+
+    @Test func roundTwoMatchesExcel() throws {
+        try Self.compare(ours: PivotOracleRound2.make(), excel: Self.excel("round2-refreshed-by-excel.xlsx"))
+    }
+
+    static func compare(ours: Workbook, excel: Workbook) throws {
         #expect(excel.pivotTables.count == ours.pivotTables.count)
         for t in ours.pivotTables {
             let sheetName = ours.sheet(withID: t.sheetID)!.name
