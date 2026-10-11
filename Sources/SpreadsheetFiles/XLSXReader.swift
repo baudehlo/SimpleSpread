@@ -271,7 +271,9 @@ public enum XLSXReader {
             style.wrapText = wrapText
             if numFmtID != 0 {
                 if let custom = customFormats[numFmtID] {
-                    style.numberFormat = NumberFormat(code: custom)
+                    // A custom "General" is General (the writer maps both to id 0).
+                    let format = NumberFormat(code: custom)
+                    style.numberFormat = format.isGeneral ? .general : format
                 } else if let builtin = NumberFormat.builtin(numFmtID) {
                     style.numberFormat = builtin
                 } else if numFmtID >= 27 && numFmtID <= 36 {
@@ -292,7 +294,7 @@ public enum XLSXReader {
             var fills: [String?] = []
             var xfs: [ReadStyle] = []
 
-            var inFonts = false, inFills = false, inCellXfs = false
+            var inNumFmts = false, inFonts = false, inFills = false, inCellXfs = false
             var currentFont: ReadFont?
             var currentFillIsSolid = false
             var currentFillColor: String?
@@ -301,8 +303,11 @@ public enum XLSXReader {
             func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                         qualifiedName: String?, attributes: [String: String]) {
                 switch localName(name) {
+                case "numFmts": inNumFmts = true
                 case "numFmt":
-                    if let id = Int(attributes["numFmtId"] ?? ""), let code = attributes["formatCode"] {
+                    // Only the stylesheet's table: a <dxf> carries its own
+                    // numFmt whose id may collide with a real one.
+                    if inNumFmts, let id = Int(attributes["numFmtId"] ?? ""), let code = attributes["formatCode"] {
                         customFormats[id] = code
                     }
                 case "fonts": inFonts = true
@@ -357,6 +362,7 @@ public enum XLSXReader {
             func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?,
                         qualifiedName: String?) {
                 switch localName(name) {
+                case "numFmts": inNumFmts = false
                 case "fonts": inFonts = false
                 case "fills": inFills = false
                 case "cellXfs": inCellXfs = false

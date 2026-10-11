@@ -134,7 +134,8 @@ public enum XLSXWriter {
         }
         s += "</sheetView></sheetViews>"
 
-        s += "<sheetFormatPr defaultRowHeight=\"\(trimNumber(sheet.defaultRowHeight))\"/>"
+        // The reader scales Excel's 15pt default to our 22pt; scale back.
+        s += "<sheetFormatPr defaultRowHeight=\"\(trimNumber(Double(sheet.defaultRowHeight) * 15.0 / 22.0))\"/>"
 
         // cols (character-width units; px = width*7 + 5, pt = px * 0.75)
         if !sheet.columnWidths.isEmpty {
