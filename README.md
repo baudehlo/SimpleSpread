@@ -24,7 +24,8 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
   compact/outline/tabular layouts; group dates by years/quarters/months/days
   and numbers into ranges; Data ▸ Refresh (⌥F5). Pivots in files from Excel
   open, recompute, refresh and save intact, and GETPIVOTDATA reads them.
-  Layouts are checked cell by cell against real Excel.
+  Layouts are checked cell by cell against real Excel. See
+  [docs/PIVOTS.md](docs/PIVOTS.md).
 - **CSV done right**: delimiter sniffing, BOM/CP1252 encoding detection,
   quote-aware parsing, injection-safe import (a `=cmd` field is data, not a
   formula), leading-zero preservation, and RFC 4180 export with UTF-8 BOM,
@@ -75,7 +76,7 @@ Requires Xcode 16+ on macOS 14+.
 
 ```bash
 swift build            # debug build
-swift test             # 343 tests
+swift test             # 549 tests
 swift run SimpleSpread # run the app directly
 ./scripts/build-app.sh # assemble SimpleSpread.app + DMG (ad-hoc signed)
 ```
@@ -88,6 +89,8 @@ swift run SimpleSpread # run the app directly
   semantics, XLSX internals, editing UX, CSV) the implementation follows.
 - [docs/FUNCTIONS.md](docs/FUNCTIONS.md) — all 157 functions with semantics
   notes and known deviations.
+- [docs/PIVOTS.md](docs/PIVOTS.md) — using pivot tables: creating, the
+  Fields panel, grouping, refreshing, and Excel features not supported.
 
 ## CI & releases
 
