@@ -60,6 +60,30 @@ struct PivotEditingDocumentTests {
         #expect(text(doc, "B4") == "17")
     }
 
+    @Test func groupingRedrawsAndUndoes() {
+        let doc = document()
+        doc.insertPivotTable(source: CellRange(a1: "A1:B5")!)
+        doc.editPivot(0, actionName: "Add Field") { d, c in d.place(field: 1, in: .rows, cache: c) }
+        doc.editPivot(0, actionName: "Add Field") { d, c in d.place(field: 0, in: .values, cache: c) }
+        #expect(text(doc, "A4") == "2")
+        #expect(doc.regroupPivot(0, actionName: "Group") { try $0.groupPivotField(table: 0, field: 1, interval: 5) })
+        // Units 2, 5, 7, 10 from 2 by 5: 2-6 and 7-11.
+        #expect(text(doc, "A4") == "2-6" && text(doc, "B4") == "2")
+        #expect(text(doc, "A5") == "7-11" && text(doc, "B5") == "2")
+        doc.undoManager.undo()
+        #expect(text(doc, "A4") == "2")
+        #expect(doc.workbook.pivotCache(withID: doc.workbook.pivotTables[0].cacheID)?.data?.fields[1].group == nil)
+    }
+
+    @Test func groupingTextSaysWhy() {
+        let doc = document()
+        doc.insertPivotTable(source: CellRange(a1: "A1:B5")!)
+        doc.editPivot(0, actionName: "Add Field") { d, c in d.place(field: 0, in: .rows, cache: c) }
+        #expect(!doc.regroupPivot(0, actionName: "Group") { try $0.groupPivotField(table: 0, field: 0, interval: 5) })
+        #expect(doc.notice?.message == "Couldn’t group the field.")
+        #expect(!doc.undoManager.canUndo || doc.undoManager.undoActionName != "Group")
+    }
+
     @Test func refreshPicksUpSourceEdits() {
         let doc = document()
         let dataSheet = doc.activeSheetID

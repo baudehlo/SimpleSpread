@@ -11,6 +11,7 @@ struct PivotFieldsPanel: View {
     @State private var filterField: Int?
     @State private var renamingDataField: Int?
     @State private var renameText = ""
+    @State private var rangesField: Int?
 
     private var table: PivotTable? {
         document.workbook.pivotTables.indices.contains(index) ? document.workbook.pivotTables[index] : nil
@@ -186,6 +187,10 @@ struct PivotFieldsPanel: View {
                                       set: { if !$0 { filterField = nil } })) {
             PivotItemFilter(document: document, index: index, field: f)
         }
+        .popover(isPresented: Binding(get: { rangesField == f && area != .values && f >= 0 },
+                                      set: { if !$0 { rangesField = nil } })) {
+            PivotGroupRanges(document: document, index: index, field: f)
+        }
         .popover(isPresented: Binding(get: { area == .values && renamingDataField == position },
                                       set: { if !$0 { renamingDataField = nil } })) {
             renamePopover(position)
@@ -257,6 +262,7 @@ struct PivotFieldsPanel: View {
                 Button("Descending") { document.editPivot(index, actionName: "Sort") { d, c in d.setSort(.descending, field: f, cache: c) } }
                 Button("Manual (keep order)") { document.editPivot(index, actionName: "Sort") { d, c in d.setSort(.manual, field: f, cache: c) } }
             }
+            groupMenu(field: f, cache)
             Toggle("Show Items With No Data", isOn: Binding(
                 get: { d.fields[f].showAll },
                 set: { on in document.editPivot(index, actionName: "Show Items") { d, _ in d.fields[f].showAll = on } }))
@@ -279,6 +285,57 @@ struct PivotFieldsPanel: View {
         }
         .disabled(f == pivotValuesFieldIndex)
     }
+
+    /// Group by date parts or into ranges, or ungroup (Excel's Group…).
+    @ViewBuilder
+    private func groupMenu(field f: Int, _ cache: PivotCacheData) -> some View {
+        let field = cache.fields[f]
+        if let group = field.group {
+            // A Years/Quarters level ungroups the date field it came from.
+            let base = field.isDatabaseField ? f : (group.base ?? f)
+            Button("Ungroup") {
+                document.regroupPivot(index, actionName: "Ungroup") { try $0.ungroupPivotField(table: index, field: base) }
+            }
+            .disabled(!cache.fields.indices.contains(base) || !cache.fields[base].isDatabaseField)
+        } else if field.isDatabaseField, let kind = Self.groupKind(field) {
+            if kind == .dates {
+                Menu("Group") {
+                    ForEach(Self.dateGroupings, id: \.0) { title, levels in
+                        Button(title) {
+                            document.regroupPivot(index, actionName: "Group") {
+                                try $0.groupPivotField(table: index, field: f, byDates: levels)
+                            }
+                        }
+                    }
+                }
+            } else {
+                Button("Group into Ranges…") { rangesField = f }
+            }
+        }
+    }
+
+    enum GroupKind { case dates, numbers }
+
+    /// How a field can be grouped: dates by parts, plain numbers into ranges.
+    static func groupKind(_ field: PivotCacheField) -> GroupKind? {
+        var dates = false, numbers = false
+        for item in field.sharedItems {
+            switch item {
+            case .date: dates = true
+            case .number: numbers = true
+            case .missing: break
+            default: return nil
+            }
+        }
+        if dates { return .dates }
+        return numbers ? .numbers : nil
+    }
+
+    static let dateGroupings: [(String, Set<PivotDateGrouping>)] = [
+        ("Years", [.years]), ("Quarters", [.quarters]), ("Months", [.months]), ("Days", [.days]),
+        ("Years and Quarters", [.years, .quarters]), ("Years and Months", [.years, .months]),
+        ("Years, Quarters and Months", [.years, .quarters, .months]),
+    ]
 
     /// Base field ▸ base item choices for difference / % of / % difference.
     @ViewBuilder
@@ -566,4 +623,81 @@ struct InsertPivotSheet: View {
 
 extension Array {
     subscript(safe index: Int) -> Element? { indices.contains(index) ? self[index] : nil }
+}
+
+/// Group a numeric field into equal ranges: start, end and interval,
+/// starting at the data's minimum and maximum.
+struct PivotGroupRanges: View {
+    @ObservedObject var document: SpreadsheetDocument
+    let index: Int
+    let field: Int
+    @Environment(\.dismiss) private var dismiss
+    @State private var start = ""
+    @State private var end = ""
+    @State private var interval = "10"
+    @State private var loaded = false
+
+    private var bounds: (Double, Double)? {
+        guard document.workbook.pivotTables.indices.contains(index),
+              let data = document.workbook.pivotCache(withID: document.workbook.pivotTables[index].cacheID)?.data,
+              data.fields.indices.contains(field) else { return nil }
+        let values = data.fields[field].sharedItems.compactMap { v -> Double? in
+            if case .number(let n) = v { return n }
+            return nil
+        }
+        guard let lo = values.min(), let hi = values.max() else { return nil }
+        return (lo, hi)
+    }
+
+    static func text(_ x: Double) -> String { x == x.rounded() ? String(Int64(x)) : String(x) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Group into Ranges").font(.headline)
+            Form {
+                TextField("Starting at:", text: $start)
+                TextField("Ending at:", text: $end)
+                TextField("By:", text: $interval)
+            }
+            .frame(width: 220)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Group") { group() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(parsed == nil)
+            }
+        }
+        .padding(14)
+        .onAppear {
+            guard !loaded, let (lo, hi) = bounds else { return }
+            loaded = true
+            start = Self.text(lo)
+            end = Self.text(hi)
+            interval = Self.text(Self.suggestedInterval(lo, hi))
+        }
+    }
+
+    /// Start, end and interval, when they make sense.
+    private var parsed: (Double, Double, Double)? {
+        guard let s = Double(start), let e = Double(end), let by = Double(interval), by > 0, e >= s else { return nil }
+        return (s, e, by)
+    }
+
+    /// A round interval giving about ten ranges.
+    static func suggestedInterval(_ lo: Double, _ hi: Double) -> Double {
+        let raw = max((hi - lo) / 10, 1e-9)
+        let magnitude = pow(10, (log10(raw)).rounded(.down))
+        return [1, 2, 5, 10].map { $0 * magnitude }.first { $0 >= raw } ?? 10 * magnitude
+    }
+
+    private func group() {
+        guard let (s, e, by) = parsed else { return }
+        let (lo, hi) = bounds ?? (s, e)
+        document.regroupPivot(index, actionName: "Group") {
+            try $0.groupPivotField(table: index, field: field, interval: by,
+                                   start: s == lo ? nil : s, end: e == hi ? nil : e)
+        }
+        dismiss()
+    }
 }

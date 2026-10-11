@@ -92,6 +92,26 @@ extension SpreadsheetDocument {
 
     // MARK: Editing and refreshing
 
+    /// Group or ungroup a field: `change` edits the shared cache, so every
+    /// pivot table using it is redrawn.
+    @discardableResult
+    public func regroupPivot(_ index: Int, actionName: String, _ change: (Workbook) throws -> Void) -> Bool {
+        guard workbook.pivotTables.indices.contains(index) else { return false }
+        let cacheID = workbook.pivotTables[index].cacheID
+        let tables = workbook.pivotTables.indices.filter { workbook.pivotTables[$0].cacheID == cacheID }
+        if let blocked = tables.first(where: { pivotEditBlocker($0) != nil }) {
+            let other = blocked == index ? "" : " “\(workbook.pivotTables[blocked].name)” shares its data, and"
+            notice = DocumentNotice(message: "This field can’t be grouped in SimpleSpread.",
+                                    detail: "Pivot table\(other) \(pivotEditBlocker(blocked)!). It’s kept intact for Excel.")
+            return false
+        }
+        let changed = transaction(actionName: actionName, tables: tables) { try change(workbook) }
+        if !changed, let detail = notice?.detail, notice?.message == "Couldn’t update the pivot table." {
+            notice = DocumentNotice(message: "Couldn’t group the field.", detail: detail)
+        }
+        return changed
+    }
+
     /// Change a pivot table's definition and redraw it.
     @discardableResult
     public func editPivot(_ index: Int, actionName: String,
@@ -157,12 +177,18 @@ extension SpreadsheetDocument {
     /// Run a pivot change as one undoable step: apply it, lay out `tables`,
     /// ask before overwriting cells, then redraw. Cancelled or failed changes
     /// leave the workbook untouched.
-    private func transaction(actionName: String, tables: [Int], _ change: () -> Void) -> Bool {
+    private func transaction(actionName: String, tables: [Int], _ change: () throws -> Void) -> Bool {
         let savedCaches = workbook.pivotCaches, savedTables = workbook.pivotTables
-        change()
         func rollBack() {
             workbook.pivotCaches = savedCaches
             workbook.pivotTables = savedTables
+        }
+        do {
+            try change()
+        } catch {
+            rollBack()
+            notice = DocumentNotice(message: "Couldn’t update the pivot table.", detail: Self.reason(error))
+            return false
         }
         // A change that threw left the pivots partly modified.
         var results: [(Int, PivotLayoutResult)] = []
