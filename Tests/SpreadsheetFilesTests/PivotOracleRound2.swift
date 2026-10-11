@@ -117,3 +117,71 @@ struct PivotOracleRound2Tests {
         }
     }
 }
+
+/// Round three: grouping made in SimpleSpread (dates by years/quarters/
+/// months and days; numbers into ranges). Written when
+/// SIMPLESPREAD_PIVOT_ORACLE3_OUT names a file.
+enum PivotOracleRound3 {
+    static func make() throws -> Workbook {
+        let wb = try PivotOracleWorkbook.make()
+        let data = wb.sheet(named: "Data")!
+        for sheet in wb.sheets where sheet.id != data.id { WorkbookOperations.deleteSheet(in: wb, sheetID: sheet.id) }
+        let source = CellRange(start: CellAddress(row: 0, column: 0), end: data.usedRange!.end)
+        let (region, date, units, price) = (0, 3, 4, 5)
+        func pivot(_ name: String, _ build: (Workbook, Int) throws -> Void) throws {
+            let sheet = wb.addSheet(named: name)
+            let t = try wb.createPivotTable(sourceSheetID: data.id, source: source, destinationSheetID: sheet.id,
+                                            at: CellAddress(a1: "A3")!)
+            try build(wb, t)
+            wb.applyPivotLayout(at: t, result: try wb.computePivotTable(at: t))
+        }
+        func edit(_ wb: Workbook, _ t: Int, _ change: (inout PivotDefinition, PivotCacheData) -> Void) {
+            let cache = wb.pivotCache(withID: wb.pivotTables[t].cacheID)!.data!
+            change(&wb.pivotTables[t].definition!, cache)
+        }
+        try pivot("YearsQuartersMonths") { wb, t in
+            edit(wb, t) { d, c in d.place(field: date, in: .rows, cache: c); d.place(field: units, in: .values, cache: c) }
+            try wb.groupPivotField(table: t, field: date, byDates: [.years, .quarters, .months])
+        }
+        try pivot("Months") { wb, t in
+            edit(wb, t) { d, c in d.place(field: date, in: .rows, cache: c); d.place(field: units, in: .values, cache: c) }
+            try wb.groupPivotField(table: t, field: date, byDates: [.months])
+        }
+        try pivot("YearsInColumns") { wb, t in
+            edit(wb, t) { d, c in
+                d.place(field: region, in: .rows, cache: c); d.place(field: date, in: .columns, cache: c)
+                d.place(field: units, in: .values, cache: c)
+            }
+            try wb.groupPivotField(table: t, field: date, byDates: [.years])
+        }
+        try pivot("Days") { wb, t in
+            edit(wb, t) { d, c in d.place(field: date, in: .rows, cache: c); d.place(field: units, in: .values, cache: c) }
+            try wb.groupPivotField(table: t, field: date, byDates: [.days])
+        }
+        try pivot("UnitRanges") { wb, t in
+            edit(wb, t) { d, c in d.place(field: units, in: .rows, cache: c); d.place(field: price, in: .values, cache: c) }
+            try wb.groupPivotField(table: t, field: units, interval: 5)
+        }
+        try pivot("PriceRanges") { wb, t in
+            edit(wb, t) { d, c in d.place(field: price, in: .rows, cache: c); d.place(field: units, in: .values, cache: c) }
+            try wb.groupPivotField(table: t, field: price, interval: 1, start: 0, end: 5)
+        }
+        return wb
+    }
+}
+
+@Suite("Pivot oracle round 3 workbook")
+struct PivotOracleRound3Tests {
+    @Test func buildsAndSaves() throws {
+        let wb = try PivotOracleRound3.make()
+        let data = try XLSXWriter.data(for: wb)
+        var report = XLSXReadReport()
+        let reread = try XLSXReader.read(data: data, report: &report)
+        #expect(report.droppedPivots.isEmpty)
+        #expect(reread.pivotTables.count == wb.pivotTables.count)
+        for t in reread.pivotTables.indices { _ = try reread.computePivotTable(at: t) }
+        if let out = ProcessInfo.processInfo.environment["SIMPLESPREAD_PIVOT_ORACLE3_OUT"] {
+            try data.write(to: URL(fileURLWithPath: out))
+        }
+    }
+}

@@ -17,3 +17,8 @@ pivots: column-only and value-only layouts, show values as difference / % of /
 wrapped report filters, Values on rows, summaries over errors and blanks),
 written with `SIMPLESPREAD_PIVOT_ORACLE2_OUT=<file> swift test --filter
 PivotOracleRound2Tests`.
+
+`round3-refreshed-by-excel.xlsx` is the same for `PivotOracleRound3.make()` (6
+pivots grouped in SimpleSpread: dates by years / quarters / months and by days,
+whole numbers and fractions into ranges), written with
+`SIMPLESPREAD_PIVOT_ORACLE3_OUT=<file> swift test --filter PivotOracleRound3Tests`.

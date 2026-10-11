@@ -20,6 +20,10 @@ struct PivotOracleComparisonTests {
         try Self.compare(ours: PivotOracleRound2.make(), excel: Self.excel("round2-refreshed-by-excel.xlsx"))
     }
 
+    @Test func groupingMatchesExcel() throws {
+        try Self.compare(ours: PivotOracleRound3.make(), excel: Self.excel("round3-refreshed-by-excel.xlsx"))
+    }
+
     static func compare(ours: Workbook, excel: Workbook) throws {
         #expect(excel.pivotTables.count == ours.pivotTables.count)
         for t in ours.pivotTables {
