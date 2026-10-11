@@ -87,7 +87,7 @@ Sources/
     FormulaEvaluator.swift    EvalValue, resolved ranges, operator semantics
     Coercion.swift            the coercion table + criteria evaluator
     FunctionRegistry.swift    registry, GridArg, shared arg helpers
-    Functions*.swift          8 category files, 156 functions
+    Functions*.swift          9 category files, 157 functions
     CalculationEngine.swift   dependency graph, dirty propagation, cycles
     WorkbookOperations.swift  structural edits with formula rewriting
     PivotTables.swift         preserved pivot tables/caches (typed facts + opaque XML)
@@ -153,7 +153,8 @@ per cell in the engine and reused for dependency extraction and transforms.
 - **Recalculation:** precedent→dependent edges (cell-level for ranges ≤ 256
   cells, interval entries for larger), dirty-set BFS, DFS topological
   evaluation with visiting-state cycle detection, volatile set (NOW, TODAY,
-  RAND, RANDBETWEEN) recalculated on every edit. Structural edits rebuild the
+  RAND, RANDBETWEEN, and GETPIVOTDATA — it reads pivot cells its arguments
+  don't name) recalculated on every edit. Structural edits rebuild the
   whole graph (`rebuildAll`) — correct first, incremental later.
 - **Iterative solvers** (IRR/XIRR/RATE): Newton–Raphson with numeric
   derivative, bracketing-scan + bisection fallback, #NUM! on non-convergence.
@@ -207,7 +208,11 @@ Excel; deleting every row/column or clearing a whole pivot removes it;
 moves above/left shift it; source edits follow formula reference semantics
 (a source whose rows all go is kept "detached" and `refreshOnLoad` is
 cleared). Research and real-file fixtures: docs/RESEARCH.md §Pivot tables,
-Tests/SpreadsheetFilesTests/Fixtures/Pivots.
+Tests/SpreadsheetFilesTests/Fixtures/Pivots. GETPIVOTDATA reads the cell a
+pivot renders: it decodes the definition's row/column items into item tuples,
+picks the line the field/item pairs name (all of an axis's fields = an item
+line, a leading part = its subtotal, none = the grand total) and returns the
+cell at their crossing, so it works for any pivot with a parsed definition.
 
 ### CSV (import/export)
 Import: BOM/UTF-16/UTF-8-validation/CP1252 decode chain; delimiter sniffing
@@ -339,10 +344,7 @@ Known gaps and the intended next steps, in priority order:
 7. Background calculation actor for six-figure-cell workbooks.
 8. Close-window "unsaved changes" prompt.
 9. Localized input parsing (decimal comma, D/M dates).
-10. GETPIVOTDATA: unimplemented, so recalculation turns Excel's cached
-    results into #NAME?. With pivots frozen in SimpleSpread, keeping the
-    cached value would be correct rather than stale.
-11. Pivot fidelity follow-ups: preserve tables (ListObjects), defined names
+10. Pivot fidelity follow-ups: preserve tables (ListObjects), defined names
     and sheet conditional formatting so table/name sources and pivot
     conditional formats survive as-is; an Excel open-and-repair check of
     the fixture round trips (only schema/reader checks so far).
