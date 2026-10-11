@@ -17,6 +17,7 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
   Excel, Numbers, and Google Sheets — including a from-scratch ZIP layer,
   shared strings, styles, number formats, formulas with cached values,
   merged ranges, frozen panes, and 1904-date-system normalization on read.
+  Pivot tables in files from Excel survive editing and saving intact.
 - **CSV done right**: delimiter sniffing, BOM/CP1252 encoding detection,
   quote-aware parsing, injection-safe import (a `=cmd` field is data, not a
   formula), leading-zero preservation, and RFC 4180 export with UTF-8 BOM,

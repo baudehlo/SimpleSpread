@@ -30,7 +30,8 @@ let package = Package(
         .executableTarget(name: "SimpleSpread", dependencies: ["SpreadsheetUI"]),
 
         .testTarget(name: "SpreadsheetCoreTests", dependencies: ["SpreadsheetCore"]),
-        .testTarget(name: "SpreadsheetFilesTests", dependencies: ["SpreadsheetFiles"]),
+        .testTarget(name: "SpreadsheetFilesTests", dependencies: ["SpreadsheetFiles"],
+                    resources: [.copy("Fixtures")]),
         .testTarget(name: "SpreadsheetUITests", dependencies: ["SpreadsheetUI"]),
     ],
     swiftLanguageModes: [.v6]

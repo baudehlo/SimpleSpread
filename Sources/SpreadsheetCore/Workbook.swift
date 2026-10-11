@@ -92,6 +92,11 @@ public final class Sheet {
 public final class Workbook {
     public private(set) var sheets: [Sheet] = []
     public var styles = StyleTable()
+    /// Pivot caches and tables preserved from an opened file (see PivotTables.swift).
+    public var pivotCaches: [PivotCache] = []
+    public var pivotTables: [PivotTable] = []
+    /// Stylesheet entries the preserved pivot parts refer to; nil without pivots.
+    public var preservedStyles: PreservedStyles?
     private var nextSheetID = 1
 
     public init() {}
@@ -136,6 +141,18 @@ public final class Workbook {
     public func removeSheet(withID id: Int) -> Sheet? {
         guard sheets.count > 1, let idx = indexOfSheet(withID: id) else { return nil }
         return sheets.remove(at: idx)
+    }
+
+    /// Take over another workbook's sheets (keeping their ids), styles and
+    /// pivot tables, in place: for restoring a snapshot under objects (the
+    /// engine, undo records) that hold this instance and its sheet ids.
+    public func replaceContents(with other: Workbook) {
+        sheets = other.sheets
+        nextSheetID = max(nextSheetID, (sheets.map(\.id).max() ?? 0) + 1)
+        styles = other.styles
+        pivotCaches = other.pivotCaches
+        pivotTables = other.pivotTables
+        preservedStyles = other.preservedStyles
     }
 
     public func moveSheet(withID id: Int, to newIndex: Int) {

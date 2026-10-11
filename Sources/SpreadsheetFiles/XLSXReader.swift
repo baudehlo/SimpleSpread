@@ -14,6 +14,13 @@ public enum XLSXError: Error, Equatable {
 /// normalized, unknown parts ignored.
 public enum XLSXReader {
     public static func read(data: Data) throws -> Workbook {
+        var report = XLSXReadReport()
+        return try read(data: data, report: &report)
+    }
+
+    /// Read, also reporting what couldn't be carried over (for tests and
+    /// diagnostics).
+    static func read(data: Data, report: inout XLSXReadReport) throws -> Workbook {
         let zip = try ZipArchiveReader(data: data)
 
         // 1. Root rels -> workbook part.
@@ -40,9 +47,11 @@ public enum XLSXReader {
         }
         var styleInfos: [ReadStyle] = []
         var customFormats: [Int: String] = [:]
+        var stylesData: Data?
         if let stylesRel = wbRels.first(where: { $0.type.hasSuffix("/styles") }),
-           let stylesData = try? zipData(zip, stylesRel.target) {
-            (styleInfos, customFormats) = try parseStyles(stylesData)
+           let data = try? zipData(zip, stylesRel.target) {
+            stylesData = data
+            (styleInfos, customFormats) = try parseStyles(data)
         }
 
         // 4. Build workbook, one sheet per workbook.xml <sheet> in order.
@@ -52,7 +61,8 @@ public enum XLSXReader {
             styleIndexMap[i] = workbook.styles.index(for: info.toCellStyle(customFormats: customFormats))
         }
 
-        for sheetMeta in workbookInfo.sheets {
+        var sheetParts: [SheetPart] = []
+        for (sheetIndex, sheetMeta) in workbookInfo.sheets.enumerated() {
             guard let rel = wbRels.first(where: { $0.id == sheetMeta.relID }) else { continue }
             let sheet = workbook.insertSheet(
                 Sheet(id: max(1, sheetMeta.sheetID), name: sheetMeta.name),
@@ -63,17 +73,25 @@ public enum XLSXReader {
                 let replacement = workbook.addSheet(named: sheetMeta.name)
                 try parseWorksheet(zipData(zip, rel.target), into: replacement,
                                    sharedStrings: sharedStrings, styleIndexMap: styleIndexMap)
+                sheetParts.append(SheetPart(sheetID: replacement.id, sheetIndex: sheetIndex, path: rel.target))
                 continue
             }
             try parseWorksheet(zipData(zip, rel.target), into: sheet,
                                sharedStrings: sharedStrings, styleIndexMap: styleIndexMap)
+            sheetParts.append(SheetPart(sheetID: sheet.id, sheetIndex: sheetIndex, path: rel.target))
         }
 
         if workbook.sheets.isEmpty {
             workbook.addSheet()
         }
 
-        // 5. 1904 date system: shift date-formatted numerics into 1900 serials.
+        // 5. Pivot tables (definitions only; their cells are already loaded).
+        report.droppedPivots = readPivotTables(PivotReadContext(
+            zip: zip, workbookInfo: workbookInfo, workbookRels: wbRels, sheetParts: sheetParts,
+            stylesData: stylesData, customFormats: customFormats), into: workbook)
+        workbook.clearStrayPivotButtons() // buttons of pivots not kept
+
+        // 6. 1904 date system: shift date-formatted numerics into 1900 serials.
         if workbookInfo.date1904 {
             for sheet in workbook.sheets {
                 for (addr, cell) in sheet.cells {
@@ -123,26 +141,43 @@ public enum XLSXReader {
     struct Relationship {
         let id: String
         let type: String
+        /// Package path for internal targets; the URI as written for external.
         let target: String
+        var isExternal = false
     }
 
     static func parseRelationships(_ data: Data, baseDir: String) throws -> [Relationship] {
         final class Delegate: NSObject, XMLParserDelegate {
-            var rels: [(String, String, String)] = []
+            var rels: [(String, String, String, Bool)] = []
             func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                         qualifiedName: String?, attributes: [String: String]) {
                 if localName(name) == "Relationship",
                    let id = attributes["Id"], let type = attributes["Type"],
                    let target = attributes["Target"] {
-                    rels.append((id, type, target))
+                    rels.append((id, type, target, attributes["TargetMode"] == "External"))
                 }
             }
         }
         let delegate = Delegate()
         try runParser(data, delegate: delegate)
         return delegate.rels.map {
-            Relationship(id: $0.0, type: $0.1, target: resolveTarget($0.2, baseDir: baseDir))
+            Relationship(id: $0.0, type: $0.1,
+                         target: $0.3 ? $0.2 : resolveTarget($0.2, baseDir: baseDir),
+                         isExternal: $0.3)
         }
+    }
+
+    /// The rels part belonging to `partPath` ("xl/a/b.xml" -> "xl/a/_rels/b.xml.rels").
+    static func relsPath(for partPath: String) -> String {
+        let dir = directory(of: partPath)
+        let file = fileName(of: partPath)
+        return dir.isEmpty ? "_rels/\(file).rels" : "\(dir)/_rels/\(file).rels"
+    }
+
+    /// A part's relationships; empty when it has no rels part.
+    static func relationships(of partPath: String, in zip: ZipArchiveReader) throws -> [Relationship] {
+        guard zip.entry(named: relsPath(for: partPath)) != nil else { return [] }
+        return try parseRelationships(zipData(zip, relsPath(for: partPath)), baseDir: directory(of: partPath))
     }
 
     // MARK: Workbook part
@@ -153,16 +188,46 @@ public enum XLSXReader {
             let sheetID: Int
             let relID: String
         }
+        struct PivotCacheMeta {
+            let cacheID: Int
+            let relID: String
+        }
+        struct DefinedName {
+            let name: String
+            /// Index into `sheets` for a sheet-scoped name; nil = workbook scope.
+            let localSheetIndex: Int?
+            let formula: String
+        }
         var sheets: [SheetMeta] = []
         var date1904 = false
+        var pivotCaches: [PivotCacheMeta] = []
+        var definedNames: [DefinedName] = []
     }
 
     static func parseWorkbook(_ data: Data) throws -> WorkbookInfo {
         final class Delegate: NSObject, XMLParserDelegate {
             var info = WorkbookInfo()
+            var depth = 0
+            var inPivotCaches = false
+            var definedName: (name: String, local: Int?)?
+            var definedNameText = ""
             func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                         qualifiedName: String?, attributes: [String: String]) {
+                depth += 1
+                // Only the main list (workbook/pivotCaches); extLst lists
+                // (x14/x15 slicer, timeline, data model caches) are separate.
+                if depth == 2 && localName(name) == "pivotCaches" { inPivotCaches = true }
                 switch localName(name) {
+                case "pivotCache" where inPivotCaches && depth == 3:
+                    let relID = attributes["r:id"] ?? attributes.first { $0.key.hasSuffix(":id") }?.value
+                    if let id = Int(attributes["cacheId"] ?? ""), let relID {
+                        info.pivotCaches.append(.init(cacheID: id, relID: relID))
+                    }
+                case "definedName":
+                    if let n = attributes["name"] {
+                        definedName = (n, Int(attributes["localSheetId"] ?? ""))
+                        definedNameText = ""
+                    }
                 case "workbookPr":
                     let v = attributes["date1904"]?.lowercased()
                     info.date1904 = v == "1" || v == "true"
@@ -175,6 +240,20 @@ public enum XLSXReader {
                     info.sheets.append(.init(name: sheetName, sheetID: sheetID, relID: relID))
                 default:
                     break
+                }
+            }
+
+            func parser(_ parser: XMLParser, foundCharacters string: String) {
+                if definedName != nil { definedNameText += string }
+            }
+
+            func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?,
+                        qualifiedName: String?) {
+                if depth == 2 && localName(name) == "pivotCaches" { inPivotCaches = false }
+                depth -= 1
+                if localName(name) == "definedName", let (n, local) = definedName {
+                    info.definedNames.append(.init(name: n, localSheetIndex: local, formula: definedNameText))
+                    definedName = nil
                 }
             }
         }
@@ -249,6 +328,7 @@ public enum XLSXReader {
         var wrapText = false
         var font: ReadFont?
         var fillARGB: String?
+        var pivotButton = false
 
         func toCellStyle(customFormats: [Int: String]) -> CellStyle {
             var style = CellStyle()
@@ -269,6 +349,7 @@ public enum XLSXReader {
             style.horizontalAlignment = horizontal
             style.verticalAlignment = vertical
             style.wrapText = wrapText
+            style.pivotButton = pivotButton
             if numFmtID != 0 {
                 if let custom = customFormats[numFmtID] {
                     // A custom "General" is General (the writer maps both to id 0).
@@ -337,6 +418,7 @@ public enum XLSXReader {
                         xf.numFmtID = Int(attributes["numFmtId"] ?? "") ?? 0
                         xf.fontID = Int(attributes["fontId"] ?? "") ?? 0
                         xf.fillID = Int(attributes["fillId"] ?? "") ?? 0
+                        xf.pivotButton = boolAttr(attributes["pivotButton"], default: false)
                         currentXf = xf
                     }
                 case "alignment":

@@ -60,6 +60,16 @@ public struct CellStyle: Hashable, Sendable, Codable {
     public var verticalAlignment: TextAlignmentV
     public var wrapText: Bool
     public var numberFormat: NumberFormat
+    /// XLSX xf `pivotButton`: Excel draws a pivot field's filter button in
+    /// cells carrying it. No effect in SimpleSpread; preserved for Excel.
+    /// Not encoded (see CodingKeys): it belongs to the pivot, not the cell.
+    public var pivotButton: Bool = false
+
+    // Explicit so clipboard payloads from builds before pivotButton decode.
+    private enum CodingKeys: String, CodingKey {
+        case fontName, fontSize, bold, italic, underline, strikethrough
+        case textColor, fillColor, horizontalAlignment, verticalAlignment, wrapText, numberFormat
+    }
 
     public init(
         fontName: String? = nil,
@@ -73,7 +83,8 @@ public struct CellStyle: Hashable, Sendable, Codable {
         horizontalAlignment: TextAlignmentH = .automatic,
         verticalAlignment: TextAlignmentV = .bottom,
         wrapText: Bool = false,
-        numberFormat: NumberFormat = .general
+        numberFormat: NumberFormat = .general,
+        pivotButton: Bool = false
     ) {
         self.fontName = fontName
         self.fontSize = fontSize
@@ -87,6 +98,7 @@ public struct CellStyle: Hashable, Sendable, Codable {
         self.verticalAlignment = verticalAlignment
         self.wrapText = wrapText
         self.numberFormat = numberFormat
+        self.pivotButton = pivotButton
     }
 
     public static let `default` = CellStyle()

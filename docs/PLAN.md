@@ -42,8 +42,10 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
   range-returning functions.
 - INDIRECT/OFFSET (they break static dependency analysis; roadmap item with
   dynamic dependency tracking).
-- Charts, images, comments, conditional formatting, data validation, pivot
-  tables, merged-cell *rendering* (model + file round-trip supported).
+- Charts, images, comments, conditional formatting, data validation,
+  merged-cell *rendering* (model + file round-trip supported).
+- Pivot table *creation, editing and refresh*. Pivot tables in opened files
+  are preserved through save (§7), not computed.
 - Frozen-pane *rendering* (model + file round-trip supported).
 - Localization: en-US only (decimal point, M/D dates, comma argument
   separator). The file format layer is locale-invariant per OOXML rules.
@@ -88,12 +90,15 @@ Sources/
     Functions*.swift          8 category files, 156 functions
     CalculationEngine.swift   dependency graph, dirty propagation, cycles
     WorkbookOperations.swift  structural edits with formula rewriting
+    PivotTables.swift         preserved pivot tables/caches (typed facts + opaque XML)
     ValueParser.swift         shared input-parsing pipeline
   SpreadsheetFiles/
     ZipArchive.swift          minimal ZIP reader/writer + CRC32 + DEFLATE
     XMLSupport.swift          escaping + _xHHHH_ encoding
     XLSXWriter.swift          OPC package writer (interop profile)
     XLSXReader.swift          SAX reader (rels-driven, tolerant)
+    XLSXPivotTables.swift     pivot part read (keep/drop decisions) + write (patching)
+    XMLRewriter.swift         streaming XML rewrite/scan/fragment extraction
     CSV.swift                 parser/sniffer/decoder/importer/exporter
   SpreadsheetUI/
     SelectionState.swift      selection model + data-edge navigation + GridLayout
@@ -180,6 +185,30 @@ builtin/custom numFmts, and normalizes 1904-system dates (+1462 on
 date-formatted numerics). Cells with formulas we can't evaluate surface
 #NAME? after recalc — deliberate honesty over stale cached values.
 
+**Pivot tables** are preserved, not modelled. The reader keeps each pivot
+table, cache definition and records part verbatim; the model holds only the
+facts edits can invalidate — the table's location and report-filter area,
+the cache's source ranges (tracked by sheet id), cache ids. On save the
+writer lays the parts out afresh (Overrides, workbook/sheet/table/cache
+rels, `<pivotCaches>` after `<sheets>`) and patches just those facts plus
+the records `r:id` (found by namespace URI, not prefix) through a streaming
+rewriter. Stylesheet references inside the parts stay valid without
+rewriting: custom numFmt ids the parts use keep their ids (our own custom
+formats are numbered above them), and the source `<dxfs>` and
+`<tableStyles>` are re-emitted in original order. A pivot's
+`<conditionalFormats>` are removed, since they must pair with sheet
+conditional formatting we don't keep. Table- and defined-name sources are
+resolved to sheet ranges (tables and names aren't preserved). Dropped,
+leaving the rendered cells as plain values: connection/OLAP/Data Model and
+scenario caches, unresolvable named sources, Strict-namespace parts, and
+1904-date workbooks. Editing: typing, paste, fill or cut into a pivot's
+area, or row/column inserts/deletes that would split one, are refused as in
+Excel; deleting every row/column or clearing a whole pivot removes it;
+moves above/left shift it; source edits follow formula reference semantics
+(a source whose rows all go is kept "detached" and `refreshOnLoad` is
+cleared). Research and real-file fixtures: docs/RESEARCH.md §Pivot tables,
+Tests/SpreadsheetFilesTests/Fixtures/Pivots.
+
 ### CSV (import/export)
 Import: BOM/UTF-16/UTF-8-validation/CP1252 decode chain; delimiter sniffing
 by column-count-consistency scoring; quote-aware state machine (CRLF/LF/CR,
@@ -244,9 +273,21 @@ rejects CFB (encrypted/legacy .xls) containers with a clear error.
   semantics), fill, selection navigation (incl. Cmd+arrow data edges), grid
   layout hit-testing.
 
+- **Pivot tables:** 23 real-world files from Excel, LibreOffice and
+  ONLYOFFICE (Apache-2.0/MIT/MPL-2.0 test data, see the fixtures README)
+  checked for keep/drop decisions, referential integrity of every written
+  pivot part against the original (rels, content types, cacheId, numFmtId
+  and dxfId meaning, records byte-identical, parts unchanged beyond the
+  patched attributes), byte-identical second saves, and the same checks
+  after renames and row/column edits; hand-built packages for irregular
+  inputs; structural-edit geometry; document-level refusal/removal/undo.
+
 External validation: generated XLSX passes `unzip -t` and per-part
 `xmllint`; a sample-file generation hook (`SIMPLESPREAD_SAMPLE_DIR`) exists
-for manual Excel/Numbers/Sheets checks.
+for manual Excel/Numbers/Sheets checks. `SIMPLESPREAD_PIVOT_OUT=dir` (and
+`SIMPLESPREAD_PIVOT_EDIT_OUT=dir`) with `swift test --filter PivotSurvey`
+writes every pivot fixture's round trip (and edited round trip) for checks
+against the ECMA-376 schemas and other readers; all pass schema validation.
 
 ## 10. CI & release
 
@@ -281,7 +322,8 @@ software updates via Sparkle driven by GitHub Releases (Check for Updates…
 menu item + automatic background checks; appcast published by the release
 workflow — see docs/UPDATES.md; needs the network-client entitlement, now in
 entitlements.plist). Sparkle is the project's one third-party dependency; the
-spreadsheet stack itself remains dependency-free.
+spreadsheet stack itself remains dependency-free. Pivot tables in opened
+XLSX files survive editing and saving (§7).
 
 Known gaps and the intended next steps, in priority order:
 
@@ -297,3 +339,10 @@ Known gaps and the intended next steps, in priority order:
 7. Background calculation actor for six-figure-cell workbooks.
 8. Close-window "unsaved changes" prompt.
 9. Localized input parsing (decimal comma, D/M dates).
+10. GETPIVOTDATA: unimplemented, so recalculation turns Excel's cached
+    results into #NAME?. With pivots frozen in SimpleSpread, keeping the
+    cached value would be correct rather than stale.
+11. Pivot fidelity follow-ups: preserve tables (ListObjects), defined names
+    and sheet conditional formatting so table/name sources and pivot
+    conditional formats survive as-is; an Excel open-and-repair check of
+    the fixture round trips (only schema/reader checks so far).
