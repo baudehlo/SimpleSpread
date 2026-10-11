@@ -31,16 +31,26 @@ public struct PivotCaptions: Sendable, Equatable {
     }
 }
 
+/// What a pivot cell is, for styling.
+public enum PivotCellRole: Sendable {
+    case header, rowLabel, columnLabel, subtotalLabel, grandTotalLabel
+    case value, subtotalValue, grandTotalValue
+    case filterLabel, filterValue
+}
+
 /// One cell the pivot draws.
 public struct PivotRenderedCell: Equatable, Sendable {
     public var value: CellValue
+    public var role: PivotCellRole = .value
     /// Number format the pivot applies (nil: leave as is / General).
     public var numberFormat: NumberFormat?
     public var indent: Int
     public var pivotButton: Bool
 
-    public init(value: CellValue, numberFormat: NumberFormat? = nil, indent: Int = 0, pivotButton: Bool = false) {
+    public init(value: CellValue, numberFormat: NumberFormat? = nil, indent: Int = 0, pivotButton: Bool = false,
+                role: PivotCellRole = .value) {
         self.value = value
+        self.role = role
         self.numberFormat = numberFormat
         self.indent = indent
         self.pivotButton = pivotButton
@@ -701,9 +711,10 @@ public struct PivotEngine {
         let fhr = g.firstHeaderRow, fdr = g.firstDataRow, fdc = g.firstDataCol
         let lc = g.labelColumns
         let hr = fdr - 1
-        func put(_ r: Int, _ c: Int, _ v: CellValue, format: NumberFormat? = nil, indent: Int = 0, button: Bool = false) {
+        func put(_ r: Int, _ c: Int, _ v: CellValue, format: NumberFormat? = nil, indent: Int = 0, button: Bool = false,
+                 role: PivotCellRole = .header) {
             cells[PivotOffset(row: r, column: c)] = PivotRenderedCell(value: v, numberFormat: format, indent: indent,
-                                                                      pivotButton: button)
+                                                                      pivotButton: button, role: role)
         }
         let showHeaders = layout.showHeaders
 
@@ -748,12 +759,13 @@ public struct PivotEngine {
             for (ci, (entry, line)) in zip(cols, columnLines).enumerated() {
                 let c = fdc + ci
                 if entry.kind == .grand {
-                    put(fhr, c, .string(grandCaption(onAxis: colFields, dataField: entry.dataField)))
+                    put(fhr, c, .string(grandCaption(onAxis: colFields, dataField: entry.dataField)), role: .grandTotalLabel)
                     continue
                 }
                 if entry.kind != .data {
                     let level = entry.tuple.count - 1
-                    put(fhr + level, c, .string(subtotalCaption(colFields[level], entry.tuple[level], entry.kind)))
+                    put(fhr + level, c, .string(subtotalCaption(colFields[level], entry.tuple[level], entry.kind)),
+                        role: .subtotalLabel)
                     continue
                 }
                 for level in entry.tuple.indices {
@@ -762,7 +774,7 @@ public struct PivotEngine {
                     guard level >= line.repeated || fill else { continue }
                     let v: CellValue = f == pivotValuesFieldIndex ? .string(dataFieldName(entry.tuple[level]))
                         : label(f, entry.tuple[level])
-                    put(fhr + level, c, v, format: labelFormat(f, v))
+                    put(fhr + level, c, v, format: labelFormat(f, v), role: .columnLabel)
                 }
             }
         }
@@ -774,10 +786,11 @@ public struct PivotEngine {
             let r = fdr + ri
             if !rowFields.isEmpty {
                 if entry.kind == .grand {
-                    put(r, 0, .string(grandCaption(onAxis: rowFields, dataField: entry.dataField)))
+                    put(r, 0, .string(grandCaption(onAxis: rowFields, dataField: entry.dataField)), role: .grandTotalLabel)
                 } else if entry.kind != .data {
                     let level = entry.tuple.count - 1
-                    put(r, lc[level], .string(subtotalCaption(rowFields[level], entry.tuple[level], entry.kind)))
+                    put(r, lc[level], .string(subtotalCaption(rowFields[level], entry.tuple[level], entry.kind)),
+                        role: .subtotalLabel)
                 } else {
                     for level in entry.tuple.indices {
                         let f = rowFields[level]
@@ -787,7 +800,9 @@ public struct PivotEngine {
                             : label(f, entry.tuple[level])
                         let depth = level - lc.firstIndex(of: lc[level])!
                         let indent = depth > 0 && fieldCompact(rowFields[level - 1]) ? depth * (layout.indent + 1) : 0
-                        put(r, lc[level], v, format: labelFormat(f, v), indent: indent)
+                        let parent = entry.tuple.count < rowFields.count
+                        put(r, lc[level], v, format: labelFormat(f, v), indent: indent,
+                            role: parent && level == entry.tuple.count - 1 ? .subtotalLabel : .rowLabel)
                     }
                 }
             }
@@ -795,7 +810,15 @@ public struct PivotEngine {
                 let d = valuesOnColumns ? column.dataField : (valuesOnRows ? entry.dataField : 0)
                 let format = dataFieldCount > 0 ? definition.dataFields[d].numberFormat : nil
                 if let v = cellValue(row: entry, column: column, records: records) {
-                    put(r, fdc + ci, v, format: format)
+                    let role: PivotCellRole
+                    if entry.kind == .grand || column.kind == .grand {
+                        role = .grandTotalValue
+                    } else if entry.kind != .data || column.kind != .data || entry.tuple.count < rowFields.count {
+                        role = .subtotalValue
+                    } else {
+                        role = .value
+                    }
+                    put(r, fdc + ci, v, format: format, role: role)
                 }
             }
         }
@@ -818,7 +841,8 @@ public struct PivotEngine {
             let group = over ? j % wrap : j / wrap
             let r = -(rowCount + 1) + row
             let c = group * 3
-            cells[PivotOffset(row: r, column: c)] = PivotRenderedCell(value: .string(cache.fields[f].name), pivotButton: true)
+            cells[PivotOffset(row: r, column: c)] = PivotRenderedCell(value: .string(cache.fields[f].name), pivotButton: true,
+                                                                      role: .filterLabel)
             let value: CellValue
             let items = definition.fields[f].items
             if let item = page.selectedItem, item < items.count {
@@ -834,7 +858,7 @@ public struct PivotEngine {
                     value = .string(captions.multipleItems)
                 }
             }
-            cells[PivotOffset(row: r, column: c + 1)] = PivotRenderedCell(value: value)
+            cells[PivotOffset(row: r, column: c + 1)] = PivotRenderedCell(value: value, role: .filterValue)
         }
     }
 }
