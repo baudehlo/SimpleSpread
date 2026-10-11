@@ -231,6 +231,20 @@ struct PivotFieldsPanel: View {
                     }
                     .disabled(d.dataFields[position].showDataAs == mode)
                 }
+                Divider()
+                ForEach([PivotShowDataAs.difference, .percent, .percentDiff], id: \.self) { mode in
+                    Menu(Self.showAsName(mode)) { baseItemMenu(mode, dataField: position, d, cache) }
+                        .disabled(d.rowFields.filter { $0 >= 0 }.isEmpty && d.columnFields.filter { $0 >= 0 }.isEmpty)
+                }
+                Menu(Self.showAsName(.runTotal)) {
+                    ForEach((d.rowFields + d.columnFields).filter { $0 >= 0 }, id: \.self) { base in
+                        Button(d.fields[base].name ?? cache.fields[base].name) {
+                            document.editPivot(index, actionName: "Show Values As") { d, _ in
+                                d.setShowDataAs(.runTotal, forDataField: position, baseField: base, baseItem: 0)
+                            }
+                        }
+                    }
+                }
             }
             Button("Rename…") {
                 renameText = d.dataFields[position].name
@@ -242,6 +256,14 @@ struct PivotFieldsPanel: View {
                 Button("Ascending") { document.editPivot(index, actionName: "Sort") { d, c in d.setSort(.ascending, field: f, cache: c) } }
                 Button("Descending") { document.editPivot(index, actionName: "Sort") { d, c in d.setSort(.descending, field: f, cache: c) } }
                 Button("Manual (keep order)") { document.editPivot(index, actionName: "Sort") { d, c in d.setSort(.manual, field: f, cache: c) } }
+            }
+            Toggle("Show Items With No Data", isOn: Binding(
+                get: { d.fields[f].showAll },
+                set: { on in document.editPivot(index, actionName: "Show Items") { d, _ in d.fields[f].showAll = on } }))
+            if area == .rows {
+                Toggle("Blank Line After Each Item", isOn: Binding(
+                    get: { d.fields[f].insertBlankRow },
+                    set: { on in document.editPivot(index, actionName: "Blank Lines") { d, _ in d.fields[f].insertBlankRow = on } }))
             }
             if area != .filters {
                 Toggle("Show Subtotals", isOn: Binding(
@@ -256,6 +278,31 @@ struct PivotFieldsPanel: View {
             }
         }
         .disabled(f == pivotValuesFieldIndex)
+    }
+
+    /// Base field ▸ base item choices for difference / % of / % difference.
+    @ViewBuilder
+    private func baseItemMenu(_ mode: PivotShowDataAs, dataField position: Int,
+                              _ d: PivotDefinition, _ cache: PivotCacheData) -> some View {
+        ForEach((d.rowFields + d.columnFields).filter { $0 >= 0 }, id: \.self) { base in
+            Menu(d.fields[base].name ?? cache.fields[base].name) {
+                Button("(previous)") { setBase(mode, position, base, 1048828) }
+                Button("(next)") { setBase(mode, position, base, 1048829) }
+                Divider()
+                let values = cache.fields[base].axisItems
+                ForEach(Array(d.fields[base].items.enumerated()).filter { $0.element.kind == .data }, id: \.offset) { p, item in
+                    Button(item.name ?? item.index.map { $0 < values.count ? values[$0].cellValue.rawDisplayString : "" } ?? "") {
+                        setBase(mode, position, base, p)
+                    }
+                }
+            }
+        }
+    }
+
+    private func setBase(_ mode: PivotShowDataAs, _ position: Int, _ base: Int, _ item: Int) {
+        document.editPivot(index, actionName: "Show Values As") { d, _ in
+            d.setShowDataAs(mode, forDataField: position, baseField: base, baseItem: item)
+        }
     }
 
     private func renamePopover(_ position: Int) -> some View {
@@ -360,6 +407,10 @@ struct PivotFieldsPanel: View {
         case .percentOfRow: return "% of Row Total"
         case .percentOfCol: return "% of Column Total"
         case .index: return "Index"
+        case .difference: return "Difference From"
+        case .percent: return "% Of"
+        case .percentDiff: return "% Difference From"
+        case .runTotal: return "Running Total In"
         default: return mode.rawValue
         }
     }

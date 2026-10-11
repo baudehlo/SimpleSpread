@@ -137,9 +137,12 @@ extension PivotDefinition {
         }
     }
 
-    public mutating func setShowDataAs(_ showAs: PivotShowDataAs, forDataField index: Int) {
+    public mutating func setShowDataAs(_ showAs: PivotShowDataAs, forDataField index: Int,
+                                       baseField: Int? = nil, baseItem: Int? = nil) {
         guard dataFields.indices.contains(index) else { return }
         dataFields[index].showDataAs = showAs
+        if let baseField { dataFields[index].baseField = baseField }
+        if let baseItem { dataFields[index].baseItem = baseItem }
     }
 
     /// Rename a value field (names must be unique among value fields).
