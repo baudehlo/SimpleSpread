@@ -400,7 +400,7 @@ struct StyleParts {
             if fillID != 0 { xf += " applyFill=\"1\"" }
             if style.pivotButton { xf += " pivotButton=\"1\"" }
             let hasAlignment = style.horizontalAlignment != .automatic
-                || style.verticalAlignment != .bottom || style.wrapText
+                || style.verticalAlignment != .bottom || style.wrapText || style.indent > 0
             if hasAlignment {
                 xf += " applyAlignment=\"1\"><alignment"
                 switch style.horizontalAlignment {
@@ -415,6 +415,7 @@ struct StyleParts {
                 case .bottom: break
                 }
                 if style.wrapText { xf += " wrapText=\"1\"" }
+                if style.indent > 0 { xf += " indent=\"\(style.indent)\"" }
                 xf += "/></xf>"
             } else {
                 xf += "/>"

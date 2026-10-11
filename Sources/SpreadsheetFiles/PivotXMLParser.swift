@@ -39,6 +39,7 @@ enum PivotXMLParser {
 
     static func parseCache(definition: Data, records: Data?, formats: FormatTable) throws -> PivotCacheData {
         var fields: [PivotCacheField] = []
+        var hasCalculatedItems = false, isOLAP = false
         var current: PivotCacheField?
         var group: PivotFieldGroup?
         var inSharedItems = false, inGroupItems = false, inDiscrete = false
@@ -57,6 +58,10 @@ enum PivotXMLParser {
         try XMLRewriter.scan(definition) { element in
             let path = element.path
             let attrs = element.attributes
+            if path.count == 2 {
+                if path[1] == "calculatedItems" { hasCalculatedItems = true; return .drop }
+                if path[1] == "cacheHierarchies" { isOLAP = true; return .drop }
+            }
             guard path.count >= 3, path[0] == "pivotCacheDefinition", path[1] == "cacheFields" else {
                 return path.count >= 2 && path[1] == "extLst" ? .drop : .keep
             }
@@ -136,7 +141,8 @@ enum PivotXMLParser {
             }
             if let row { rows.append(row) }
         }
-        return PivotCacheData(fields: fields, records: rows)
+        return PivotCacheData(fields: fields, records: rows, hasCalculatedItems: hasCalculatedItems,
+                              isOLAP: isOLAP, hasRecords: records != nil)
     }
 
     // MARK: Table
@@ -178,6 +184,9 @@ enum PivotXMLParser {
                 layout.showMissing = bool(a["showMissing"], true)
                 layout.indent = Int(a["indent"] ?? "") ?? 1
                 layout.mergeItem = bool(a["mergeItem"], false)
+                layout.pageWrap = Int(a["pageWrap"] ?? "") ?? 0
+                layout.pageOverThenDown = bool(a["pageOverThenDown"], false)
+                layout.subtotalHiddenItems = bool(a["subtotalHiddenItems"], false)
                 return .keep
             }
             guard path.count >= 2 else { return .keep }
@@ -202,7 +211,8 @@ enum PivotXMLParser {
                         subtotalTop: bool(a["subtotalTop"], true), insertBlankRow: bool(a["insertBlankRow"], false),
                         showAll: bool(a["showAll"], true), name: a["name"],
                         numberFormat: formats.format(a["numFmtId"].flatMap { Int($0) }),
-                        multipleItemSelectionAllowed: bool(a["multipleItemSelectionAllowed"], false)))
+                        multipleItemSelectionAllowed: bool(a["multipleItemSelectionAllowed"], false),
+                        subtotalCaption: a["subtotalCaption"]))
                 } else if path.count == 5 && path[3] == "items" && element.localName == "item",
                           !definition.fields.isEmpty {
                     let kind = PivotItem.Kind(rawValue: a["t"] ?? "data") ?? .data
@@ -210,7 +220,9 @@ enum PivotXMLParser {
                         kind: kind, index: a["x"].flatMap { Int($0) }, hidden: bool(a["h"], false),
                         showDetails: bool(a["sd"], true), name: a["n"]))
                 } else if path.count >= 4 && path[3] == "extLst" {
-                    return .drop
+                    if element.localName == "pivotField", bool(a["fillDownLabels"], false), !definition.fields.isEmpty {
+                        definition.fields[definition.fields.count - 1].fillDownLabels = true
+                    }
                 }
             case "rowFields", "colFields":
                 if path.count == 3, let x = Int(a["x"] ?? "") {
@@ -225,6 +237,33 @@ enum PivotXMLParser {
                                          dataFieldIndex: Int(a["i"] ?? "") ?? 0)
                 } else if path.count == 4 && element.localName == "x" {
                     line?.members.append(Int(a["v"] ?? "") ?? 0)
+                }
+            case "location":
+                if path.count == 2 {
+                    definition.firstHeaderRow = Int(a["firstHeaderRow"] ?? "") ?? 1
+                    definition.firstDataRow = Int(a["firstDataRow"] ?? "") ?? 1
+                    definition.firstDataCol = Int(a["firstDataCol"] ?? "") ?? 0
+                }
+            case "filters":
+                if path.count == 3 && element.localName == "filter", let field = Int(a["fld"] ?? "") {
+                    definition.filters.append(PivotFilter(
+                        field: field, type: a["type"] ?? "", measureField: Int(a["iMeasureFld"] ?? "") ?? 0,
+                        evalOrder: Int(a["evalOrder"] ?? "") ?? -1))
+                } else if !definition.filters.isEmpty {
+                    let last = definition.filters.count - 1
+                    switch element.localName {
+                    case "customFilters":
+                        definition.filters[last].conditionsAreAnd = bool(a["and"], false)
+                    case "customFilter":
+                        definition.filters[last].conditions.append(
+                            .init(op: a["operator"] ?? "equal", value: a["val"] ?? ""))
+                    case "top10":
+                        definition.filters[last].top10Value = a["val"].flatMap(Double.init)
+                        definition.filters[last].top10Top = bool(a["top"], true)
+                        definition.filters[last].top10Percent = bool(a["percent"], false)
+                    default:
+                        break
+                    }
                 }
             case "pageFields":
                 if path.count == 3, let field = Int(a["fld"] ?? "") {
@@ -242,7 +281,9 @@ enum PivotXMLParser {
             case "pivotTableStyleInfo":
                 definition.styleName = a["name"]
             case "extLst":
-                return .drop
+                if element.localName == "pivotTableDefinition", bool(a["hideValuesRow"], false) {
+                    layout.hideValuesRow = true
+                }
             default:
                 break
             }

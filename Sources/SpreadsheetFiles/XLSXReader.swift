@@ -329,6 +329,7 @@ public enum XLSXReader {
         var font: ReadFont?
         var fillARGB: String?
         var pivotButton = false
+        var indent = 0
 
         func toCellStyle(customFormats: [Int: String]) -> CellStyle {
             var style = CellStyle()
@@ -350,6 +351,7 @@ public enum XLSXReader {
             style.verticalAlignment = vertical
             style.wrapText = wrapText
             style.pivotButton = pivotButton
+            style.indent = max(0, indent)
             if numFmtID != 0 {
                 if let custom = customFormats[numFmtID] {
                     // A custom "General" is General (the writer maps both to id 0).
@@ -435,6 +437,7 @@ public enum XLSXReader {
                         default: break
                         }
                         if boolAttr(attributes["wrapText"], default: false) { currentXf?.wrapText = true }
+                        if let indent = Int(attributes["indent"] ?? "") { currentXf?.indent = indent }
                     }
                 default:
                     break

@@ -122,16 +122,39 @@ public struct PivotCacheData: Equatable, Sendable {
     public var fields: [PivotCacheField]
     /// One entry per source row; each holds one value per database field.
     public var records: [[PivotRecordValue]]
+    /// The cache carries calculated items (computed per item intersection;
+    /// not supported, so such pivots stay preserve-only).
+    public var hasCalculatedItems: Bool
+    /// OLAP / Data Model cache (cacheHierarchies): not computable here.
+    public var isOLAP: Bool
+    /// False when the file saved no records (saveData="0").
+    public var hasRecords: Bool
 
-    public init(fields: [PivotCacheField], records: [[PivotRecordValue]]) {
+    public init(fields: [PivotCacheField], records: [[PivotRecordValue]],
+                hasCalculatedItems: Bool = false, isOLAP: Bool = false, hasRecords: Bool = true) {
         self.fields = fields
         self.records = records
+        self.hasCalculatedItems = hasCalculatedItems
+        self.isOLAP = isOLAP
+        self.hasRecords = hasRecords
     }
 
-    /// The value of database field `field` in record `record`.
-    public func value(record: Int, field: Int) -> PivotValue {
-        guard record < records.count, field < records[record].count else { return .missing }
-        switch records[record][field] {
+    /// Record column of each cache field (nil for calculated/group fields):
+    /// records hold database fields only, in order.
+    public var recordColumns: [Int?] {
+        var column = 0
+        return fields.map { field in
+            guard field.isDatabaseField else { return nil }
+            defer { column += 1 }
+            return column
+        }
+    }
+
+    /// The value at record column `column` of `record`, resolving shared items
+    /// of cache field `field`.
+    public func value(record: Int, column: Int, field: Int) -> PivotValue {
+        guard record < records.count, column < records[record].count else { return .missing }
+        switch records[record][column] {
         case .value(let v): return v
         case .shared(let i):
             let items = fields[field].sharedItems
@@ -214,12 +237,17 @@ public struct PivotFieldSettings: Equatable, Sendable {
     public var name: String?
     public var numberFormat: NumberFormat?
     public var multipleItemSelectionAllowed: Bool
+    /// x14 fillDownLabels: repeat outer item labels (non-compact fields).
+    public var fillDownLabels: Bool
+    /// Custom subtotal caption; "?" stands for the item label.
+    public var subtotalCaption: String?
 
     public init(axis: Axis? = nil, isDataField: Bool = false, items: [PivotItem] = [],
                 sort: Sort = .manual, subtotals: [PivotItem.Kind] = [.default],
                 compact: Bool = true, outline: Bool = true, subtotalTop: Bool = true,
                 insertBlankRow: Bool = false, showAll: Bool = false, name: String? = nil,
-                numberFormat: NumberFormat? = nil, multipleItemSelectionAllowed: Bool = false) {
+                numberFormat: NumberFormat? = nil, multipleItemSelectionAllowed: Bool = false,
+                fillDownLabels: Bool = false, subtotalCaption: String? = nil) {
         self.axis = axis
         self.isDataField = isDataField
         self.items = items
@@ -233,6 +261,8 @@ public struct PivotFieldSettings: Equatable, Sendable {
         self.name = name
         self.numberFormat = numberFormat
         self.multipleItemSelectionAllowed = multipleItemSelectionAllowed
+        self.fillDownLabels = fillDownLabels
+        self.subtotalCaption = subtotalCaption
     }
 }
 
@@ -315,6 +345,12 @@ public struct PivotLayout: Equatable, Sendable {
     public var showMissing: Bool
     public var indent: Int
     public var mergeItem: Bool
+    /// x14 hideValuesRow: no "Values" caption row when Σ is the only column field.
+    public var hideValuesRow: Bool
+    public var pageWrap: Int
+    public var pageOverThenDown: Bool
+    /// Include hidden page items in totals.
+    public var subtotalHiddenItems: Bool
 
     public init(compact: Bool = true, compactData: Bool = true, outline: Bool = false,
                 outlineData: Bool = false, gridDropZones: Bool = false, rowGrandTotals: Bool = true,
@@ -322,7 +358,9 @@ public struct PivotLayout: Equatable, Sendable {
                 showHeaders: Bool = true, dataCaption: String = "Values", grandTotalCaption: String? = nil,
                 rowHeaderCaption: String? = nil, colHeaderCaption: String? = nil,
                 errorCaption: String? = nil, showError: Bool = false, missingCaption: String? = nil,
-                showMissing: Bool = true, indent: Int = 1, mergeItem: Bool = false) {
+                showMissing: Bool = true, indent: Int = 1, mergeItem: Bool = false,
+                hideValuesRow: Bool = false, pageWrap: Int = 0, pageOverThenDown: Bool = false,
+                subtotalHiddenItems: Bool = false) {
         self.compact = compact
         self.compactData = compactData
         self.outline = outline
@@ -343,6 +381,44 @@ public struct PivotLayout: Equatable, Sendable {
         self.showMissing = showMissing
         self.indent = indent
         self.mergeItem = mergeItem
+        self.hideValuesRow = hideValuesRow
+        self.pageWrap = pageWrap
+        self.pageOverThenDown = pageOverThenDown
+        self.subtotalHiddenItems = subtotalHiddenItems
+    }
+}
+
+/// A label, date, value or top-N filter on a pivot field.
+public struct PivotFilter: Equatable, Sendable {
+    public struct Condition: Equatable, Sendable {
+        public var op: String
+        public var value: String
+        public init(op: String, value: String) { self.op = op; self.value = value }
+    }
+    public var field: Int
+    /// ST_PivotFilterType ("count", "dateBetween", "captionEqual", ...).
+    public var type: String
+    public var measureField: Int
+    public var evalOrder: Int
+    public var conditions: [Condition]
+    public var conditionsAreAnd: Bool
+    /// Top-N: how many, and whether by top or bottom / percent.
+    public var top10Value: Double?
+    public var top10Top: Bool
+    public var top10Percent: Bool
+
+    public init(field: Int, type: String, measureField: Int = 0, evalOrder: Int = -1,
+                conditions: [Condition] = [], conditionsAreAnd: Bool = false,
+                top10Value: Double? = nil, top10Top: Bool = true, top10Percent: Bool = false) {
+        self.field = field
+        self.type = type
+        self.measureField = measureField
+        self.evalOrder = evalOrder
+        self.conditions = conditions
+        self.conditionsAreAnd = conditionsAreAnd
+        self.top10Value = top10Value
+        self.top10Top = top10Top
+        self.top10Percent = top10Percent
     }
 }
 
@@ -362,11 +438,17 @@ public struct PivotDefinition: Equatable, Sendable {
     public var rowLines: [PivotAxisLine]
     public var columnLines: [PivotAxisLine]
     public var styleName: String?
+    public var filters: [PivotFilter]
+    /// Body location as written (relative geometry the engine recomputes).
+    public var firstHeaderRow: Int
+    public var firstDataRow: Int
+    public var firstDataCol: Int
 
     public init(name: String, fields: [PivotFieldSettings], rowFields: [Int] = [], columnFields: [Int] = [],
                 pageFields: [PivotPageField] = [], dataFields: [PivotDataField] = [],
                 layout: PivotLayout = PivotLayout(), rowLines: [PivotAxisLine] = [],
-                columnLines: [PivotAxisLine] = [], styleName: String? = "PivotStyleLight16") {
+                columnLines: [PivotAxisLine] = [], styleName: String? = "PivotStyleLight16",
+                filters: [PivotFilter] = [], firstHeaderRow: Int = 1, firstDataRow: Int = 1, firstDataCol: Int = 0) {
         self.name = name
         self.fields = fields
         self.rowFields = rowFields
@@ -377,5 +459,9 @@ public struct PivotDefinition: Equatable, Sendable {
         self.rowLines = rowLines
         self.columnLines = columnLines
         self.styleName = styleName
+        self.filters = filters
+        self.firstHeaderRow = firstHeaderRow
+        self.firstDataRow = firstDataRow
+        self.firstDataCol = firstDataCol
     }
 }

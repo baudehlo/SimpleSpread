@@ -64,11 +64,31 @@ public struct CellStyle: Hashable, Sendable, Codable {
     /// cells carrying it. No effect in SimpleSpread; preserved for Excel.
     /// Not encoded (see CodingKeys): it belongs to the pivot, not the cell.
     public var pivotButton: Bool = false
+    /// Indent level (XLSX alignment indent; each level ~3 characters).
+    public var indent: Int = 0
 
-    // Explicit so clipboard payloads from builds before pivotButton decode.
+    // Explicit so clipboard payloads from builds before pivotButton/indent decode.
     private enum CodingKeys: String, CodingKey {
         case fontName, fontSize, bold, italic, underline, strikethrough
         case textColor, fillColor, horizontalAlignment, verticalAlignment, wrapText, numberFormat
+        case indent
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        fontName = try c.decodeIfPresent(String.self, forKey: .fontName)
+        fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize)
+        bold = try c.decode(Bool.self, forKey: .bold)
+        italic = try c.decode(Bool.self, forKey: .italic)
+        underline = try c.decode(Bool.self, forKey: .underline)
+        strikethrough = try c.decode(Bool.self, forKey: .strikethrough)
+        textColor = try c.decodeIfPresent(RGBAColor.self, forKey: .textColor)
+        fillColor = try c.decodeIfPresent(RGBAColor.self, forKey: .fillColor)
+        horizontalAlignment = try c.decode(TextAlignmentH.self, forKey: .horizontalAlignment)
+        verticalAlignment = try c.decode(TextAlignmentV.self, forKey: .verticalAlignment)
+        wrapText = try c.decode(Bool.self, forKey: .wrapText)
+        numberFormat = try c.decode(NumberFormat.self, forKey: .numberFormat)
+        indent = try c.decodeIfPresent(Int.self, forKey: .indent) ?? 0
     }
 
     public init(
@@ -84,7 +104,8 @@ public struct CellStyle: Hashable, Sendable, Codable {
         verticalAlignment: TextAlignmentV = .bottom,
         wrapText: Bool = false,
         numberFormat: NumberFormat = .general,
-        pivotButton: Bool = false
+        pivotButton: Bool = false,
+        indent: Int = 0
     ) {
         self.fontName = fontName
         self.fontSize = fontSize
@@ -99,6 +120,7 @@ public struct CellStyle: Hashable, Sendable, Codable {
         self.wrapText = wrapText
         self.numberFormat = numberFormat
         self.pivotButton = pivotButton
+        self.indent = indent
     }
 
     public static let `default` = CellStyle()
