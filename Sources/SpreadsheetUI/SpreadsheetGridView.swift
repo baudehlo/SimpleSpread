@@ -49,6 +49,22 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
     static let gridLineColor = NSColor.separatorColor.withAlphaComponent(0.5)
     static let selectionFill = NSColor.controlAccentColor.withAlphaComponent(0.12)
     static let selectionBorder = NSColor.controlAccentColor
+    /// Pivot header/grand-total shading (Excel's PivotStyleLight16 blue in
+    /// light mode; a translucent system blue reads better on dark).
+    static let pivotBandFill = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor.systemBlue.withAlphaComponent(0.22)
+            : NSColor(srgbRed: 0xDD / 255, green: 0xEB / 255, blue: 0xF7 / 255, alpha: 1)
+    }
+    /// The rules under a pivot's header rows and above its grand totals.
+    static let pivotRuleColor = NSColor(name: nil) { appearance in
+        appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+            ? NSColor.systemBlue.withAlphaComponent(0.65)
+            : NSColor(srgbRed: 0x7F / 255, green: 0xA7 / 255, blue: 0xD9 / 255, alpha: 1)
+    }
+
+    /// Pivot banding for the active sheet, rebuilt when the document changes.
+    private var pivotBandsCache: (revision: Int, sheetID: Int, bands: [PivotBands])?
 
     // MARK: Layout size
 
@@ -95,6 +111,13 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let selection = document.selection
         let selectionRange = selection.range
 
+        // Pivot styling is drawn from cell roles, and only on sheets that
+        // have pivots (role lookups are cached per revision, but skip them
+        // entirely everywhere else).
+        let bands = pivotBands(document)
+        let role: (CellAddress) -> PivotCellRole? = { document.pivotRole(at: $0) }
+        var pivotButtons: [CGRect] = []
+
         // --- Cell backgrounds ---
         for row in rows {
             for col in cols {
@@ -107,7 +130,11 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 if let fill = style.fillColor {
                     nsColor(fill).setFill()
                     rect.fill()
+                } else if !bands.isEmpty, bands.contains(where: { $0.isShaded(addr, role: role) }) {
+                    SpreadsheetGridView.pivotBandFill.setFill()
+                    rect.fill()
                 }
+                if style.pivotButton { pivotButtons.append(rect) }
                 if selectionRange.contains(addr) {
                     SpreadsheetGridView.selectionFill.setFill()
                     rect.fill()
@@ -125,7 +152,8 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 let addr = CellAddress(row: row, column: col)
                 let cell = document.activeSheet.cell(at: addr)
                 guard !cell.value.isEmpty else { continue }
-                let style = document.workbook.style(at: cell.styleIndex)
+                var style = document.workbook.style(at: cell.styleIndex)
+                if !bands.isEmpty, let r = role(addr), PivotBands.isBold(r) { style.bold = true }
                 let span = drawCellText(cell: cell, style: style, at: addr, layout: l)
                 if span.count > 1 {
                     for boundary in (span.lowerBound + 1)...span.upperBound {
@@ -179,6 +207,11 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         }
         path.stroke()
 
+        if !bands.isEmpty {
+            drawPivotRules(bands, role: role, layout: l, rows: rows)
+        }
+        for rect in pivotButtons { drawPivotButton(in: rect) }
+
         // --- Selection border + fill handle ---
         let selStart = cellRect(selectionRange.start, layout: l)
         let selEnd = cellRect(selectionRange.end, layout: l)
@@ -215,6 +248,80 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         // --- Headers (pinned to the visible rect) ---
         drawHeaders(layout: l, visible: visible, rows: rows, cols: cols,
                     selectionRange: selectionRange)
+    }
+
+    private func pivotBands(_ document: SpreadsheetDocument) -> [PivotBands] {
+        let sheetID = document.activeSheetID
+        if let cache = pivotBandsCache, cache.revision == document.revision, cache.sheetID == sheetID {
+            return cache.bands
+        }
+        let tables = document.workbook.pivotTables(onSheet: sheetID)
+        let bands = tables.map { table in
+            PivotBands(location: table.location, role: { document.pivotRole(at: $0) })
+        }
+        pivotBandsCache = (document.revision, sheetID, bands)
+        return bands
+    }
+
+    /// The thin rules under each pivot's header rows and above its grand
+    /// total rows, across the table body.
+    private func drawPivotRules(_ bands: [PivotBands], role: (CellAddress) -> PivotCellRole?,
+                                layout l: GridLayout, rows: ClosedRange<Int>) {
+        let rules = NSBezierPath()
+        rules.lineWidth = 1
+        for band in bands {
+            let minX = contentOrigin.x + l.xOffset(ofColumn: band.location.start.column)
+            let maxX = contentOrigin.x + l.xOffset(ofColumn: band.location.end.column + 1)
+            func rule(atTopOf row: Int) {
+                // Centred on the grid line (half-pixel) so it covers it.
+                let y = contentOrigin.y + l.yOffset(ofRow: row) + 0.5
+                rules.move(to: CGPoint(x: minX, y: y))
+                rules.line(to: CGPoint(x: maxX, y: y))
+            }
+            if let header = band.headerRows, rows.contains(header.upperBound + 1) || rows.contains(header.upperBound) {
+                rule(atTopOf: header.upperBound + 1)
+            }
+            let lo = max(rows.lowerBound, band.location.start.row)
+            let hi = min(rows.upperBound, band.location.end.row)
+            if lo <= hi {
+                for row in lo...hi where band.isGrandTotalRow(row, role: role) {
+                    // Consecutive grand-total rows share one rule on top.
+                    if !band.isGrandTotalRow(row - 1, role: role) { rule(atTopOf: row) }
+                }
+            }
+        }
+        SpreadsheetGridView.pivotRuleColor.setStroke()
+        rules.stroke()
+    }
+
+    /// Width a pivot field button takes at a cell's right edge (box + gap).
+    static let pivotButtonSize: CGFloat = 11
+    static let pivotButtonReserve: CGFloat = pivotButtonSize + 4
+
+    /// Excel's pivot field (filter) button: a small rounded box with a
+    /// down chevron, at the cell's right edge, vertically centred.
+    private func drawPivotButton(in cell: CGRect) {
+        let size = min(SpreadsheetGridView.pivotButtonSize, cell.height - 4)
+        guard size > 4 else { return }
+        let box = CGRect(x: (cell.maxX - size - 3).rounded() + 0.5,
+                         y: (cell.midY - size / 2).rounded() + 0.5,
+                         width: size - 1, height: size - 1)
+        let outline = NSBezierPath(roundedRect: box, xRadius: 2.5, yRadius: 2.5)
+        NSColor.controlBackgroundColor.setFill()
+        outline.fill()
+        NSColor.tertiaryLabelColor.setStroke()
+        outline.lineWidth = 1
+        outline.stroke()
+        let chevron = NSBezierPath()
+        let w = box.width * 0.24, h = box.height * 0.13
+        chevron.move(to: CGPoint(x: box.midX - w, y: box.midY - h))
+        chevron.line(to: CGPoint(x: box.midX, y: box.midY + h + 0.5))
+        chevron.line(to: CGPoint(x: box.midX + w, y: box.midY - h))
+        chevron.lineWidth = 1.3
+        chevron.lineCapStyle = .round
+        chevron.lineJoinStyle = .round
+        NSColor.secondaryLabelColor.setStroke()
+        chevron.stroke()
     }
 
     /// The columns whose text can show in `row`: every visible column, plus
@@ -255,9 +362,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let text = NumberFormatEngine.displayString(for: cell.value, format: style.numberFormat)
         guard !text.isEmpty else { return own }
 
-        var font = NSFont(name: style.fontName ?? CellStyle.defaultFontName,
-                          size: style.fontSize ?? CellStyle.defaultFontSize)
-            ?? NSFont.systemFont(ofSize: style.fontSize ?? CellStyle.defaultFontSize)
+        let fontSize = style.fontSize ?? CellStyle.defaultFontSize
+        var font = NSFont(name: style.fontName ?? CellStyle.defaultFontName, size: fontSize)
+            ?? NSFont.systemFont(ofSize: fontSize)
         var traits: NSFontTraitMask = []
         if style.bold { traits.insert(.boldFontMask) }
         if style.italic { traits.insert(.italicFontMask) }
@@ -290,7 +397,14 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         attributes[.paragraphStyle] = paragraph
 
         let horizontalInset: CGFloat = 3
-        let inset = rect.insetBy(dx: horizontalInset, dy: 2)
+        var inset = rect.insetBy(dx: horizontalInset, dy: 2)
+        // A pivot field button sits at the right edge; text stops short of it.
+        if style.pivotButton {
+            inset.size.width = max(0, inset.width - SpreadsheetGridView.pivotButtonReserve + horizontalInset)
+        }
+        let indent = CellTextIndent.width(level: style.indent, fontSize: fontSize)
+        inset = CellTextIndent.apply(indent, to: inset, rightAligned: alignment == .right,
+                                     centered: alignment == .center)
         let attributed = NSAttributedString(string: text, attributes: attributes)
         let textSize = attributed.size()
         var drawRect = inset
@@ -306,8 +420,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
         // Only text overflows. Numbers, booleans and errors stay in their cell.
         var span = own
-        if !style.wrapText, case .string = cell.value {
+        if !style.wrapText, !style.pivotButton, case .string = cell.value {
             let needed = ceil(textSize.width) + 2 * horizontalInset + 1
+                + (alignment == .center ? 0 : indent)
             let direction: TextOverflow.Direction
             switch alignment {
             case .right: direction = .left
@@ -323,6 +438,14 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         }
 
         if span == own {
+            if style.pivotButton {
+                // Keep long field names from running under the button.
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: drawRect).setClip()
+                attributed.draw(with: drawRect, options: [.usesLineFragmentOrigin])
+                NSGraphicsContext.restoreGraphicsState()
+                return own
+            }
             // .usesLineFragmentOrigin is required for rect-based drawing;
             // without it the origin is interpreted as a text BASELINE.
             attributed.draw(with: drawRect, options: [.usesLineFragmentOrigin])
@@ -440,6 +563,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
     }
 
     // MARK: Scrolling
+
 
     override func viewDidMoveToSuperview() {
         super.viewDidMoveToSuperview()
