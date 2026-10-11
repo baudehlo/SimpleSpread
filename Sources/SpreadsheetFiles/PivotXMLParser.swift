@@ -4,7 +4,7 @@ import SpreadsheetCore
 /// Parses pivot cache and pivot table parts into the typed pivot model.
 enum PivotXMLParser {
     /// Number formats by id: the workbook's custom formats plus builtins.
-    struct FormatTable {
+    struct FormatTable: Sendable {
         var custom: [Int: String]
 
         func format(_ id: Int?) -> NumberFormat? {
