@@ -49,7 +49,9 @@ public struct BuiltinFunction: Sendable {
 
 public enum FunctionRegistry {
     /// Functions whose value can change without any input changing.
-    public static let volatileFunctions: Set<String> = ["NOW", "TODAY", "RAND", "RANDBETWEEN"]
+    /// GETPIVOTDATA reads cells its arguments don't name (inside the pivot,
+    /// rewritten on refresh), so it recalculates with every change too.
+    public static let volatileFunctions: Set<String> = ["NOW", "TODAY", "RAND", "RANDBETWEEN", "GETPIVOTDATA"]
 
     public static func function(named name: String) -> BuiltinFunction? {
         all[name.uppercased()]
@@ -68,6 +70,7 @@ public enum FunctionRegistry {
             LookupFunctions.all,
             InfoFunctions.all,
             FinancialFunctions.all,
+            PivotFunctions.all,
         ]
         for group in groups {
             for fn in group {

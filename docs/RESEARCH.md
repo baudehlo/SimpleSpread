@@ -15,7 +15,7 @@ real-world formulas use only operators plus a small set — SUM, IF, NOW,
 AVERAGE, VLOOKUP, ROUND, TODAY, MONTH/YEAR, ISERROR, INDEX/MATCH. ~25
 functions cover >90% of usage; ~120 covers essentially everything a
 non-specialist writes. **Conclusion: invest in operator/coercion correctness
-and the high-traffic functions before breadth.** SimpleSpread ships 156.
+and the high-traffic functions before breadth.** SimpleSpread ships 157.
 
 ### Coercion table (the part clones get wrong)
 - Arithmetic operators and *direct literal* arguments coerce: TRUE→1,

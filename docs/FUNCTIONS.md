@@ -1,6 +1,6 @@
 # SimpleSpread — Function Reference
 
-156 built-in functions. Names are case-insensitive; arguments in square
+157 built-in functions. Names are case-insensitive; arguments in square
 brackets are optional; `...` is variadic. Semantics follow Google Sheets /
 Excel shared behavior (see docs/RESEARCH.md for the coercion and criteria
 rules that apply across all functions).
@@ -115,7 +115,7 @@ rules that apply across all functions).
 | WORKDAY(start, days, [holidays]) | Exclusive of start |
 | YEARFRAC(start, end, [basis=0]) | 0: 30/360 US, 1: act/act, 2: act/360, 3: act/365, 4: 30E/360 |
 
-## Lookup & reference (13)
+## Lookup & reference (14)
 
 | Function | Notes |
 |---|---|
@@ -129,6 +129,7 @@ rules that apply across all functions).
 | ADDRESS(row, col, [mode=1], [a1=TRUE], [sheet]) | Modes 1–4 |
 | ROW([ref]), COLUMN([ref]) | No-arg form = own cell |
 | ROWS(range), COLUMNS(range) | |
+| GETPIVOTDATA(data_field, pivot_table, [field, item], ...) | Reads the cell a pivot shows: data field by name or source field; fields/items case-insensitive, numbers and dates by value; no row/column field named = grand total, leading fields only = their subtotal; a report filter must be set to that item; blank pivot cell → 0; anything not shown (hidden item, totals off, outside a pivot) → #REF!. Volatile |
 
 ## Info (14)
 
