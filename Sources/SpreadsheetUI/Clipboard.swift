@@ -9,6 +9,9 @@ extension SpreadsheetDocument {
     private static var copyOrigins: [ObjectIdentifier: CellAddress] = [:]
 
     public func copySelectionToPasteboard(cut: Bool = false) {
+        // Cutting moves cells; a pivot table can't move (it would arrive as
+        // plain values), so refuse before anything reaches the pasteboard.
+        if cut, refuseIfPivot(selection.range) { return }
         let payload = selectionPayload(isCut: cut)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()

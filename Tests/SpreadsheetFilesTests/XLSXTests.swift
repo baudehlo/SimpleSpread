@@ -75,6 +75,40 @@ struct XLSXRoundTripTests {
         #expect(read.sheets[0].value(at: CellAddress(a1: "B1")!) == .number(5))
     }
 
+    @Test func defaultRowHeightIsStableAcrossSaves() throws {
+        let wb = Workbook.newDocument()
+        let first = try XLSXWriter.data(for: wb)
+        let sheetXML = String(decoding: try ZipArchiveReader(data: first).contents(named: "xl/worksheets/sheet1.xml"),
+                              as: UTF8.self)
+        #expect(sheetXML.contains("defaultRowHeight=\"15\"")) // Excel's default row
+        var current = wb
+        for _ in 0..<3 {
+            current = try roundTrip(current)
+            #expect(current.sheets[0].defaultRowHeight == 22)
+        }
+    }
+
+    @Test func dxfNumberFormatsDontOverrideCellFormats() throws {
+        // A <dxf> may carry a numFmt reusing a cell format's id; only the
+        // stylesheet's <numFmts> table defines cell formats.
+        let styles = """
+        <?xml version="1.0" encoding="UTF-8"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">\
+        <numFmts count="1"><numFmt numFmtId="164" formatCode="0.000"/></numFmts>\
+        <cellXfs count="2"><xf numFmtId="0"/><xf numFmtId="164" applyNumberFormat="1"/></cellXfs>\
+        <dxfs count="1"><dxf><numFmt numFmtId="164" formatCode="#,##0"/></dxf></dxfs></styleSheet>
+        """
+        let (xfs, formats) = try XLSXReader.parseStyles(Data(styles.utf8))
+        #expect(formats == [164: "0.000"])
+        #expect(xfs[1].toCellStyle(customFormats: formats).numberFormat.code == "0.000")
+    }
+
+    @Test func customGeneralFormatReadsAsGeneral() throws {
+        // LibreOffice writes <numFmt numFmtId="164" formatCode="General"/>.
+        var xf = XLSXReader.ReadStyle()
+        xf.numFmtID = 164
+        #expect(xf.toCellStyle(customFormats: [164: "General"]) == CellStyle())
+    }
+
     @Test func multiSheetRoundTrip() throws {
         let wb = Workbook.newDocument()
         let budget = wb.addSheet(named: "Budget 2026")

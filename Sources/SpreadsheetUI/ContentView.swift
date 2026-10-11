@@ -47,6 +47,14 @@ public struct DocumentWindowView: View {
                 refocusGrid()
             }
         }
+        .alert(document.notice?.message ?? "", isPresented: Binding(
+            get: { document.notice != nil },
+            set: { if !$0 { document.notice = nil } }
+        ), presenting: document.notice) { _ in
+            Button("OK") { refocusGrid() }
+        } message: { notice in
+            Text(notice.detail)
+        }
         .background(DocumentWindowHook(document: document))
         .focusedSceneValue(\.spreadsheetDocument, document)
         .navigationTitle(document.displayName)

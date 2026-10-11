@@ -175,3 +175,57 @@ autofill, find/replace, Cmd+click discontiguous selection, marching ants.
 - Export: computed values; minimal RFC-4180 quoting; CRLF; UTF-8 **with**
   BOM (Windows Excel double-click); numbers full-precision machine form;
   dates ISO 8601; formulas export results; display-mode as option.
+
+## Track 4 — Pivot table preservation
+
+Goal: open an XLSX with pivot tables, edit elsewhere, save, and have Excel
+open it with the pivots intact and no repair prompt. SimpleSpread never
+computes pivots.
+
+### Package facts
+- Parts and relationships: worksheet → `pivotTable`; workbook →
+  `pivotCacheDefinition`; each pivot table → its cache definition (required);
+  cache definition → `pivotCacheRecords` via the root `r:id`. Each part needs
+  its own content-type Override. `<pivotCaches>` (never empty) sits after
+  `definedNames`/`calcPr` and before `extLst` in CT_Workbook; the cacheIds
+  need not be contiguous and must be kept, because `pivotTableDefinition@cacheId`
+  points at them.
+- Records are optional: `saveData="0"` omits them, as can `invalid="1"`.
+  Otherwise Office requires them [MS-OI29500 2.1.782].
+- Match `r:id` by namespace URI, not by prefix. Strict files use purl.oclc.org
+  namespaces and relationship types; we drop those rather than mix flavours.
+- References that leave a pivot part:
+  - `numFmtId` on cacheField, pivotField and dataField → styles numFmts;
+  - `format@dxfId` → `<dxfs>` (a dangling one is a confirmed repair trigger);
+  - `pivotTableStyleInfo@name` → a built-in or custom `<tableStyles>` entry;
+  - `worksheetSource` (`ref`+`sheet`, `name`, or `r:id` for an external workbook);
+  - `conditionalFormat@priority` → the sheet's `conditionalFormatting
+    pivot="1"` rule (an Office MUST);
+  - `sheetView/pivotSelection@r:id`.
+  Indices such as fld, x, v and item are internal to the table/cache pair.
+- `location@ref` excludes the report filters. These render above it: one row
+  per filter, then a blank row; each filter column is a label and a value,
+  with a blank column between filter columns.
+- Excel doesn't re-render a pivot on open (unless `refreshOnLoad`). The cell
+  values are display-only, so the definition must stay consistent with
+  itself, not with the cells.
+
+### Why verbatim rather than modelled
+openpyxl re-serialises its own pivot model. It drops every pivot extLst and
+has a long tail of fidelity bugs (its issues #1329, #1519, #2254 and more).
+Apache POI keeps unmodelled parts byte-for-byte and keeps style ids stable.
+We follow POI: carry parts verbatim, patch only what edits invalidate, and
+keep the stylesheet entries they reference under their original ids.
+
+### Unverified (no Excel on the build machine)
+- Whether Excel repairs or silently tolerates a dangling numFmtId, a missing
+  source (deleted sheet or unresolvable name), duplicate pivot names, or an
+  unreferenced cache. Our writer never produces the first or the last of these.
+- What Excel itself writes in `worksheetSource` after the source sheet is
+  deleted. We keep the last known sheet/ref and clear `refreshOnLoad`.
+
+### Sources
+ECMA-376 Part 1 §18.10 and transitional `sml.xsd`; [MS-OI29500] §2.1.737–803;
+[MS-XLSX] §2.2.4, 2.3.4; Open XML SDK part metadata; openpyxl 3.1.5 and Apache
+POI source; documonster #237 (dangling pivot dxfId → repair); office-kit/xlsx
+#285 (dangling CF dxfId → Excel for Mac won't open).

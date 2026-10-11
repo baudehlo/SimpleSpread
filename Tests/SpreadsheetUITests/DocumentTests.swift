@@ -9,6 +9,15 @@ import Testing
 struct DocumentTests {
     func a(_ a1: String) -> CellAddress { CellAddress(a1: a1)! }
 
+    @Test func clipboardStylesFromOlderBuildsDecode() throws {
+        // Payloads written before CellStyle.pivotButton existed.
+        let json = #"{"fontSize":null,"bold":true,"italic":false,"underline":false,"strikethrough":false,"horizontalAlignment":"automatic","verticalAlignment":"bottom","wrapText":false,"numberFormat":{"code":"0.00"}}"#
+        let style = try JSONDecoder().decode(CellStyle.self, from: Data(json.utf8))
+        #expect(style == CellStyle(bold: true, numberFormat: NumberFormat(code: "0.00")))
+        let roundTrip = try JSONDecoder().decode(CellStyle.self, from: JSONEncoder().encode(CellStyle(italic: true, pivotButton: true)))
+        #expect(roundTrip == CellStyle(italic: true))
+    }
+
     @Test func commitInputParsesTypes() {
         let doc = SpreadsheetDocument()
         doc.commitInput("42", at: a("A1"))

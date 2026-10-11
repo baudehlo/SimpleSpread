@@ -19,6 +19,13 @@ public struct ClipboardPayload: Codable, Sendable {
     public static let pasteboardType = "com.kikiplan.simplespread.cells"
 }
 
+/// A message the window shows as an alert (e.g. an edit that was refused).
+public struct DocumentNotice: Identifiable, Equatable {
+    public let id = UUID()
+    public var message: String
+    public var detail: String
+}
+
 /// The document view-model: owns the workbook, the calculation engine,
 /// selection, undo, dirty tracking, clipboard, and file I/O.
 /// All operations route through here so they are undoable and recalculated.
@@ -42,6 +49,8 @@ public final class SpreadsheetDocument: ObservableObject {
     @Published public private(set) var revision = 0
     /// View zoom (1.0 = 100%). Applied as NSScrollView magnification.
     @Published public var zoomLevel: CGFloat = 1.0
+    /// An alert for the window to show; the window clears it on dismissal.
+    @Published public var notice: DocumentNotice?
 
     public static let zoomRange: ClosedRange<CGFloat> = 0.25...4.0
     public static let zoomPresets: [CGFloat] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
@@ -215,27 +224,54 @@ public final class SpreadsheetDocument: ObservableObject {
         markChanged()
     }
 
-    /// Move sheets/styles from another workbook instance into ours in place.
-    /// Sheets get fresh ids (avoiding collisions with the placeholder).
+    /// Move sheets/styles/pivots from another workbook instance into ours in
+    /// place. Sheet ids are kept (the writer stores them as sheetId), so cell
+    /// undo records registered before the snapshot still find their sheets.
     private func replaceWorkbookContents(with other: Workbook) {
-        while workbook.sheets.count > 1 {
-            workbook.removeSheet(withID: workbook.sheets[workbook.sheets.count - 1].id)
-        }
-        let placeholder = workbook.sheets[0]
-        placeholder.name = "\u{1}__restore_placeholder__"
-        for source in other.sheets {
-            let fresh = workbook.addSheet(named: source.name)
-            fresh.adoptContents(of: source)
-        }
-        workbook.removeSheet(withID: placeholder.id)
-        workbook.styles = other.styles
+        workbook.replaceContents(with: other)
         engine.rebuildAll()
+    }
+
+    // MARK: - Pivot table protection
+
+    /// Pivot tables on the active sheet that `range` touches.
+    private func pivotTables(touching range: CellRange) -> [PivotTable] {
+        workbook.pivotTables(intersecting: range, onSheet: activeSheetID)
+    }
+
+    /// Refuse an edit that would change part of a pivot table, as Excel
+    /// does: the definition would no longer match its cells. Returns true
+    /// (and tells the user) when the edit must not go ahead.
+    func refuseIfPivot(_ range: CellRange) -> Bool {
+        guard let table = pivotTables(touching: range).first else { return false }
+        refusePivotEdit(table)
+        return true
+    }
+
+    private func refusePivotEdit(_ table: PivotTable) {
+        notice = DocumentNotice(
+            message: "You can’t change part of a pivot table.",
+            detail: "“\(table.name)” came from Excel. SimpleSpread keeps pivot tables intact "
+                + "but can’t edit them. To remove it, select the whole pivot table and press Delete.")
+    }
+
+    private func refuseStructuralEdit(axisIsRow: Bool, index: Int, count: Int) -> Bool {
+        guard let table = WorkbookOperations.pivotTableSplit(
+            in: workbook, sheetID: activeSheetID, axisIsRow: axisIsRow, index: index, count: count) else {
+            return false
+        }
+        notice = DocumentNotice(
+            message: "You can’t insert or delete \(axisIsRow ? "rows" : "columns") through a pivot table.",
+            detail: "This would split “\(table.name)”. Select rows or columns entirely above, "
+                + "below or beside it, or all of the pivot table’s \(axisIsRow ? "rows" : "columns") to delete it.")
+        return true
     }
 
     // MARK: - Editing
 
     /// Commit raw typed input into a cell (the shared parsing pipeline).
     public func commitInput(_ text: String, at address: CellAddress) {
+        guard !refuseIfPivot(CellRange(address)) else { return }
         let currentStyle = style(at: address)
         let parsed = ValueParser.parse(text, textFormat: currentStyle.numberFormat.isTextFormat)
         let snaps = snapshot([address])
@@ -259,6 +295,17 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Delete contents (not formatting) of the selected range.
     public func clearSelectionContents() {
+        let touched = pivotTables(touching: selection.range)
+        if !touched.isEmpty {
+            // Deleting a whole pivot table removes it (as in Excel); clearing
+            // part of one would leave its definition describing other cells.
+            if let partial = touched.first(where: { selection.range.union($0.occupiedRange) != selection.range }) {
+                refusePivotEdit(partial)
+                return
+            }
+            removePivotTablesAndClear(touched)
+            return
+        }
         let addresses = selection.range.addresses
         let snaps = snapshot(addresses)
         for address in addresses {
@@ -268,6 +315,19 @@ public final class SpreadsheetDocument: ObservableObject {
             }
         }
         registerCellUndo(snaps, actionName: "Delete")
+        markChanged()
+    }
+
+    /// Remove pivot tables and clear the selection, as one undoable step.
+    private func removePivotTablesAndClear(_ tables: [PivotTable]) {
+        registerWorkbookUndo(actionName: "Delete")
+        let sheetID = activeSheetID
+        let names = Set(tables.map(\.name))
+        workbook.removePivotTables { $0.sheetID == sheetID && names.contains($0.name)
+            && selection.range.union($0.occupiedRange) == selection.range }
+        for address in selection.range.addresses where !activeSheet.cell(at: address).isDefault {
+            engine.clearCell(at: AbsoluteAddress(sheetID: sheetID, address: address))
+        }
         markChanged()
     }
 
@@ -312,6 +372,7 @@ public final class SpreadsheetDocument: ObservableObject {
     // MARK: - Structure
 
     public func insertRows(at index: Int, count: Int = 1) {
+        guard !refuseStructuralEdit(axisIsRow: true, index: index, count: count) else { return }
         registerWorkbookUndo(actionName: "Insert Rows")
         WorkbookOperations.insertRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
         engine.rebuildAll()
@@ -319,6 +380,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func deleteRows(at index: Int, count: Int = 1) {
+        guard !refuseStructuralEdit(axisIsRow: true, index: index, count: -count) else { return }
         registerWorkbookUndo(actionName: "Delete Rows")
         WorkbookOperations.deleteRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
         engine.rebuildAll()
@@ -328,6 +390,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func insertColumns(at index: Int, count: Int = 1) {
+        guard !refuseStructuralEdit(axisIsRow: false, index: index, count: count) else { return }
         registerWorkbookUndo(actionName: "Insert Columns")
         WorkbookOperations.insertColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
         engine.rebuildAll()
@@ -335,6 +398,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func deleteColumns(at index: Int, count: Int = 1) {
+        guard !refuseStructuralEdit(axisIsRow: false, index: index, count: -count) else { return }
         registerWorkbookUndo(actionName: "Delete Columns")
         WorkbookOperations.deleteColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
         engine.rebuildAll()
@@ -417,11 +481,14 @@ public final class SpreadsheetDocument: ObservableObject {
         range.forEachAddress { addr in
             let cell = activeSheet.cell(at: addr)
             guard !cell.isDefault else { return }
+            // A pivot field button belongs to its pivot table, not the value.
+            var style = workbook.style(at: cell.styleIndex)
+            style.pivotButton = false
             entries.append(ClipboardPayload.Entry(
                 rowOffset: addr.row - range.start.row,
                 columnOffset: addr.column - range.start.column,
                 cell: cell,
-                style: workbook.style(at: cell.styleIndex)))
+                style: style))
         }
         return ClipboardPayload(rows: range.rowCount, columns: range.columnCount,
                                 entries: entries, isCut: isCut)
@@ -442,6 +509,7 @@ public final class SpreadsheetDocument: ObservableObject {
                         end: CellAddress(row: target.row + payload.rows - 1,
                                          column: target.column + payload.columns - 1))
         guard targetRange.end.isValid else { return }
+        guard !refuseIfPivot(targetRange) else { return }
 
         func destinations(for entry: ClipboardPayload.Entry) -> [CellAddress] {
             if replicate {
@@ -503,6 +571,10 @@ public final class SpreadsheetDocument: ObservableObject {
             }
         }
         guard affected.allSatisfy(\.isValid) else { return }
+        let width = grid.map(\.count).max() ?? 1
+        guard !refuseIfPivot(CellRange(start: target, end: CellAddress(row: target.row + grid.count - 1,
+                                                                        column: target.column + width - 1)))
+        else { return }
         let snaps = snapshot(affected)
         for (r, row) in grid.enumerated() {
             for (c, field) in row.enumerated() {
@@ -536,6 +608,13 @@ public final class SpreadsheetDocument: ObservableObject {
     /// values/styles copy, formulas adjust per destination offset.
     public func fill(from source: CellRange, to targetRange: CellRange) {
         guard targetRange.end.isValid else { return }
+        // Only the cells being written matter (the source may sit in a pivot).
+        if let table = pivotTables(touching: targetRange).first(where: { table in
+            targetRange.addresses.contains { !source.contains($0) && table.occupiedRange.contains($0) }
+        }) {
+            refusePivotEdit(table)
+            return
+        }
         let snaps = snapshot(targetRange.addresses)
         var writes: [(AbsoluteAddress, CellValue, String?)] = []
         var styleWrites: [(CellAddress, Int)] = []
@@ -553,7 +632,14 @@ public final class SpreadsheetDocument: ObservableObject {
             }
             writes.append((AbsoluteAddress(sheetID: activeSheetID, address: addr),
                            srcCell.value, formula))
-            styleWrites.append((addr, srcCell.styleIndex))
+            // Destinations are outside pivots (refused above): no field button.
+            var styleIndex = srcCell.styleIndex
+            if workbook.style(at: styleIndex).pivotButton {
+                var style = workbook.style(at: styleIndex)
+                style.pivotButton = false
+                styleIndex = workbook.styleIndex(for: style)
+            }
+            styleWrites.append((addr, styleIndex))
         }
         engine.setCells(writes)
         for (addr, styleIndex) in styleWrites {
@@ -594,8 +680,11 @@ public final class SpreadsheetDocument: ObservableObject {
         var changed = false
         for addr in addresses {
             var cell = activeSheet.cell(at: addr)
-            if cell.styleIndex != 0 {
-                cell.styleIndex = 0
+            // A pivot's field buttons belong to the pivot, not the formatting.
+            let target = workbook.style(at: cell.styleIndex).pivotButton
+                ? workbook.styleIndex(for: CellStyle(pivotButton: true)) : 0
+            if cell.styleIndex != target {
+                cell.styleIndex = target
                 activeSheet.setCell(cell, at: addr)
                 changed = true
             }

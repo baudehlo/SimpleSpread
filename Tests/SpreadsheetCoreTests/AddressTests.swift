@@ -23,6 +23,17 @@ struct AddressTests {
         #expect(CellAddress.columnIndex("A1") == nil)
     }
 
+    @Test func longLetterRunsDontOverflow() throws {
+        // 14+ letters used to overflow Int while being read as a column.
+        #expect(CellAddress(a1: "StressedYieldCurvesFull") == nil)
+        #expect(CellAddress(a1: "ABCDEFGHIJKLMNOPQRSTUVWXYZ1") == nil)
+        #expect(CellAddress(a1: "ABCD1") == nil)
+        #expect(CellAddress(a1: "XFD1") == CellAddress(row: 0, column: 16_383))
+        #expect(CellAddress.columnIndex("ABCDEFGHIJKLMNOPQRSTUVWXYZ") == nil)
+        #expect(try FormulaParser.parse("StressedYieldCurvesFull") == .unknownName("StressedYieldCurvesFull"))
+        _ = try FormulaParser.parse("SalesFiguresByRegion+1")
+    }
+
     @Test func a1Parsing() {
         #expect(CellAddress(a1: "A1") == CellAddress(row: 0, column: 0))
         #expect(CellAddress(a1: "B12") == CellAddress(row: 11, column: 1))

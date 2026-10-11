@@ -24,11 +24,13 @@ public struct CellAddress: Hashable, Sendable, Comparable, CustomStringConvertib
         var col = 0, colDigits = 0
         while let c = chars.first, c.isLetter, let ascii = c.uppercased().unicodeScalars.first?.value,
               ascii >= 65, ascii <= 90 {
+            // Stop before a long name (e.g. a defined name) overflows Int.
+            guard colDigits < 3 else { return nil }
             col = col * 26 + Int(ascii - 64)
             colDigits += 1
             chars = chars.dropFirst()
         }
-        guard colDigits > 0, colDigits <= 3 else { return nil }
+        guard colDigits > 0 else { return nil }
         if chars.first == "$" { rowAbs = true; chars = chars.dropFirst() }
         guard !chars.isEmpty, chars.allSatisfy({ $0.isNumber }), let row = Int(chars), row >= 1 else { return nil }
         return (CellAddress(row: row - 1, column: col - 1), colAbs, rowAbs)
@@ -48,7 +50,7 @@ public struct CellAddress: Hashable, Sendable, Comparable, CustomStringConvertib
 
     /// Zero-based column index for column letters ("A" -> 0). Case-insensitive.
     public static func columnIndex(_ name: String) -> Int? {
-        guard !name.isEmpty else { return nil }
+        guard !name.isEmpty, name.unicodeScalars.count <= 3 else { return nil }
         var col = 0
         for c in name.uppercased().unicodeScalars {
             guard c.value >= 65, c.value <= 90 else { return nil }

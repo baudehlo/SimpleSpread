@@ -25,23 +25,38 @@ public enum XLSXWriter {
                                           styles: styles, strings: &sharedStrings))
         }
 
-        zip.addEntry(name: "[Content_Types].xml", data: Data(contentTypesXML(sheetCount: workbook.sheets.count).utf8))
+        // Preserved pivot tables: workbook rel ids follow sheets, styles, sharedStrings.
+        let pivots = try pivotPackage(for: workbook, firstWorkbookRelID: workbook.sheets.count + 3)
+
+        zip.addEntry(name: "[Content_Types].xml",
+                     data: Data(contentTypesXML(sheetCount: workbook.sheets.count, extra: pivots.contentTypes).utf8))
         zip.addEntry(name: "_rels/.rels", data: Data(rootRelsXML().utf8))
         zip.addEntry(name: "docProps/core.xml", data: Data(corePropsXML().utf8))
         zip.addEntry(name: "docProps/app.xml", data: Data(appPropsXML(workbook: workbook).utf8))
-        zip.addEntry(name: "xl/workbook.xml", data: Data(workbookXML(workbook: workbook).utf8))
-        zip.addEntry(name: "xl/_rels/workbook.xml.rels", data: Data(workbookRelsXML(sheetCount: workbook.sheets.count).utf8))
+        zip.addEntry(name: "xl/workbook.xml",
+                     data: Data(workbookXML(workbook: workbook, pivotCaches: pivots.workbookElement).utf8))
+        zip.addEntry(name: "xl/_rels/workbook.xml.rels",
+                     data: Data(workbookRelsXML(sheetCount: workbook.sheets.count,
+                                                extra: pivots.workbookRelationships).utf8))
         zip.addEntry(name: "xl/styles.xml", data: Data(styles.xml().utf8))
         zip.addEntry(name: "xl/sharedStrings.xml", data: Data(sharedStrings.xml().utf8))
         for (i, xml) in sheetXMLs.enumerated() {
             zip.addEntry(name: "xl/worksheets/sheet\(i + 1).xml", data: Data(xml.utf8))
+            if let rels = pivots.sheetRelationships[i] {
+                zip.addEntry(name: "xl/worksheets/_rels/sheet\(i + 1).xml.rels",
+                             data: Data(relationshipsXML(rels).utf8))
+            }
+        }
+        for entry in pivots.entries {
+            zip.addEntry(name: entry.path, data: entry.data)
         }
         return zip.finalize()
     }
 
     // MARK: Package parts
 
-    static func contentTypesXML(sheetCount: Int) -> String {
+    static func contentTypesXML(sheetCount: Int,
+                                extra: [(partName: String, contentType: String)] = []) -> String {
         var s = xmlHeader
         s += "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
         s += "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
@@ -54,6 +69,9 @@ public enum XLSXWriter {
         s += "<Override PartName=\"/xl/sharedStrings.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml\"/>"
         s += "<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>"
         s += "<Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>"
+        for (partName, contentType) in extra {
+            s += "<Override PartName=\"\(XML.escapeAttribute(partName))\" ContentType=\"\(contentType)\"/>"
+        }
         s += "</Types>"
         return s
     }
@@ -82,7 +100,7 @@ public enum XLSXWriter {
         + "</Properties>"
     }
 
-    static func workbookXML(workbook: Workbook) -> String {
+    static func workbookXML(workbook: Workbook, pivotCaches: String = "") -> String {
         var s = xmlHeader
         s += "<workbook xmlns=\"\(mainNS)\" xmlns:r=\"\(relNS)\">"
         s += "<workbookPr date1904=\"0\"/>"
@@ -92,11 +110,12 @@ public enum XLSXWriter {
             s += "<sheet name=\"\(XML.escapeAttribute(sheet.name))\" sheetId=\"\(sheet.id)\" r:id=\"rId\(i + 1)\"/>"
         }
         s += "</sheets>"
+        s += pivotCaches // CT_Workbook: after sheets/definedNames/calcPr, before extLst
         s += "</workbook>"
         return s
     }
 
-    static func workbookRelsXML(sheetCount: Int) -> String {
+    static func workbookRelsXML(sheetCount: Int, extra: [PackageRelationship] = []) -> String {
         var s = xmlHeader
         s += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
         for i in 1...max(1, sheetCount) {
@@ -104,6 +123,9 @@ public enum XLSXWriter {
         }
         s += "<Relationship Id=\"rId\(sheetCount + 1)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
         s += "<Relationship Id=\"rId\(sheetCount + 2)\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings\" Target=\"sharedStrings.xml\"/>"
+        for rel in extra {
+            s += "<Relationship Id=\"\(rel.id)\" Type=\"\(rel.type)\" Target=\"\(XML.escapeAttribute(rel.target))\"/>"
+        }
         s += "</Relationships>"
         return s
     }
@@ -134,7 +156,8 @@ public enum XLSXWriter {
         }
         s += "</sheetView></sheetViews>"
 
-        s += "<sheetFormatPr defaultRowHeight=\"\(trimNumber(sheet.defaultRowHeight))\"/>"
+        // The reader scales Excel's 15pt default to our 22pt; scale back.
+        s += "<sheetFormatPr defaultRowHeight=\"\(trimNumber(Double(sheet.defaultRowHeight) * 15.0 / 22.0))\"/>"
 
         // cols (character-width units; px = width*7 + 5, pt = px * 0.75)
         if !sheet.columnWidths.isEmpty {
@@ -292,13 +315,24 @@ struct StyleParts {
     private var fills: [String] = []
     private var customFormats: [(id: Int, code: String)] = []
     private var xfs: [String] = []
+    private let preserved: PreservedStyles?
 
     init(workbook: Workbook) {
         styles = workbook.styles.styles
+        preserved = workbook.preservedStyles
         var fontIndex: [String: Int] = [:]
         var fillIndex: [String: Int] = [:]
         var formatIDs: [String: Int] = [:]
+        // Formats preserved parts refer to keep their ids; ours go above them.
         var nextCustomFormat = 164
+        for (id, code) in (preserved?.numberFormats ?? [:]).sorted(by: { $0.key < $1.key }) {
+            customFormats.append((id, code))
+            if formatIDs[code] == nil { formatIDs[code] = id }
+            nextCustomFormat = max(nextCustomFormat, id + 1)
+        }
+        for id in preserved?.reservedNumberFormatIDs ?? [] {
+            nextCustomFormat = max(nextCustomFormat, id + 1)
+        }
 
         // Required default fills.
         fills = ["<fill><patternFill patternType=\"none\"/></fill>",
@@ -364,6 +398,7 @@ struct StyleParts {
             if numFmtID != 0 { xf += " applyNumberFormat=\"1\"" }
             if fontID != 0 { xf += " applyFont=\"1\"" }
             if fillID != 0 { xf += " applyFill=\"1\"" }
+            if style.pivotButton { xf += " pivotButton=\"1\"" }
             let hasAlignment = style.horizontalAlignment != .automatic
                 || style.verticalAlignment != .bottom || style.wrapText
             if hasAlignment {
@@ -404,6 +439,16 @@ struct StyleParts {
         s += "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
         s += "<cellXfs count=\"\(xfs.count)\">" + xfs.joined() + "</cellXfs>"
         s += "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
+        // Preserved differential formats keep their positions (pivot dxfIds
+        // index into them), then the preserved table styles that use them.
+        if let preserved, !preserved.differentialFormats.isEmpty {
+            s += "<dxfs count=\"\(preserved.differentialFormats.count)\">"
+            s += preserved.differentialFormats.joined()
+            s += "</dxfs>"
+        }
+        if let tableStyles = preserved?.tableStyles {
+            s += tableStyles
+        }
         s += "</styleSheet>"
         return s
     }

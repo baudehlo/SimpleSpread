@@ -70,6 +70,112 @@ public enum WorkbookOperations {
             expr.adjustedForStructuralChange(axisIsRow: axisIsRow, index: index, count: count,
                                              editedSheet: editedSheetName, ownSheet: ownSheetName)
         }
+
+        // 5. Keep preserved pivot tables and their sources in step.
+        shiftPivots(in: workbook, sheetID: sheetID, sheetName: editedSheetName,
+                    axisIsRow: axisIsRow, index: index, count: count)
+    }
+
+    // MARK: Pivot tables
+
+    /// How a row/column insert or delete affects a pivot table's drawn area.
+    enum PivotEffect: Equatable {
+        case unaffected
+        case shifted(by: Int)
+        case removed
+        /// The edit cuts through the table (Excel refuses these).
+        case split
+    }
+
+    static func pivotEffect(of table: PivotTable, axisIsRow: Bool, index: Int, count: Int) -> PivotEffect {
+        let occupied = table.occupiedRange
+        let first = axisIsRow ? occupied.start.row : occupied.start.column
+        let last = axisIsRow ? occupied.end.row : occupied.end.column
+        let limit = axisIsRow ? CellAddress.maxRows : CellAddress.maxColumns
+        if count > 0 {
+            // Pushed off the sheet edge its cells are lost: as good as a split.
+            if index <= first { return last + count < limit ? .shifted(by: count) : .split }
+            if index > last { return .unaffected }
+            return .split
+        }
+        let delEnd = index - count - 1
+        if delEnd < first { return .shifted(by: count) }
+        if index > last { return .unaffected }
+        if index <= first && delEnd >= last { return .removed }
+        return .split
+    }
+
+    /// The first pivot table that inserting/deleting `count` rows or columns
+    /// at `index` would cut through, if any. Callers refuse such edits, as
+    /// Excel does; deleting every row/column a pivot table spans is allowed
+    /// and removes it.
+    public static func pivotTableSplit(in workbook: Workbook, sheetID: Int, axisIsRow: Bool,
+                                       index: Int, count: Int) -> PivotTable? {
+        workbook.pivotTables(onSheet: sheetID).first {
+            pivotEffect(of: $0, axisIsRow: axisIsRow, index: index, count: count) == .split
+        }
+    }
+
+    private static func shiftPivots(in workbook: Workbook, sheetID: Int, sheetName: String,
+                                    axisIsRow: Bool, index: Int, count: Int) {
+        guard !workbook.pivotTables.isEmpty else { return }
+        var removed: Set<Int> = []
+        for i in workbook.pivotTables.indices where workbook.pivotTables[i].sheetID == sheetID {
+            switch pivotEffect(of: workbook.pivotTables[i], axisIsRow: axisIsRow, index: index, count: count) {
+            case .unaffected:
+                break
+            case .shifted(let delta):
+                let loc = workbook.pivotTables[i].location
+                workbook.pivotTables[i].location = axisIsRow
+                    ? CellRange(start: CellAddress(row: loc.start.row + delta, column: loc.start.column),
+                                end: CellAddress(row: loc.end.row + delta, column: loc.end.column))
+                    : CellRange(start: CellAddress(row: loc.start.row, column: loc.start.column + delta),
+                                end: CellAddress(row: loc.end.row, column: loc.end.column + delta))
+            case .removed, .split:
+                // A split is refused upstream; should one get here anyway, the
+                // definition no longer matches its cells, so the table goes
+                // (its cells stay as plain values) rather than corrupt the file.
+                removed.insert(i)
+            }
+        }
+        if !removed.isEmpty {
+            workbook.pivotTables = workbook.pivotTables.enumerated()
+                .filter { !removed.contains($0.offset) }.map(\.element)
+            workbook.pruneUnusedPivotCaches()
+            workbook.clearStrayPivotButtons()
+        }
+
+        for c in workbook.pivotCaches.indices {
+            for r in workbook.pivotCaches[c].sourceRanges.indices {
+                let source = workbook.pivotCaches[c].sourceRanges[r]
+                guard source.target == .sheet(id: sheetID) else { continue }
+                switch adjustedSourceRef(source.ref, sheetName: sheetName,
+                                         axisIsRow: axisIsRow, index: index, count: count) {
+                case .some(let ref):
+                    workbook.pivotCaches[c].sourceRanges[r].ref = ref
+                case .none:
+                    // Every source row/column was deleted: the cache keeps its
+                    // snapshot, but there's nothing left to refresh from.
+                    workbook.pivotCaches[c].sourceRanges[r].target = .detached(sheetName: sheetName)
+                }
+            }
+        }
+    }
+
+    /// Apply a structural edit to a pivot source reference with formula
+    /// semantics. Nil when the edit deletes the whole range; an unparseable
+    /// reference is returned unchanged.
+    static func adjustedSourceRef(_ ref: String, sheetName: String, axisIsRow: Bool,
+                                  index: Int, count: Int) -> String? {
+        guard let expr = try? FormulaParser.parse(ref), case .reference = expr else { return ref }
+        let adjusted = expr.adjustedForStructuralChange(axisIsRow: axisIsRow, index: index, count: count,
+                                                        editedSheet: sheetName, ownSheet: sheetName)
+        guard case .reference(let newRef) = adjusted else { return nil }
+        // Shifted past the sheet edge: nothing valid left to refresh from.
+        let ends = [newRef.start] + (newRef.end.map { [$0] } ?? [])
+        guard ends.allSatisfy({ ($0.row ?? 0) < CellAddress.maxRows && ($0.column ?? 0) < CellAddress.maxColumns })
+        else { return nil }
+        return newRef.text
     }
 
     private static func remapIndexMap(_ map: [Int: CGFloat], index: Int, count: Int) -> [Int: CGFloat] {
@@ -129,6 +235,15 @@ public enum WorkbookOperations {
         guard let sheet = workbook.sheet(withID: sheetID) else { return false }
         let name = sheet.name
         guard workbook.removeSheet(withID: sheetID) != nil else { return false }
+        // Pivot tables on the sheet go with it; caches it fed keep their
+        // snapshot (pivots elsewhere still display) but lose their source.
+        workbook.removePivotTables { $0.sheetID == sheetID }
+        for c in workbook.pivotCaches.indices {
+            for r in workbook.pivotCaches[c].sourceRanges.indices
+            where workbook.pivotCaches[c].sourceRanges[r].target == .sheet(id: sheetID) {
+                workbook.pivotCaches[c].sourceRanges[r].target = .detached(sheetName: name)
+            }
+        }
         rewriteFormulas(in: workbook) { expr, _ in
             expr.mappingReferences { ref in
                 if let s = ref.sheetName, s.caseInsensitiveCompare(name) == .orderedSame {
