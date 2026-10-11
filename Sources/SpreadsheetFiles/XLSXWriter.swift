@@ -16,7 +16,7 @@ public enum XLSXWriter {
     public static func data(for workbook: Workbook) throws -> Data {
         var zip = ZipArchiveWriter()
         var sharedStrings = SharedStringBuilder()
-        let styles = StyleParts(workbook: workbook)
+        let styles = StyleParts(workbook: workbook, extraFormats: generatedPivotFormats(workbook))
 
         // Worksheets (collect shared strings while writing).
         var sheetXMLs: [String] = []
@@ -26,7 +26,8 @@ public enum XLSXWriter {
         }
 
         // Preserved pivot tables: workbook rel ids follow sheets, styles, sharedStrings.
-        let pivots = try pivotPackage(for: workbook, firstWorkbookRelID: workbook.sheets.count + 3)
+        let pivots = try pivotPackage(for: workbook, firstWorkbookRelID: workbook.sheets.count + 3,
+                                      formatID: styles.numberFormatID)
 
         zip.addEntry(name: "[Content_Types].xml",
                      data: Data(contentTypesXML(sheetCount: workbook.sheets.count, extra: pivots.contentTypes).utf8))
@@ -316,13 +317,22 @@ struct StyleParts {
     private var customFormats: [(id: Int, code: String)] = []
     private var xfs: [String] = []
     private let preserved: PreservedStyles?
+    /// Format code -> numFmtId for everything written (cells and pivots).
+    private(set) var formatIDs: [String: Int] = [:]
 
-    init(workbook: Workbook) {
+    /// The numFmtId a format was written under (0 for General / unknown).
+    func numberFormatID(_ format: NumberFormat) -> Int {
+        if format.isGeneral { return 0 }
+        if let builtin = NumberFormat.builtinID(for: format.code) { return builtin }
+        return formatIDs[format.code] ?? 0
+    }
+
+    /// `extraFormats`: formats generated pivot parts refer to.
+    init(workbook: Workbook, extraFormats: [NumberFormat] = []) {
         styles = workbook.styles.styles
         preserved = workbook.preservedStyles
         var fontIndex: [String: Int] = [:]
         var fillIndex: [String: Int] = [:]
-        var formatIDs: [String: Int] = [:]
         // Formats preserved parts refer to keep their ids; ours go above them.
         var nextCustomFormat = 164
         for (id, code) in (preserved?.numberFormats ?? [:]).sorted(by: { $0.key < $1.key }) {
@@ -332,6 +342,15 @@ struct StyleParts {
         }
         for id in preserved?.reservedNumberFormatIDs ?? [] {
             nextCustomFormat = max(nextCustomFormat, id + 1)
+        }
+
+        // Formats generated pivot parts use (cells reuse the same ids).
+        for format in extraFormats where !format.isGeneral && NumberFormat.builtinID(for: format.code) == nil {
+            if formatIDs[format.code] == nil {
+                formatIDs[format.code] = nextCustomFormat
+                customFormats.append((nextCustomFormat, format.code))
+                nextCustomFormat += 1
+            }
         }
 
         // Required default fills.

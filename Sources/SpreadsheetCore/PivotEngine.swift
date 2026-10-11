@@ -71,6 +71,22 @@ public struct PivotLayoutResult: Sendable {
     public var pageColumns: Int
     /// True for Excel's placeholder pivot with no fields.
     public var isEmpty: Bool
+
+    public init(rowLines: [PivotAxisLine], columnLines: [PivotAxisLine], firstHeaderRow: Int, firstDataRow: Int,
+                firstDataCol: Int, rowCount: Int, columnCount: Int, cells: [PivotOffset: PivotRenderedCell],
+                pageRows: Int, pageColumns: Int, isEmpty: Bool) {
+        self.rowLines = rowLines
+        self.columnLines = columnLines
+        self.firstHeaderRow = firstHeaderRow
+        self.firstDataRow = firstDataRow
+        self.firstDataCol = firstDataCol
+        self.rowCount = rowCount
+        self.columnCount = columnCount
+        self.cells = cells
+        self.pageRows = pageRows
+        self.pageColumns = pageColumns
+        self.isEmpty = isEmpty
+    }
 }
 
 public struct PivotEngineError: Error, Equatable, CustomStringConvertible {
