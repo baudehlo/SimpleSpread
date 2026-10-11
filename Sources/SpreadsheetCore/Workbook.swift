@@ -164,9 +164,10 @@ public final class Workbook {
     public static func sanitizeSheetName(_ name: String) -> String {
         let forbidden = CharacterSet(charactersIn: ":\\/?*[]")
         let cleaned = name.unicodeScalars.filter { !forbidden.contains($0) }
-        var result = String(String.UnicodeScalarView(cleaned))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if result.count > 31 { result = String(result.prefix(31)) }
+        // Excel also forbids a leading or trailing apostrophe.
+        let edges = CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: "'"))
+        var result = String(String.UnicodeScalarView(cleaned)).trimmingCharacters(in: edges)
+        if result.count > 31 { result = String(result.prefix(31)).trimmingCharacters(in: edges) }
         return result
     }
 

@@ -165,6 +165,9 @@ struct WorkbookTests {
         #expect(Workbook.sanitizeSheetName("a/b:c?d") == "abcd")
         #expect(Workbook.sanitizeSheetName(String(repeating: "x", count: 40)).count == 31)
         #expect(Workbook.sanitizeSheetName("  padded  ") == "padded")
+        #expect(Workbook.sanitizeSheetName("'quoted'") == "quoted")
+        #expect(Workbook.sanitizeSheetName("O'Brien") == "O'Brien")
+        #expect(Workbook.sanitizeSheetName(String(repeating: "x", count: 30) + "'y") == String(repeating: "x", count: 30))
     }
 
     @Test func sheetReorder() {
