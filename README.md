@@ -2,7 +2,7 @@
 
 A native macOS spreadsheet app written entirely in Swift. Native file format
 is XLSX; CSV imports and exports. The formula engine covers Google Sheets'
-core feature set — 156 functions, real coercion semantics, incremental
+core feature set — 157 functions, real coercion semantics, incremental
 recalculation. The spreadsheet stack (model, formula engine, XLSX/ZIP/CSV I/O,
 grid) is built from scratch with no third-party libraries; the sole external
 dependency is [Sparkle](https://sparkle-project.org) for software updates.
@@ -17,7 +17,14 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
   Excel, Numbers, and Google Sheets — including a from-scratch ZIP layer,
   shared strings, styles, number formats, formulas with cached values,
   merged ranges, frozen panes, and 1904-date-system normalization on read.
-  Pivot tables in files from Excel survive editing and saving intact.
+- **Pivot tables**: Insert ▸ PivotTable… and a PivotTable Fields panel
+  like Excel's: drag fields into rows, columns, values and filters;
+  summarize by sum/count/average/…; show values as % of total/row/column,
+  difference, % of, running total; filter, sort, subtotals, blank lines,
+  compact/outline/tabular layouts; group dates by years/quarters/months/days
+  and numbers into ranges; Data ▸ Refresh (⌥F5). Pivots in files from Excel
+  open, recompute, refresh and save intact, and GETPIVOTDATA reads them.
+  Layouts are checked cell by cell against real Excel.
 - **CSV done right**: delimiter sniffing, BOM/CP1252 encoding detection,
   quote-aware parsing, injection-safe import (a `=cmd` field is data, not a
   formula), leading-zero preservation, and RFC 4180 export with UTF-8 BOM,
@@ -47,6 +54,21 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
   and the number-format menu (automatic, number, percent, currency, date,
   time, scientific, plain text) backed by a full Excel format-code renderer.
 
+## Performance
+
+Time from launch until the window shows the spreadsheet (median of five
+runs, on an M4 Pro Mac with 24 GB of memory and macOS 26.6), compared with
+Apple Numbers 14.1 opening the same `.xlsx` files:
+
+| Document | SimpleSpread | Numbers | |
+|---|---:|---:|---|
+| Empty workbook | 0.78 s | 2.12 s | 2.7× faster |
+| Simple (a short invoice with formulas) | 0.79 s | 2.08 s | 2.6× faster |
+| Complex (20,000 rows, 80,000 formulas, 7 sheets, 4 pivot tables) | 1.85 s | 5.43 s | 2.9× faster |
+
+SimpleSpread starts with a new, empty document in 0.36 s. The app is 8.0 MB
+(a 3.0 MB download); Numbers is 421 MB.
+
 ## Building
 
 Requires Xcode 16+ on macOS 14+.
@@ -64,7 +86,7 @@ swift run SimpleSpread # run the app directly
   testing strategy, roadmap.
 - [docs/RESEARCH.md](docs/RESEARCH.md) — the feature-set research (formula
   semantics, XLSX internals, editing UX, CSV) the implementation follows.
-- [docs/FUNCTIONS.md](docs/FUNCTIONS.md) — all 156 functions with semantics
+- [docs/FUNCTIONS.md](docs/FUNCTIONS.md) — all 157 functions with semantics
   notes and known deviations.
 
 ## CI & releases

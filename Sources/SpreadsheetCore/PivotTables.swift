@@ -1,13 +1,14 @@
 import Foundation
 
-// Pivot tables carried through from an opened XLSX file.
+// Pivot tables and their caches.
 //
-// SimpleSpread doesn't compute pivot tables. It keeps their definitions so a
-// save hands them back to Excel intact: the XML parts ride along as opaque
-// payloads (SpreadsheetFiles owns their format), while the few facts that
-// edits elsewhere in the workbook can invalidate — where a table sits, which
-// ranges feed its cache — live here as typed values that WorkbookOperations
-// keeps current. The cells a pivot table renders are ordinary cells.
+// A pivot read from a file keeps its XML parts as opaque payloads
+// (SpreadsheetFiles owns their format), so an unchanged pivot is saved back
+// to Excel intact. The few facts that edits elsewhere in the workbook can
+// invalidate — where a table sits, which ranges feed its cache — live here as
+// typed values that WorkbookOperations keeps current. The typed cache and
+// definition (PivotModel) are what the engine computes from; the cells a
+// pivot table renders are ordinary cells.
 
 /// Format-specific data a preserved part carries. Core never looks inside.
 public protocol PreservedPartPayload: Sendable {}
@@ -44,16 +45,56 @@ public struct PivotCache: Sendable {
     /// range set for a consolidation).
     public var sourceRanges: [PivotSourceRange]
     public var payload: any PreservedPartPayload
+    /// The cache's data, typed (nil when it couldn't be read). A cache read
+    /// from a file is parsed on first use: its records can run to megabytes,
+    /// and most opened pivots are never recomputed.
+    public var data: PivotCacheData? {
+        get { storage.value }
+        set { storage = LazyPivotCacheData(value: newValue) }
+    }
+    private var storage: LazyPivotCacheData
+    /// True once `data` differs from `payload` (refreshed or newly made):
+    /// the writer then generates the parts instead of copying them.
+    public var isModified: Bool
 
-    public init(cacheID: Int, sourceRanges: [PivotSourceRange], payload: any PreservedPartPayload) {
+    public init(cacheID: Int, sourceRanges: [PivotSourceRange], payload: any PreservedPartPayload,
+                data: PivotCacheData? = nil, isModified: Bool = false) {
         self.cacheID = cacheID
         self.sourceRanges = sourceRanges
         self.payload = payload
+        self.storage = LazyPivotCacheData(value: data)
+        self.isModified = isModified
+    }
+
+    /// Parse `data` with `load` when it's first needed.
+    public mutating func loadDataLazily(_ load: @escaping @Sendable () -> PivotCacheData?) {
+        storage = LazyPivotCacheData(load: load)
     }
 
     /// True when any source range no longer points at live data.
     public var hasDetachedSource: Bool {
         sourceRanges.contains { if case .detached = $0.target { return true } else { return false } }
+    }
+}
+
+/// A cache's typed data, loaded once on first access. Copies of a PivotCache
+/// share it until one assigns new data.
+final class LazyPivotCacheData: @unchecked Sendable {
+    private let lock = NSLock()
+    private var load: (@Sendable () -> PivotCacheData?)?
+    private var loaded: PivotCacheData?
+
+    init(value: PivotCacheData?) { loaded = value }
+    init(load: @escaping @Sendable () -> PivotCacheData?) { self.load = load }
+
+    var value: PivotCacheData? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let load {
+            loaded = load()
+            self.load = nil
+        }
+        return loaded
     }
 }
 
@@ -68,10 +109,15 @@ public struct PivotTable: Sendable {
     public var pageFieldRows: Int
     public var pageFieldColumns: Int
     public var payload: any PreservedPartPayload
+    /// The table's definition, typed (nil when it couldn't be read).
+    public var definition: PivotDefinition?
+    /// True once `definition` differs from `payload` (see PivotCache.isModified).
+    public var isModified: Bool
 
     public init(sheetID: Int, name: String, cacheID: Int, location: CellRange,
                 pageFieldRows: Int = 0, pageFieldColumns: Int = 0,
-                payload: any PreservedPartPayload) {
+                payload: any PreservedPartPayload, definition: PivotDefinition? = nil,
+                isModified: Bool = false) {
         self.sheetID = sheetID
         self.name = name
         self.cacheID = cacheID
@@ -79,6 +125,8 @@ public struct PivotTable: Sendable {
         self.pageFieldRows = max(0, pageFieldRows)
         self.pageFieldColumns = max(0, pageFieldColumns)
         self.payload = payload
+        self.definition = definition
+        self.isModified = isModified
     }
 
     /// Every cell the pivot table draws into: the body plus, when it has

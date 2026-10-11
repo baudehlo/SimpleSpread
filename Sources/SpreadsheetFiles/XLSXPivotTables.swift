@@ -451,10 +451,23 @@ extension XLSXReader {
         }
 
         guard !keptTables.isEmpty else { return dropped }
+        // Typed views for the engine (nil where a part doesn't parse). Caches
+        // parse on first use; their records are most of a pivot's bytes.
+        let formats = PivotXMLParser.FormatTable(custom: ctx.customFormats)
         for path in cacheOrder where usedCaches.contains(path) {
-            guard let loaded = caches[path] else { continue }
-            workbook.pivotCaches.append(loaded.cache)
+            guard var cache = caches[path]?.cache, let loaded = caches[path] else { continue }
+            if let payload = cache.payload as? PivotCachePayload {
+                cache.loadDataLazily {
+                    try? PivotXMLParser.parseCache(definition: payload.definition, records: payload.records, formats: formats)
+                }
+            }
+            workbook.pivotCaches.append(cache)
             numberFormatIDs.formUnion(loaded.numberFormatIDs)
+        }
+        for i in keptTables.indices {
+            if let payload = keptTables[i].payload as? PivotTablePayload {
+                keptTables[i].definition = try? PivotXMLParser.parseTable(payload.definition, formats: formats)
+            }
         }
         workbook.pivotTables = keptTables
 
@@ -502,9 +515,60 @@ extension XLSXWriter {
         var sheetRelationships: [Int: [PackageRelationship]] = [:]
     }
 
-    /// Lay out the preserved pivot parts. Workbook relationship ids start at
+    /// Number formats the generated (modified) pivot parts refer to.
+    static func generatedPivotFormats(_ workbook: Workbook) -> [NumberFormat] {
+        var formats: [NumberFormat] = []
+        for cache in workbook.pivotCaches where cache.isModified {
+            formats += cache.data?.fields.map(\.numberFormat) ?? []
+        }
+        for table in workbook.pivotTables where table.isModified {
+            guard let d = table.definition else { continue }
+            formats += d.fields.compactMap(\.numberFormat) + d.dataFields.compactMap(\.numberFormat)
+        }
+        return formats
+    }
+
+    /// The parts to write for a cache: generated when modified, else as read.
+    static func cachePayload(_ cache: PivotCache, workbook: Workbook,
+                             formatID: (NumberFormat) -> Int) throws -> PivotCachePayload? {
+        let original = cache.payload as? PivotCachePayload
+        guard cache.isModified, let data = cache.data else { return original }
+        let definitions = workbook.pivotTables.filter { $0.cacheID == cache.cacheID }.compactMap(\.definition)
+        let listed = PivotXMLWriter.listedFields(data, definitions: definitions)
+        let carry = try original.map {
+            try PivotXMLWriter.CarryOver($0.definition, root: "pivotCacheDefinition", keep: ["cacheSource", "extLst"])
+        } ?? PivotXMLWriter.CarryOver()
+        let fallbackSource = "<cacheSource type=\"worksheet\"><worksheetSource ref=\"A1\" sheet=\"Sheet1\"/></cacheSource>"
+        let definition = PivotXMLWriter.cacheDefinitionXML(
+            data, listed: listed, carry: carry, sourceFallback: fallbackSource,
+            refreshedDate: ExcelDate.nowSerial(), formatID: formatID)
+        return PivotCachePayload(definition: Data(definition.utf8),
+                                 records: Data(PivotXMLWriter.recordsXML(data, listed: listed).utf8),
+                                 externalRelationships: original?.externalRelationships ?? [])
+    }
+
+    /// The part to write for a table: generated when modified, else as read.
+    static func tablePayload(_ table: PivotTable, formatID: (NumberFormat) -> Int) throws -> PivotTablePayload? {
+        let original = table.payload as? PivotTablePayload
+        guard table.isModified, let d = table.definition else { return original }
+        let carry = try original.map {
+            try PivotXMLWriter.CarryOver($0.definition, root: "pivotTableDefinition",
+                                         keep: ["pivotTableStyleInfo", "filters", "extLst"])
+        } ?? PivotXMLWriter.CarryOver()
+        let layout = PivotLayoutResult(
+            rowLines: d.rowLines, columnLines: d.columnLines, firstHeaderRow: d.firstHeaderRow,
+            firstDataRow: d.firstDataRow, firstDataCol: d.firstDataCol, rowCount: table.location.rowCount,
+            columnCount: table.location.columnCount, cells: [:], pageRows: table.pageFieldRows,
+            pageColumns: table.pageFieldColumns, isEmpty: false)
+        let xml = PivotXMLWriter.tableDefinitionXML(d, cacheID: table.cacheID, result: layout,
+                                                    location: table.location, carry: carry, formatID: formatID)
+        return PivotTablePayload(definition: Data(xml.utf8))
+    }
+
+    /// Lay out the pivot parts. Workbook relationship ids start at
     /// `firstWorkbookRelID` (the writer's own come first).
-    static func pivotPackage(for workbook: Workbook, firstWorkbookRelID: Int) throws -> PivotPackage {
+    static func pivotPackage(for workbook: Workbook, firstWorkbookRelID: Int,
+                             formatID: (NumberFormat) -> Int = { _ in 0 }) throws -> PivotPackage {
         var package = PivotPackage()
         // Only tables on live sheets whose cache exists, and only caches in use.
         let liveTables = workbook.sheets.flatMap { sheet in
@@ -517,7 +581,7 @@ extension XLSXWriter {
         var cachePartNumber: [Int: Int] = [:]
         var pivotCacheEntries = ""
         for (i, cache) in caches.enumerated() {
-            guard let payload = cache.payload as? PivotCachePayload else { continue }
+            guard let payload = try cachePayload(cache, workbook: workbook, formatID: formatID) else { continue }
             let n = i + 1
             cachePartNumber[cache.cacheID] = n
             let definitionPath = "xl/pivotCache/pivotCacheDefinition\(n).xml"
@@ -559,7 +623,7 @@ extension XLSXWriter {
             var sheetRels: [PackageRelationship] = []
             for table in workbook.pivotTables(onSheet: sheet.id) {
                 guard let cacheN = cachePartNumber[table.cacheID],
-                      let payload = table.payload as? PivotTablePayload else { continue }
+                      let payload = try tablePayload(table, formatID: formatID) else { continue }
                 tableNumber += 1
                 let path = "xl/pivotTables/pivotTable\(tableNumber).xml"
                 package.entries.append((path, try patchedPivotTable(table, payload: payload)))

@@ -51,6 +51,15 @@ public final class SpreadsheetDocument: ObservableObject {
     @Published public var zoomLevel: CGFloat = 1.0
     /// An alert for the window to show; the window clears it on dismissal.
     @Published public var notice: DocumentNotice?
+    /// Show the PivotTable Fields panel when the active cell is in a pivot.
+    @Published public var isPivotPanelVisible = true
+    /// Insert ▸ PivotTable… sheet.
+    @Published public var isInsertPivotPresented = false
+    /// Asks the user to confirm (message, detail); nil refuses. The app
+    /// installs an alert; tests install a closure.
+    public var confirm: ((String, String) -> Bool)?
+    /// Pivot cell roles of one sheet at one revision (for drawing).
+    var pivotRoleCache: (revision: Int, sheetID: Int, roles: [CellAddress: PivotCellRole])?
 
     public static let zoomRange: ClosedRange<CGFloat> = 0.25...4.0
     public static let zoomPresets: [CGFloat] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
@@ -133,7 +142,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     // MARK: - Change plumbing
 
-    private func markChanged() {
+    func markChanged() {
         isModified = true
         revision += 1
     }
@@ -201,7 +210,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Whole-workbook snapshot for structural ops (uses the XLSX round-trip,
     /// which is fully covered by tests).
-    private func registerWorkbookUndo(actionName: String) {
+    func registerWorkbookUndo(actionName: String) {
         guard let data = try? XLSXWriter.data(for: workbook) else { return }
         let sheetIndex = workbook.indexOfSheet(withID: activeSheetID) ?? 0
         withUndoGroup {
@@ -249,10 +258,14 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     private func refusePivotEdit(_ table: PivotTable) {
+        let index = workbook.pivotTables.firstIndex { $0.sheetID == table.sheetID && $0.name == table.name }
+        let editable = index.map { pivotEditBlocker($0) == nil } ?? false
         notice = DocumentNotice(
             message: "You can’t change part of a pivot table.",
-            detail: "“\(table.name)” came from Excel. SimpleSpread keeps pivot tables intact "
-                + "but can’t edit them. To remove it, select the whole pivot table and press Delete.")
+            detail: editable
+                ? "Use the PivotTable Fields panel to change “\(table.name)”, or select all of it and press Delete to remove it."
+                : "“\(table.name)” came from Excel with features SimpleSpread keeps but can’t edit. "
+                    + "To remove it, select the whole pivot table and press Delete.")
     }
 
     private func refuseStructuralEdit(axisIsRow: Bool, index: Int, count: Int) -> Bool {
