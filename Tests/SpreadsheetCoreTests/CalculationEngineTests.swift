@@ -65,6 +65,38 @@ struct CalculationEngineTests {
         #expect(h.value("B1") == .number(7))
     }
 
+    /// A running total down 100,000 rows: each cell depends on the one above,
+    /// deeper than any thread stack would allow a recursive walk.
+    @Test func veryLongChainEvaluates() {
+        let wb = Workbook()
+        let sheet = wb.addSheet(named: "Sheet1")
+        let rows = 100_000
+        sheet.setCell(Cell(value: .number(1)), at: CellAddress(row: 0, column: 0))
+        for r in 1..<rows {
+            sheet.setCell(Cell(value: .empty, formula: "A\(r)+1"), at: CellAddress(row: r, column: 0))
+        }
+        let engine = CalculationEngine(workbook: wb)
+        engine.rebuildAll()
+        #expect(sheet.cell(at: CellAddress(row: rows - 1, column: 0)).value == .number(Double(rows)))
+        // An edit at the top recalculates the whole chain.
+        sheet.setCell(Cell(value: .number(11)), at: CellAddress(row: 0, column: 0))
+        engine.recalculate(seeds: [AbsoluteAddress(sheetID: sheet.id, address: CellAddress(row: 0, column: 0))])
+        #expect(sheet.cell(at: CellAddress(row: rows - 1, column: 0)).value == .number(Double(rows + 10)))
+    }
+
+    @Test func longCycleIsCircular() {
+        let wb = Workbook()
+        let sheet = wb.addSheet(named: "Sheet1")
+        let rows = 50_000
+        for r in 0..<rows {
+            sheet.setCell(Cell(value: .empty, formula: "A\((r + 1) % rows + 1)+1"), at: CellAddress(row: r, column: 0))
+        }
+        let engine = CalculationEngine(workbook: wb)
+        engine.rebuildAll()
+        #expect(sheet.cell(at: CellAddress(row: 0, column: 0)).value.errorValue != nil)
+        #expect(sheet.cell(at: CellAddress(row: rows - 1, column: 0)).value.errorValue != nil)
+    }
+
     @Test func selfRangeCircular() {
         let h = Harness()
         h.set("A1", "=SUM(A1:A3)")

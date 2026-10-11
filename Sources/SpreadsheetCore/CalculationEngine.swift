@@ -252,34 +252,45 @@ public final class CalculationEngine {
             }
         }
 
-        func visit(_ addr: AbsoluteAddress) {
-            if evaluated.contains(addr) { return }
-            if visiting.contains(addr) {
-                // Cycle: this cell gets the circular error; dependents will
-                // propagate it naturally.
-                store(.error(.circular), at: addr)
-                evaluated.insert(addr)
-                return
-            }
-            visiting.insert(addr)
-            for p in dirtyPrecedents(of: addr) where p != addr {
-                visit(p)
-            }
+        // Evaluate `addr` after its dirty precedents, depth first. The walk
+        // keeps its own stack: a chain of formulas (a running total) can be
+        // as deep as the sheet is long, far deeper than the thread's stack.
+        func finish(_ addr: AbsoluteAddress) {
             // Self-reference is immediately circular.
             if dirtyPrecedents(of: addr).contains(addr) {
                 store(.error(.circular), at: addr)
-                visiting.remove(addr)
-                evaluated.insert(addr)
-                return
-            }
-            if !evaluated.contains(addr), let expr = asts[addr] {
+            } else if !evaluated.contains(addr), let expr = asts[addr] {
                 let context = EvalContext(workbook: workbook, sheetID: addr.sheetID,
                                           address: addr.address, clock: clock)
-                let value = FormulaEvaluator.evaluate(expr, context: context)
-                store(value, at: addr)
+                store(FormulaEvaluator.evaluate(expr, context: context), at: addr)
             }
             visiting.remove(addr)
             evaluated.insert(addr)
+        }
+
+        func visit(_ root: AbsoluteAddress) {
+            // Each frame: a cell and the precedents still to visit, last first.
+            var stack: [(addr: AbsoluteAddress, pending: [AbsoluteAddress])] = []
+            func enter(_ addr: AbsoluteAddress) {
+                if evaluated.contains(addr) { return }
+                if visiting.contains(addr) {
+                    // Cycle: this cell gets the circular error; dependents will
+                    // propagate it naturally.
+                    store(.error(.circular), at: addr)
+                    evaluated.insert(addr)
+                    return
+                }
+                visiting.insert(addr)
+                stack.append((addr, dirtyPrecedents(of: addr).filter { $0 != addr }.reversed()))
+            }
+            enter(root)
+            while !stack.isEmpty {
+                if let next = stack[stack.count - 1].pending.popLast() {
+                    enter(next)
+                } else {
+                    finish(stack.removeLast().addr)
+                }
+            }
         }
 
         for addr in dirty {
