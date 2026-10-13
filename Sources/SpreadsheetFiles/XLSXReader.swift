@@ -4,6 +4,8 @@ import SpreadsheetCore
 public enum XLSXError: Error, Equatable {
     case invalidPackage(String)
     case invalidXML(String)
+    /// The progress callback asked to stop.
+    case cancelled
 }
 
 /// Reads XLSX (OOXML SpreadsheetML) files into a Workbook.
@@ -18,9 +20,18 @@ public enum XLSXReader {
         return try read(data: data, report: &report)
     }
 
+    /// Read with progress: `progress` gets the fraction of sheet data read
+    /// so far; returning false stops the read with `XLSXError.cancelled`.
+    public static func read(data: Data, progress: @escaping (Double) -> Bool) throws -> Workbook {
+        var report = XLSXReadReport()
+        return try read(data: data, report: &report, progress: progress)
+    }
+
     /// Read, also reporting what couldn't be carried over (for tests and
-    /// diagnostics).
-    static func read(data: Data, report: inout XLSXReadReport) throws -> Workbook {
+    /// diagnostics). `fastSheetData: false` reads cells with XMLParser, the
+    /// reference the fast scanner is tested against.
+    static func read(data: Data, report: inout XLSXReadReport,
+                     progress: ((Double) -> Bool)? = nil, fastSheetData: Bool = true) throws -> Workbook {
         let zip = try ZipArchiveReader(data: data)
 
         // 1. Root rels -> workbook part.
@@ -61,8 +72,20 @@ public enum XLSXReader {
             styleIndexMap[i] = workbook.styles.index(for: info.toCellStyle(customFormats: customFormats))
         }
 
+        // Progress is the share of worksheet bytes read, weighted by size.
+        let sheetSizes = workbookInfo.sheets.map { meta -> Int in
+            guard let rel = wbRels.first(where: { $0.id == meta.relID }) else { return 0 }
+            return zip.entry(named: rel.target)?.uncompressedSize ?? 0
+        }
+        let totalSize = max(1, sheetSizes.reduce(0, +))
+        var doneSize = 0
         var sheetParts: [SheetPart] = []
         for (sheetIndex, sheetMeta) in workbookInfo.sheets.enumerated() {
+            let size = sheetSizes[sheetIndex]
+            let sheetProgress: ((Double) -> Bool)? = progress.map { report in
+                { fraction in report((Double(doneSize) + fraction * Double(size)) / Double(totalSize)) }
+            }
+            defer { doneSize += size }
             guard let rel = wbRels.first(where: { $0.id == sheetMeta.relID }) else { continue }
             let sheet = workbook.insertSheet(
                 Sheet(id: max(1, sheetMeta.sheetID), name: sheetMeta.name),
@@ -72,12 +95,14 @@ public enum XLSXReader {
                 workbook.removeSheet(withID: sheet.id)
                 let replacement = workbook.addSheet(named: sheetMeta.name)
                 try parseWorksheet(zipData(zip, rel.target), into: replacement,
-                                   sharedStrings: sharedStrings, styleIndexMap: styleIndexMap)
+                                   sharedStrings: sharedStrings, styleIndexMap: styleIndexMap,
+                                   progress: sheetProgress, fastSheetData: fastSheetData)
                 sheetParts.append(SheetPart(sheetID: replacement.id, sheetIndex: sheetIndex, path: rel.target))
                 continue
             }
             try parseWorksheet(zipData(zip, rel.target), into: sheet,
-                               sharedStrings: sharedStrings, styleIndexMap: styleIndexMap)
+                               sharedStrings: sharedStrings, styleIndexMap: styleIndexMap,
+                               progress: sheetProgress, fastSheetData: fastSheetData)
             sheetParts.append(SheetPart(sheetID: sheet.id, sheetIndex: sheetIndex, path: rel.target))
         }
 
@@ -512,7 +537,92 @@ public enum XLSXReader {
     // MARK: Worksheet
 
     static func parseWorksheet(_ data: Data, into sheet: Sheet,
-                               sharedStrings: [String], styleIndexMap: [Int: Int]) throws {
+                               sharedStrings: [String], styleIndexMap: [Int: Int],
+                               progress: ((Double) -> Bool)? = nil, fastSheetData: Bool = true) throws {
+        // Rows and cells (`<sheetData>`) go to the byte scanner; the rest of
+        // the sheet, small by comparison, to XMLParser below. If the scanner
+        // meets anything it doesn't expect, the whole sheet goes to XMLParser.
+        var rest = data
+        if fastSheetData, let span = sheetDataSpan(in: data) {
+            var scanner = SheetDataScanner(sheet: sheet, sharedStrings: sharedStrings,
+                                           styleIndexMap: styleIndexMap)
+            do {
+                let finished = try data.withUnsafeBytes { raw -> Bool in
+                    let bytes = raw.bindMemory(to: UInt8.self)
+                    return try scanner.scan(UnsafeBufferPointer(rebasing: bytes[span.inner]),
+                                            shouldContinue: { progress?($0) ?? true })
+                }
+                guard finished else { throw XLSXError.cancelled }
+                rest = data.subdata(in: 0..<span.outer.lowerBound)
+                rest.append(data.subdata(in: span.outer.upperBound..<data.count))
+            } catch XLSXError.invalidXML {
+                sheet.removeAllCells()
+                sheet.rowHeights = [:]
+                sheet.hiddenRows = []
+            }
+        } else if let progress, !progress(0) {
+            throw XLSXError.cancelled
+        }
+        try parseWorksheetWithXMLParser(rest, into: sheet, sharedStrings: sharedStrings,
+                                        styleIndexMap: styleIndexMap)
+    }
+
+    /// Where `<sheetData>` is: `outer` covers the element, `inner` its
+    /// content. Nil when there is none (or it is empty).
+    static func sheetDataSpan(in data: Data) -> (outer: Range<Int>, inner: Range<Int>)? {
+        data.withUnsafeBytes { raw -> (outer: Range<Int>, inner: Range<Int>)? in
+            let b = raw.bindMemory(to: UInt8.self)
+            let name = Array("sheetData".utf8)
+            let n = b.count
+            func isName(at k: Int) -> Bool {
+                guard k + name.count <= n else { return false }
+                for m in 0..<name.count where b[k + m] != name[m] { return false }
+                return true
+            }
+            // The start tag: "<sheetData" or "<prefix:sheetData", then a
+            // space, ">" or "/".
+            var k = 0
+            var tagStart = -1
+            while k < n {
+                if b[k] == 0x3C, k + 1 < n, b[k + 1] != 0x2F, b[k + 1] != 0x3F, b[k + 1] != 0x21 {
+                    var j = k + 1
+                    while j < n, b[j] != 0x3E, b[j] != 0x20, b[j] != 0x2F, b[j] != 0x3A { j += 1 }
+                    let local = (j < n && b[j] == 0x3A) ? j + 1 : k + 1
+                    if isName(at: local), local + name.count < n {
+                        let after = b[local + name.count]
+                        if after == 0x3E || after == 0x2F || after == 0x20 || after == 0x0A || after == 0x0D || after == 0x09 {
+                            tagStart = k
+                            break
+                        }
+                    }
+                }
+                k += 1
+            }
+            guard tagStart >= 0 else { return nil }
+            var gt = tagStart
+            while gt < n, b[gt] != 0x3E { gt += 1 }
+            guard gt < n, b[gt - 1] != 0x2F else { return nil } // <sheetData/>: nothing to scan
+            let innerStart = gt + 1
+            // The end tag: the last "</sheetData>" or "</prefix:sheetData>".
+            var e = n - name.count - 1
+            while e > innerStart {
+                if b[e + name.count] == 0x3E, isName(at: e) {
+                    var open = e - 1
+                    while open > innerStart, b[open] != 0x3C, b[open] != 0x3E { open -= 1 }
+                    if b[open] == 0x3C, open + 1 < n, b[open + 1] == 0x2F {
+                        return (tagStart..<(e + name.count + 1), innerStart..<open)
+                    }
+                }
+                e -= 1
+            }
+            return nil
+        }
+    }
+
+    /// The XMLParser reader: everything outside `<sheetData>` always, and
+    /// the cells too when the fast scanner is off or gave up.
+    static func parseWorksheetWithXMLParser(_ data: Data, into sheet: Sheet,
+                                            sharedStrings: [String], styleIndexMap: [Int: Int]) throws {
         final class Delegate: NSObject, XMLParserDelegate {
             let sheet: Sheet
             let sharedStrings: [String]

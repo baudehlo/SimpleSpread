@@ -199,7 +199,7 @@ public enum ValueParser {
         return nil
     }
 
-    static let monthNamesLookup: [String: Int] = {
+    public static let monthNamesLookup: [String: Int] = {
         var map: [String: Int] = [:]
         for (i, name) in NumberFormatEngine.monthNames.enumerated() {
             map[name.lowercased()] = i + 1
@@ -209,7 +209,8 @@ public enum ValueParser {
     }()
 
     static func parseDateOnly(_ s: String, referenceDate: Date) -> Double? {
-        let currentYear = Calendar.current.component(.year, from: referenceDate)
+        // Only a year-less date needs this, and the calendar lookup is slow.
+        var currentYear: Int { Calendar.current.component(.year, from: referenceDate) }
 
         func makeSerial(year: Int, month: Int, day: Int) -> Double? {
             guard month >= 1, month <= 12, day >= 1,
@@ -227,7 +228,9 @@ public enum ValueParser {
         // ISO / slashed numeric forms
         let numericSeparators = CharacterSet(charactersIn: "/-.")
         let comps = s.components(separatedBy: numericSeparators)
-        if comps.count == 3, comps.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }) {
+        // ASCII digits only: `isNumber` also accepts "²" or "½", which Int() rejects.
+        func isDigits(_ s: String) -> Bool { !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber } }
+        if comps.count == 3, comps.allSatisfy(isDigits) {
             let a = Int(comps[0])!, b = Int(comps[1])!, c = Int(comps[2])!
             if comps[0].count == 4 {
                 // yyyy-M-d
@@ -236,7 +239,7 @@ public enum ValueParser {
             // M/d/yyyy or M/d/yy
             return makeSerial(year: normalizeYear(c), month: a, day: b)
         }
-        if comps.count == 2, comps.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }),
+        if comps.count == 2, comps.allSatisfy(isDigits),
            s.contains("/") {
             // M/d (current year)
             let a = Int(comps[0])!, b = Int(comps[1])!
@@ -255,7 +258,7 @@ public enum ValueParser {
                 if let m = monthNamesLookup[token.lowercased()] {
                     guard month == nil else { return nil }
                     month = m
-                } else if token.allSatisfy(\.isNumber) {
+                } else if isDigits(token) {
                     let n = Int(token)!
                     if token.count == 4 || n > 31 {
                         guard year == nil else { return nil }

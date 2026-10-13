@@ -41,9 +41,19 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
     private var dragMode: DragMode = .none
     private var pendingFillTarget: CellRange?
 
+    /// The layout for the current revision of the active sheet; rebuilt
+    /// only after an edit (every layout change goes through markChanged).
     var layout: GridLayout {
-        GridLayout(sheet: document?.activeSheet ?? Sheet(id: 0, name: ""))
+        guard let document else { return GridLayout(sheet: Sheet(id: 0, name: "")) }
+        let sheet = document.activeSheet
+        if let cache = layoutCache, cache.revision == document.revision, cache.layout.sheet === sheet {
+            return cache.layout
+        }
+        let fresh = GridLayout(sheet: sheet)
+        layoutCache = (document.revision, fresh)
+        return fresh
     }
+    private var layoutCache: (revision: Int, layout: GridLayout)?
 
     static let headerColor = NSColor.windowBackgroundColor
     static let gridLineColor = NSColor.separatorColor.withAlphaComponent(0.5)
@@ -220,7 +230,8 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         }
 
         // --- Headers (pinned to the visible rect) ---
-        drawHeaders(layout: l, visible: visible, selectionRange: document.selection.range)
+        drawHeaders(layout: l, visible: visible,
+                    selectionRange: document.activeSheet.expandedForMerges(document.selection.range))
     }
 
     /// Draw one pane's cells, in unshifted coordinates (the caller has set
@@ -231,7 +242,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let cols = pane.cols
         let sheet = document.activeSheet
         let selection = document.selection
-        let selectionRange = selection.range
+        // Drawn over whole merged cells, even before a click has grown the
+        // selection to cover them (e.g. A1 inside a merge on open).
+        let selectionRange = sheet.expandedForMerges(selection.range)
 
         // Pivot styling is drawn from cell roles, and only on sheets that
         // have pivots (role lookups are cached per revision, but skip them
@@ -1312,23 +1325,24 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         }
     }
 
+    /// The column whose right edge is within 4pt of x, if any.
     private func columnBoundary(near x: CGFloat, layout l: GridLayout) -> Int? {
-        var pos: CGFloat = 0
-        for col in 0..<l.columnCount {
-            pos += l.columnWidth(col)
-            if abs(x - pos) <= 4 { return col }
-            if pos > x + 4 { break }
-        }
+        let col = l.column(atX: x)
+        if col > 0, abs(x - l.xOffset(ofColumn: col)) <= 4 { return col - 1 }
+        if abs(x - l.xOffset(ofColumn: col + 1)) <= 4 { return col }
         return nil
     }
 
+    /// The row whose bottom edge is within 4pt of y. At a run of hidden
+    /// rows, the visible row above them (they share that edge).
     private func rowBoundary(near y: CGFloat, layout l: GridLayout) -> Int? {
-        var pos: CGFloat = 0
-        for row in 0..<l.rowCount {
-            pos += l.rowHeight(row)
-            if abs(y - pos) <= 4 { return row }
-            if pos > y + 4 { break }
+        let row = l.row(atY: y)
+        if row > 0, abs(y - l.yOffset(ofRow: row)) <= 4 {
+            var above = row - 1
+            while above > 0, l.rowHeight(above) == 0 { above -= 1 }
+            return above
         }
+        if abs(y - l.yOffset(ofRow: row + 1)) <= 4 { return row }
         return nil
     }
 

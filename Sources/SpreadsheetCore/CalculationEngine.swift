@@ -94,10 +94,19 @@ public final class CalculationEngine {
         rangeDependents.removeAll()
         precedentsIndex.removeAll()
         volatiles.removeAll()
+        // Size the tables once; big imports have a million formulas.
+        let formulaCount = workbook.sheets.reduce(0) { total, sheet in
+            total + sheet.cells.values.reduce(0) { $0 + ($1.formula == nil ? 0 : 1) }
+        }
+        asts.reserveCapacity(formulaCount)
+        precedentsIndex.reserveCapacity(formulaCount)
+        dependents.reserveCapacity(formulaCount * 2)
         for sheet in workbook.sheets {
             for (address, cell) in sheet.cells {
                 if let formula = cell.formula {
-                    installFormula(formula, at: AbsoluteAddress(sheetID: sheet.id, address: address))
+                    // The tables were just cleared: nothing to remove first.
+                    installFormula(formula, at: AbsoluteAddress(sheetID: sheet.id, address: address),
+                                   replacing: false)
                 }
             }
         }
@@ -117,8 +126,8 @@ public final class CalculationEngine {
 
     // MARK: Graph maintenance
 
-    private func installFormula(_ text: String, at addr: AbsoluteAddress) {
-        removeFormula(at: addr)
+    private func installFormula(_ text: String, at addr: AbsoluteAddress, replacing: Bool = true) {
+        if replacing { removeFormula(at: addr) }
         let expr: FormulaExpr
         do {
             expr = try FormulaParser.parse(text)

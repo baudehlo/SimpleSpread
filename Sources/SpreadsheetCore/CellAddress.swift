@@ -66,6 +66,12 @@ public struct CellAddress: Hashable, Sendable, Comparable, CustomStringConvertib
 
     public var description: String { a1 }
 
+    /// One packed integer: cheaper than hashing row and column separately
+    /// (addresses key every cell dictionary).
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(row &* 16_384 &+ column)
+    }
+
     public static func < (lhs: CellAddress, rhs: CellAddress) -> Bool {
         if lhs.row != rhs.row { return lhs.row < rhs.row }
         return lhs.column < rhs.column

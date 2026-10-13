@@ -118,3 +118,30 @@ struct ZipTests {
         #expect(XML.encodeIllegalCharacters("a\tb\nc") == "a\tb\nc")
     }
 }
+
+@Suite("Parallel deflate")
+struct ParallelDeflateTests {
+    @Test func chunkedStreamInflatesToTheOriginal() throws {
+        // Several chunks of compressible, varied text, plus odd sizes.
+        var rng = SystemRandomNumberGenerator()
+        for size in [1, 100, (1 << 20) - 1, 1 << 20, (1 << 20) + 1, 5 * (1 << 20) + 12345] {
+            var bytes = [UInt8](repeating: 0, count: size)
+            for i in 0..<size { bytes[i] = UInt8(ascii: "a") &+ UInt8((i / 7 + Int.random(in: 0...2, using: &rng)) % 26) }
+            let data = Data(bytes)
+            guard let compressed = Deflate.compress(data) else {
+                #expect(size < 200) // tiny inputs may not shrink
+                continue
+            }
+            #expect(compressed.count < data.count)
+            #expect(try Deflate.decompress(compressed, uncompressedSize: data.count) == data)
+        }
+    }
+
+    @Test func zipRoundTripOfABigEntry() throws {
+        let text = String(repeating: "<row r=\"1\"><c r=\"A1\"><v>12345</v></c></row>", count: 120_000)
+        var writer = ZipArchiveWriter()
+        writer.addEntry(name: "big.xml", data: Data(text.utf8))
+        let reader = try ZipArchiveReader(data: writer.finalize())
+        #expect(try reader.contents(named: "big.xml") == Data(text.utf8))
+    }
+}

@@ -12,6 +12,10 @@ public struct AbsoluteAddress: Hashable, Sendable, CustomStringConvertible {
         self.address = address
     }
 
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine((address.row &* 16_384 &+ address.column) ^ (sheetID &<< 40))
+    }
+
     public var description: String { "sheet\(sheetID)!\(address.a1)" }
 }
 

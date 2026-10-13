@@ -194,7 +194,19 @@ public enum CSV {
     }
 
     /// Import into a Workbook, applying inferred formats (dates, percents).
+    /// See the fast byte-level version in CSVFastImport.swift.
     public static func importWorkbook(
+        data: Data, delimiter: Character? = nil, sheetName: String = "Sheet1",
+        referenceDate: Date = Date()
+    ) -> Workbook {
+        var report = CSVImportReport()
+        return importWorkbook(data: data, delimiter: delimiter, sheetName: sheetName,
+                              referenceDate: referenceDate, report: &report)
+    }
+
+    /// The original String-based import, kept as the reference the fast
+    /// importer is tested against.
+    static func referenceImportWorkbook(
         data: Data, delimiter: Character? = nil, sheetName: String = "Sheet1",
         referenceDate: Date = Date()
     ) -> Workbook {

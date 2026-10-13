@@ -46,6 +46,24 @@ struct SampleFileGeneration {
         let csv = CSV.export(sheet: wb.sheets[0], workbook: wb)
         try csv.write(to: URL(fileURLWithPath: dir).appendingPathComponent("sample.csv"))
         try layoutSample().write(to: URL(fileURLWithPath: dir).appendingPathComponent("layout.xlsx"))
+        try bigSample().write(to: URL(fileURLWithPath: dir).appendingPathComponent("big.xlsx"))
+    }
+
+    /// 50,000 rows: a sheet part of several megabytes, so it is written by
+    /// the parallel deflate in many chunks.
+    func bigSample() throws -> Data {
+        let wb = Workbook.newDocument()
+        let sheet = wb.sheets[0]
+        let regions = ["North", "South", "East", "West"]
+        for r in 0..<50_000 {
+            sheet.setCell(Cell(value: .number(Double(r + 1))), at: CellAddress(row: r, column: 0))
+            sheet.setCell(Cell(value: .string(regions[r % 4])), at: CellAddress(row: r, column: 1))
+            sheet.setCell(Cell(value: .number(Double(r % 997) * 1.25)), at: CellAddress(row: r, column: 2))
+            sheet.setCell(Cell(value: .number(Double(r % 997) * 2.5), formula: "C\(r + 1)*2"),
+                          at: CellAddress(row: r, column: 3))
+            sheet.setCell(Cell(value: .string("Order \(r) & <note>")), at: CellAddress(row: r, column: 4))
+        }
+        return try XLSXWriter.data(for: wb)
     }
 
     /// Borders, merged cells, frozen panes, hidden rows and an AutoFilter

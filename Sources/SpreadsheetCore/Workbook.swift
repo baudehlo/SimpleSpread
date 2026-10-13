@@ -54,6 +54,16 @@ public final class Sheet {
         }
     }
 
+    /// Drop every cell (a reader starting a sheet over).
+    public func removeAllCells() {
+        cells = [:]
+    }
+
+    /// Make room for `count` cells up front (bulk imports).
+    public func reserveCellCapacity(_ count: Int) {
+        cells.reserveCapacity(count)
+    }
+
     public func value(at address: CellAddress) -> CellValue {
         cells[address]?.value ?? .empty
     }
