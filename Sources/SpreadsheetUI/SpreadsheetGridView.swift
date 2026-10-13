@@ -240,6 +240,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let visible = pane.visible
         let rows = pane.rows
         let cols = pane.cols
+        // The rows that show: on a filtered sheet, `rows` can span a million
+        // hidden rows between the few on screen.
+        let shownRows = l.shownRows(in: rows)
         let sheet = document.activeSheet
         let selection = document.selection
         // Drawn over whole merged cells, even before a click has grown the
@@ -259,7 +262,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let merges = sheet.mergedRanges.filter { $0.intersects(paneRange) }
         var mergeOf: [CellAddress: CellRange] = [:]
         for merge in merges {
-            for row in max(merge.start.row, rows.lowerBound)...min(merge.end.row, rows.upperBound) {
+            for row in shownRows where merge.start.row <= row && row <= merge.end.row {
                 for col in max(merge.start.column, cols.lowerBound)...min(merge.end.column, cols.upperBound) {
                     mergeOf[CellAddress(row: row, column: col)] = merge
                 }
@@ -285,7 +288,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 mergeRect(merge).fill()
             }
         }
-        for row in rows where l.rowHeight(row) > 0 {
+        for row in shownRows {
             for col in cols {
                 let addr = CellAddress(row: row, column: col)
                 let rect = cellRect(addr, layout: l)
@@ -314,7 +317,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         // neighbour (Excel-style overflow) is not painted over by that
         // neighbour's fill. A spilled run hides the grid lines inside it.
         var hiddenBoundaries: [Int: Set<Int>] = [:]
-        for row in rows where l.rowHeight(row) > 0 {
+        for row in shownRows {
             for col in textSourceColumns(row: row, visible: cols, layout: l) {
                 let addr = CellAddress(row: row, column: col)
                 if mergeOf[addr] != nil { continue }
@@ -344,13 +347,16 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         // Lines inside a merged range are left out, as are the vertical
         // lines that overflowing text runs across.
         var hiddenRules: [Int: Set<Int>] = [:]   // row boundary -> columns
+        // Row boundaries drawn: the top of each shown row, and the bottom of
+        // the last. A hidden row's boundary would sit on the next one's.
+        let ruleRows = shownRows + [rows.upperBound + 1]
         for merge in merges {
-            for row in merge.start.row...merge.end.row {
+            for row in shownRows where merge.start.row <= row && row <= merge.end.row {
                 for boundary in (merge.start.column + 1)..<(merge.end.column + 1) {
                     hiddenBoundaries[row, default: []].insert(boundary)
                 }
             }
-            for boundary in (merge.start.row + 1)..<(merge.end.row + 1) {
+            for boundary in ruleRows where merge.start.row < boundary && boundary <= merge.end.row {
                 for col in merge.start.column...merge.end.column {
                     hiddenRules[boundary, default: []].insert(col)
                 }
@@ -365,12 +371,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let lineRight = min(visible.maxX, contentOrigin.x + l.totalWidth)
         // Row tops for the visible rows, so vertical lines can skip the rows
         // where overflowing text runs across a boundary.
-        var rowTops: [CGFloat] = []
-        var rowTop = contentOrigin.y + l.yOffset(ofRow: rows.lowerBound)
-        for row in rows {
-            rowTops.append(rowTop)
-            rowTop += l.rowHeight(row)
-        }
+        let rowTops = shownRows.map { contentOrigin.y + l.yOffset(ofRow: $0) }
         var x = contentOrigin.x + l.xOffset(ofColumn: cols.lowerBound)
         for col in cols.lowerBound...(cols.upperBound + 1) {
             if hiddenBoundaries.isEmpty {
@@ -378,7 +379,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 path.line(to: CGPoint(x: x, y: lineBottom))
             } else {
                 var segmentStart: CGFloat? = lineTop
-                for (index, row) in rows.enumerated() where hiddenBoundaries[row]?.contains(col) == true {
+                for (index, row) in shownRows.enumerated() where hiddenBoundaries[row]?.contains(col) == true {
                     let top = max(lineTop, rowTops[index])
                     if let start = segmentStart, top > start {
                         path.move(to: CGPoint(x: x, y: start))
@@ -399,8 +400,8 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             colLefts.append(colLeft)
             colLeft += l.columnWidth(col)
         }
-        var y = contentOrigin.y + l.yOffset(ofRow: rows.lowerBound)
-        for row in rows.lowerBound...(rows.upperBound + 1) {
+        for row in ruleRows {
+            let y = contentOrigin.y + l.yOffset(ofRow: row)
             if let hidden = hiddenRules[row] {
                 var segmentStart: CGFloat? = lineLeft
                 for (index, col) in cols.enumerated() where hidden.contains(col) {
@@ -419,7 +420,6 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 path.move(to: CGPoint(x: lineLeft, y: y))
                 path.line(to: CGPoint(x: lineRight, y: y))
             }
-            if row <= rows.upperBound { y += l.rowHeight(row) }
         }
         path.stroke()
 
@@ -490,7 +490,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let sheet = document.activeSheet
         let rowRange = max(0, rows.lowerBound - 1)...(rows.upperBound + 1)
         let colRange = max(0, cols.lowerBound - 1)...(cols.upperBound + 1)
-        for row in rowRange where l.rowHeight(row) > 0 {
+        for row in l.shownRows(in: rowRange) {
             for column in colRange {
                 let addr = CellAddress(row: row, column: column)
                 let cell = sheet.cell(at: addr)
@@ -586,7 +586,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             let lo = max(rows.lowerBound, band.location.start.row)
             let hi = min(rows.upperBound, band.location.end.row)
             if lo <= hi {
-                for row in lo...hi where band.isGrandTotalRow(row, role: role) {
+                for row in l.shownRows(in: lo...hi) where band.isGrandTotalRow(row, role: role) {
                     // Consecutive grand-total rows share one rule on top.
                     if !band.isGrandTotalRow(row - 1, role: role) { rule(atTopOf: row) }
                 }
@@ -871,7 +871,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: CGRect(x: visible.minX, y: minY, width: GridLayout.headerWidth,
                                       height: maxY - minY)).addClip()
-            for row in rows where l.rowHeight(row) > 0 {
+            for row in l.shownRows(in: rows) {
                 let y = contentOrigin.y + l.yOffset(ofRow: row) + shift
                 let rect = CGRect(x: visible.minX, y: y, width: GridLayout.headerWidth,
                                   height: l.rowHeight(row))
@@ -1316,7 +1316,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             }
         }
         for (rows, shift, minY, maxY) in rowBands(layout: l, visible: visible) {
-            for row in rows where l.rowHeight(row) > 0 {
+            for row in l.shownRows(in: rows) {
                 let y = contentOrigin.y + l.yOffset(ofRow: row) + l.rowHeight(row) + shift
                 guard y >= minY, y <= maxY else { continue }
                 let rect = CGRect(x: visible.minX, y: y - 3, width: GridLayout.headerWidth, height: 6)
