@@ -194,7 +194,15 @@ fills[1]=gray125, cellXfs aligned to StyleTable, Normal cell style); shared
 strings with `xml:space` and `_xHHHH_`; formulas without `=` plus cached
 `<v>` and correct result types (`str`/`b`/`e`); dimension, sheetViews with
 frozen panes, cols with the character-width formula (px = 7·w + 5), row
-heights, mergeCells; docProps. Reader resolves parts via relationships
+heights and `hidden` rows (hidden-only rows still get a `<row>`),
+`<autoFilter>` (after sheetData, before mergeCells) plus the hidden
+sheet-scoped `_xlnm._FilterDatabase` defined name Excel expects, mergeCells;
+a deduplicated `<borders>` table (index 0 empty; `borderId` + `applyBorder`);
+docProps. Filter criteria we can't evaluate (top10, dynamic, color, icon,
+`dateGroupItem` filters) are kept as the filterColumn child's XML and written
+back verbatim (attribute order normalized, unused namespace declarations
+dropped). Border colors other than `rgb` (theme, indexed) read as automatic;
+diagonals are not modelled. Reader resolves parts via relationships
 (never hard-coded paths), infers missing `r` attributes, concatenates
 rich-text runs, expands shared formulas by reference translation, maps
 builtin/custom numFmts, and normalizes 1904-system dates (+1462 on

@@ -330,6 +330,8 @@ public enum XLSXReader {
         var fillARGB: String?
         var pivotButton = false
         var indent = 0
+        var borderID = 0
+        var borders = CellBorders()
 
         func toCellStyle(customFormats: [Int: String]) -> CellStyle {
             var style = CellStyle()
@@ -352,6 +354,7 @@ public enum XLSXReader {
             style.wrapText = wrapText
             style.pivotButton = pivotButton
             style.indent = max(0, indent)
+            style.borders = borders
             if numFmtID != 0 {
                 if let custom = customFormats[numFmtID] {
                     // A custom "General" is General (the writer maps both to id 0).
@@ -375,9 +378,14 @@ public enum XLSXReader {
             var customFormats: [Int: String] = [:]
             var fonts: [ReadFont] = []
             var fills: [String?] = []
+            var borders: [CellBorders] = []
             var xfs: [ReadStyle] = []
 
             var inNumFmts = false, inFonts = false, inFills = false, inCellXfs = false
+            var inBorders = false
+            var currentBorder: CellBorders?
+            /// The edge being read: its side and line (nil = no line).
+            var currentEdge: (side: String, line: BorderLine?)?
             var currentFont: ReadFont?
             var currentFillIsSolid = false
             var currentFillColor: String?
@@ -396,6 +404,14 @@ public enum XLSXReader {
                 case "fonts": inFonts = true
                 case "fills": inFills = true
                 case "cellXfs": inCellXfs = true
+                case "borders": inBorders = true
+                case "border": if inBorders { currentBorder = CellBorders() }
+                case "left", "right", "top", "bottom", "start", "end":
+                    // Only the stylesheet's table: a <dxf> has its own <border>.
+                    if currentBorder != nil {
+                        let style = attributes["style"].flatMap(BorderLineStyle.init(rawValue:))
+                        currentEdge = (localName(name), style.map { BorderLine($0) })
+                    }
                 case "font": if inFonts { currentFont = ReadFont() }
                 case "b": if currentFont != nil, boolAttr(attributes["val"], default: true) { currentFont?.bold = true }
                 case "i": if currentFont != nil, boolAttr(attributes["val"], default: true) { currentFont?.italic = true }
@@ -409,6 +425,10 @@ public enum XLSXReader {
                 case "name": if inFonts { currentFont?.name = attributes["val"] }
                 case "color":
                     if currentFont != nil, let rgb = attributes["rgb"] { currentFont?.colorARGB = rgb }
+                    // Theme, indexed and auto colors read as automatic.
+                    if currentEdge?.line != nil, let rgb = attributes["rgb"] {
+                        currentEdge?.line?.color = RGBAColor(argbHex: rgb)
+                    }
                 case "fill": if inFills { currentFillIsSolid = false; currentFillColor = nil }
                 case "patternFill":
                     if inFills { currentFillIsSolid = (attributes["patternType"] == "solid") }
@@ -421,6 +441,8 @@ public enum XLSXReader {
                         xf.fontID = Int(attributes["fontId"] ?? "") ?? 0
                         xf.fillID = Int(attributes["fillId"] ?? "") ?? 0
                         xf.pivotButton = boolAttr(attributes["pivotButton"], default: false)
+                        // Excel applies a cellXfs borderId whatever applyBorder says.
+                        xf.borderID = Int(attributes["borderId"] ?? "") ?? 0
                         currentXf = xf
                     }
                 case "alignment":
@@ -451,6 +473,20 @@ public enum XLSXReader {
                 case "fonts": inFonts = false
                 case "fills": inFills = false
                 case "cellXfs": inCellXfs = false
+                case "borders": inBorders = false
+                case "border":
+                    if inBorders, let border = currentBorder { borders.append(border); currentBorder = nil }
+                case "left", "right", "top", "bottom", "start", "end":
+                    // Never let an empty edge clear one set by its start/end twin.
+                    if let edge = currentEdge, currentBorder != nil, edge.line != nil {
+                        switch edge.side {
+                        case "left", "start": currentBorder?.left = edge.line
+                        case "right", "end": currentBorder?.right = edge.line
+                        case "top": currentBorder?.top = edge.line
+                        default: currentBorder?.bottom = edge.line
+                        }
+                        currentEdge = nil
+                    }
                 case "font":
                     if inFonts, let f = currentFont { fonts.append(f); currentFont = nil }
                 case "fill":
@@ -459,6 +495,7 @@ public enum XLSXReader {
                     if inCellXfs, var xf = currentXf {
                         if xf.fontID >= 0 && xf.fontID < fonts.count { xf.font = fonts[xf.fontID] }
                         if xf.fillID >= 2 && xf.fillID < fills.count { xf.fillARGB = fills[xf.fillID] }
+                        if xf.borderID >= 0 && xf.borderID < borders.count { xf.borders = borders[xf.borderID] }
                         xfs.append(xf)
                         currentXf = nil
                     }
@@ -494,6 +531,17 @@ public enum XLSXReader {
             var sharedFormulas: [String: (CellAddress, String)] = [:]
             var currentSharedSI: String?
             var currentFormulaIsShared = false
+            var depth = 0
+            // AutoFilter (worksheet level only, not customSheetView copies).
+            var autoFilter: AutoFilter?
+            var filterColumnID: Int?
+            var filterColumn = ColumnFilter()
+            var filterColumnPreserve = false
+            var filterCriterion: String?
+            /// colId of each filterColumn child in document order, and the
+            /// child of each column that may need keeping verbatim.
+            var criterionOwners: [Int] = []
+            var preservedCriteria: [Int: Int] = [:] // colId -> child index
 
             init(sheet: Sheet, sharedStrings: [String], styleIndexMap: [Int: Int]) {
                 self.sheet = sheet
@@ -503,7 +551,51 @@ public enum XLSXReader {
 
             func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                         qualifiedName: String?, attributes: [String: String]) {
+                depth += 1
                 switch localName(name) {
+                case "autoFilter" where depth == 2:
+                    if let ref = attributes["ref"], let range = CellRange(a1: ref) {
+                        autoFilter = AutoFilter(range: range)
+                    }
+                case "filterColumn" where depth == 3 && autoFilter != nil:
+                    // hiddenButton/showButton are ignored: buttons always show.
+                    filterColumnID = Int(attributes["colId"] ?? "") ?? -1
+                    filterColumn = ColumnFilter()
+                    filterColumnPreserve = false
+                    filterCriterion = nil
+                case _ where depth == 4 && filterColumnID != nil:
+                    let colID = filterColumnID!
+                    criterionOwners.append(colID)
+                    let element = localName(name)
+                    guard element != "extLst", filterCriterion == nil else { break }
+                    filterCriterion = element
+                    switch element {
+                    case "filters":
+                        filterColumn.values = []
+                        filterColumn.includeBlanks = boolAttr(attributes["blank"], default: false)
+                    case "customFilters":
+                        filterColumn.matchAll = boolAttr(attributes["and"], default: false)
+                    default:
+                        // top10, dynamicFilter, colorFilter, iconFilter.
+                        filterColumnPreserve = true
+                    }
+                    // Even filters/customFilters may turn out to need it.
+                    preservedCriteria[colID] = criterionOwners.count - 1
+                case _ where depth == 5 && filterColumnID != nil && !filterColumnPreserve:
+                    switch (filterCriterion, localName(name)) {
+                    case ("filters", "filter"):
+                        filterColumn.values?.insert(XML.decodeIllegalCharacters(attributes["val"] ?? ""))
+                    case ("customFilters", "customFilter"):
+                        if let op = FilterCondition.Operator(rawValue: attributes["operator"] ?? "equal"),
+                           filterColumn.conditions.count < 2 {
+                            filterColumn.conditions.append(FilterCondition(op, attributes["val"] ?? ""))
+                        } else {
+                            filterColumnPreserve = true
+                        }
+                    default:
+                        // dateGroupItem and anything else we can't evaluate.
+                        filterColumnPreserve = true
+                    }
                 case "row":
                     if let r = Int(attributes["r"] ?? ""), r >= 1 {
                         currentRow = r - 1
@@ -514,6 +606,9 @@ public enum XLSXReader {
                     if let ht = Double(attributes["ht"] ?? ""),
                        boolAttr(attributes["customHeight"], default: false) || attributes["ht"] != nil {
                         sheet.rowHeights[currentRow] = CGFloat(ht)
+                    }
+                    if boolAttr(attributes["hidden"], default: false), currentRow < CellAddress.maxRows {
+                        sheet.hiddenRows.insert(currentRow)
                     }
                 case "c":
                     if let a1 = attributes["r"], let addr = CellAddress(a1: a1) {
@@ -579,6 +674,17 @@ public enum XLSXReader {
 
             func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?,
                         qualifiedName: String?) {
+                defer { depth -= 1 }
+                if depth == 3, localName(name) == "filterColumn", let colID = filterColumnID {
+                    if filterColumnPreserve {
+                        filterColumn = ColumnFilter(preservedXML: "") // filled in after the parse
+                    } else {
+                        preservedCriteria[colID] = nil
+                    }
+                    if colID >= 0, filterColumn.isActive { autoFilter?.columns[colID] = filterColumn }
+                    filterColumnID = nil
+                    return
+                }
                 switch localName(name) {
                 case "v": inV = false
                 case "f":
@@ -638,6 +744,52 @@ public enum XLSXReader {
 
         let delegate = Delegate(sheet: sheet, sharedStrings: sharedStrings, styleIndexMap: styleIndexMap)
         try runParser(data, delegate: delegate)
+
+        guard var filter = delegate.autoFilter else { return }
+        // Criteria we can't evaluate are kept as XML and written back verbatim.
+        let owners = delegate.criterionOwners
+        let preserved = delegate.preservedCriteria.filter { filter.columns[$0.key]?.preservedXML != nil }
+        if !preserved.isEmpty {
+            let fragments = try XMLRewriter.fragments(of: data) {
+                $0.path.count == 4 && $0.path[1] == "autoFilter" && $0.path[2] == "filterColumn"
+            }
+            for (colID, index) in preserved {
+                guard index < fragments.count, index < owners.count, owners[index] == colID else {
+                    filter.columns[colID] = nil
+                    continue
+                }
+                filter.columns[colID]?.preservedXML = prunedNamespaces(fragments[index])
+            }
+        }
+        sheet.autoFilter = filter
+    }
+
+    /// A fragment carries every namespace declaration in scope where it was
+    /// cut out; keep only those it uses. The main namespace is dropped: it
+    /// is the default namespace wherever the fragment is written back.
+    static func prunedNamespaces(_ fragment: String) -> String {
+        // XMLRewriter escapes ">" in attribute values, so the first one ends the start tag.
+        guard let tagEnd = fragment.firstIndex(of: ">"),
+              let regex = try? NSRegularExpression(pattern: #" xmlns(?::([A-Za-z_][\w.-]*))?="([^"]*)""#)
+        else { return fragment }
+        let startTag = String(fragment[..<tagEnd])
+        let rest = String(fragment[tagEnd...])
+        let ns = startTag as NSString
+        let whole = NSRange(location: 0, length: ns.length)
+        let bare = regex.stringByReplacingMatches(in: startTag, range: whole, withTemplate: "")
+        let body = bare + rest
+        var kept = ""
+        for match in regex.matches(in: startTag, range: whole) {
+            let decl = ns.substring(with: match.range)
+            if match.range(at: 1).location == NSNotFound {
+                if ns.substring(with: match.range(at: 2)) != XLSXWriter.mainNS { kept += decl }
+            } else {
+                let prefix = ns.substring(with: match.range(at: 1))
+                if body.contains("<\(prefix):") || body.contains(" \(prefix):") { kept += decl }
+            }
+        }
+        guard let nameEnd = bare.firstIndex(of: " ") else { return bare + kept + rest }
+        return String(bare[..<nameEnd]) + kept + String(bare[nameEnd...]) + rest
     }
 
     /// Translate a shared-formula master by a row/column offset.

@@ -111,9 +111,28 @@ public enum XLSXWriter {
             s += "<sheet name=\"\(XML.escapeAttribute(sheet.name))\" sheetId=\"\(sheet.id)\" r:id=\"rId\(i + 1)\"/>"
         }
         s += "</sheets>"
+        // Excel names every AutoFilter's range (hidden, sheet-scoped) and
+        // writes the name itself on save; we do the same.
+        var definedNames = ""
+        for (i, sheet) in workbook.sheets.enumerated() {
+            guard let filter = sheet.autoFilter else { continue }
+            definedNames += "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"\(i)\" hidden=\"1\">"
+            definedNames += XML.escapeText(ReferenceExpr.quoteSheetNameIfNeeded(sheet.name) + "!"
+                                           + absoluteA1(filter.range))
+            definedNames += "</definedName>"
+        }
+        if !definedNames.isEmpty {
+            s += "<definedNames>" + definedNames + "</definedNames>"
+        }
         s += pivotCaches // CT_Workbook: after sheets/definedNames/calcPr, before extLst
         s += "</workbook>"
         return s
+    }
+
+    /// "$A$1:$D$20" ("$A$1" for a single cell).
+    static func absoluteA1(_ range: CellRange) -> String {
+        func absolute(_ a: CellAddress) -> String { "$\(CellAddress.columnName(a.column))$\(a.row + 1)" }
+        return range.isSingleCell ? absolute(range.start) : absolute(range.start) + ":" + absolute(range.end)
     }
 
     static func workbookRelsXML(sheetCount: Int, extra: [PackageRelationship] = []) -> String {
@@ -171,7 +190,7 @@ public enum XLSXWriter {
             s += "</cols>"
         }
 
-        // sheetData (rows carrying only a custom height still get written)
+        // sheetData (rows carrying only a custom height or hidden still get written)
         s += "<sheetData>"
         do {
             var rows: [Int: [(Int, Cell)]] = [:]
@@ -181,10 +200,16 @@ public enum XLSXWriter {
             for row in sheet.rowHeights.keys where rows[row] == nil {
                 rows[row] = []
             }
+            for row in sheet.hiddenRows where rows[row] == nil && row >= 0 && row < CellAddress.maxRows {
+                rows[row] = []
+            }
             for row in rows.keys.sorted() {
                 var rowAttrs = " r=\"\(row + 1)\""
                 if let height = sheet.rowHeights[row] {
                     rowAttrs += " ht=\"\(trimNumber(height))\" customHeight=\"1\""
+                }
+                if sheet.hiddenRows.contains(row) {
+                    rowAttrs += " hidden=\"1\""
                 }
                 s += "<row\(rowAttrs)>"
                 for (col, cell) in rows[row]!.sorted(by: { $0.0 < $1.0 }) {
@@ -195,6 +220,12 @@ public enum XLSXWriter {
             }
         }
         s += "</sheetData>"
+
+        // CT_Worksheet: sheetData, sheetCalcPr, sheetProtection,
+        // protectedRanges, scenarios, autoFilter, sortState, ..., mergeCells.
+        if let filter = sheet.autoFilter {
+            s += autoFilterXML(filter)
+        }
 
         // mergeCells
         if !sheet.mergedRanges.isEmpty {
@@ -208,6 +239,34 @@ public enum XLSXWriter {
         s += "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>"
         s += "</worksheet>"
         return s
+    }
+
+    /// `<autoFilter>` with a `<filterColumn>` per active column. A column
+    /// holds one criterion in XLSX: preserved XML wins, then values, then
+    /// conditions.
+    static func autoFilterXML(_ filter: AutoFilter) -> String {
+        var columns = ""
+        for (colID, criteria) in filter.columns.sorted(by: { $0.key < $1.key })
+        where criteria.isActive && colID >= 0 && colID < filter.range.columnCount {
+            columns += "<filterColumn colId=\"\(colID)\">"
+            if let preserved = criteria.preservedXML {
+                columns += preserved
+            } else if let values = criteria.values {
+                let filters = values.sorted().map { "<filter val=\"\(XML.escapeAttribute(XML.encodeIllegalCharacters($0)))\"/>" }
+                let blank = criteria.includeBlanks ? " blank=\"1\"" : ""
+                columns += filters.isEmpty ? "<filters\(blank)/>" : "<filters\(blank)>" + filters.joined() + "</filters>"
+            } else {
+                columns += "<customFilters\(criteria.matchAll ? " and=\"1\"" : "")>"
+                for condition in criteria.conditions.prefix(2) {
+                    let op = condition.op == .equal ? "" : " operator=\"\(condition.op.rawValue)\""
+                    columns += "<customFilter\(op) val=\"\(XML.escapeAttribute(condition.value))\"/>"
+                }
+                columns += "</customFilters>"
+            }
+            columns += "</filterColumn>"
+        }
+        let ref = filter.range.a1
+        return columns.isEmpty ? "<autoFilter ref=\"\(ref)\"/>" : "<autoFilter ref=\"\(ref)\">" + columns + "</autoFilter>"
     }
 
     static func cellXML(_ cell: Cell, at addr: CellAddress,
@@ -314,6 +373,7 @@ struct StyleParts {
     private let styles: [CellStyle]
     private var fonts: [String] = []
     private var fills: [String] = []
+    private var borders = [StyleParts.borderXML(CellBorders())]
     private var customFormats: [(id: Int, code: String)] = []
     private var xfs: [String] = []
     private let preserved: PreservedStyles?
@@ -333,6 +393,7 @@ struct StyleParts {
         preserved = workbook.preservedStyles
         var fontIndex: [String: Int] = [:]
         var fillIndex: [String: Int] = [:]
+        var borderIndex: [String: Int] = [:]
         // Formats preserved parts refer to keep their ids; ours go above them.
         var nextCustomFormat = 164
         for (id, code) in (preserved?.numberFormats ?? [:]).sorted(by: { $0.key < $1.key }) {
@@ -396,6 +457,21 @@ struct StyleParts {
                 fillID = 0
             }
 
+            // Border (index 0 is the empty border every xf defaults to)
+            let borderID: Int
+            if style.borders.isEmpty {
+                borderID = 0
+            } else {
+                let border = Self.borderXML(style.borders)
+                if let existing = borderIndex[border] {
+                    borderID = existing
+                } else {
+                    borders.append(border)
+                    borderID = borders.count - 1
+                    borderIndex[border] = borderID
+                }
+            }
+
             // Number format
             let numFmtID: Int
             let code = style.numberFormat.code
@@ -413,10 +489,11 @@ struct StyleParts {
             }
 
             // xf
-            var xf = "<xf numFmtId=\"\(numFmtID)\" fontId=\"\(fontID)\" fillId=\"\(fillID)\" borderId=\"0\" xfId=\"0\""
+            var xf = "<xf numFmtId=\"\(numFmtID)\" fontId=\"\(fontID)\" fillId=\"\(fillID)\" borderId=\"\(borderID)\" xfId=\"0\""
             if numFmtID != 0 { xf += " applyNumberFormat=\"1\"" }
             if fontID != 0 { xf += " applyFont=\"1\"" }
             if fillID != 0 { xf += " applyFill=\"1\"" }
+            if borderID != 0 { xf += " applyBorder=\"1\"" }
             if style.pivotButton { xf += " pivotButton=\"1\"" }
             let hasAlignment = style.horizontalAlignment != .automatic
                 || style.verticalAlignment != .bottom || style.wrapText || style.indent > 0
@@ -443,6 +520,18 @@ struct StyleParts {
         }
     }
 
+    /// CT_Border: left, right, top, bottom, diagonal in schema order. An
+    /// edge with no color is automatic.
+    static func borderXML(_ borders: CellBorders) -> String {
+        func edge(_ name: String, _ line: BorderLine?) -> String {
+            guard let line else { return "<\(name)/>" }
+            guard let color = line.color else { return "<\(name) style=\"\(line.style.rawValue)\"/>" }
+            return "<\(name) style=\"\(line.style.rawValue)\"><color rgb=\"\(color.argbHex)\"/></\(name)>"
+        }
+        return "<border>" + edge("left", borders.left) + edge("right", borders.right)
+            + edge("top", borders.top) + edge("bottom", borders.bottom) + "<diagonal/></border>"
+    }
+
     func xml() -> String {
         var s = XLSXWriter.xmlHeader
         s += "<styleSheet xmlns=\"\(XLSXWriter.mainNS)\">"
@@ -455,7 +544,7 @@ struct StyleParts {
         }
         s += "<fonts count=\"\(fonts.count)\">" + fonts.joined() + "</fonts>"
         s += "<fills count=\"\(fills.count)\">" + fills.joined() + "</fills>"
-        s += "<borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"
+        s += "<borders count=\"\(borders.count)\">" + borders.joined() + "</borders>"
         s += "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
         s += "<cellXfs count=\"\(xfs.count)\">" + xfs.joined() + "</cellXfs>"
         s += "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles>"
