@@ -48,6 +48,11 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Pre-filled name for the Save panel when there is no fileURL yet
     /// (e.g. "pricing.xlsx" after opening pricing.csv).
     @Published public var suggestedFileName: String?
+    /// What the opened file holds that saving will not write back ("3
+    /// charts", "comments", …), so a save over it asks first.
+    public internal(set) var unsupportedContent: [String] = []
+    /// The user has saved without it once (Save Anyway, or a copy).
+    public internal(set) var unsupportedContentAccepted = false
     @Published public private(set) var isModified = false
     /// Incremented whenever cell content/layout changes; grid views observe it.
     @Published public private(set) var revision = 0
@@ -1098,6 +1103,7 @@ public final class SpreadsheetDocument: ObservableObject {
         fileURL = url
         suggestedFileName = nil
         isModified = false
+        unsupportedContentAccepted = true
     }
 
     public static func open(url: URL) throws -> SpreadsheetDocument {
@@ -1118,6 +1124,7 @@ public final class SpreadsheetDocument: ObservableObject {
         let isTextImport = textImportExtensions.contains(ext)
         let workbook: Workbook
         var truncated = false
+        var unsupported: [String] = []
         progress(0, .reading)
         if isTextImport {
             var report = CSVImportReport()
@@ -1129,7 +1136,7 @@ public final class SpreadsheetDocument: ObservableObject {
             truncated = report.truncated
         } else {
             do {
-                workbook = try XLSXReader.read(data: data) { fraction in
+                workbook = try XLSXReader.read(data: data, unsupportedContent: &unsupported) { fraction in
                     progress(fraction, .reading)
                     return shouldContinue()
                 }
@@ -1140,7 +1147,8 @@ public final class SpreadsheetDocument: ObservableObject {
         guard shouldContinue() else { throw CancellationError() }
         progress(nil, .calculating)
         let engine = CalculationEngine(workbook: workbook)
-        return LoadedFile(workbook: workbook, engine: engine, isTextImport: isTextImport, truncatedRows: truncated)
+        return LoadedFile(workbook: workbook, engine: engine, isTextImport: isTextImport, truncatedRows: truncated,
+                          unsupportedContent: unsupported)
     }
 
     /// The document for a loaded file (main thread).
@@ -1152,6 +1160,7 @@ public final class SpreadsheetDocument: ObservableObject {
             doc.suggestedFileName = url.deletingPathExtension().lastPathComponent + ".xlsx"
         } else {
             doc.fileURL = url
+            doc.unsupportedContent = loaded.unsupportedContent
         }
         if loaded.truncatedRows {
             // Excel's "File not loaded completely", in our words.

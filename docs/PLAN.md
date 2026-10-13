@@ -209,6 +209,16 @@ rich-text runs, expands shared formulas by reference translation, maps
 builtin/custom numFmts, and normalizes 1904-system dates (+1462 on
 date-formatted numerics). Cells with formulas we can't evaluate surface
 #NAME? after recalc — deliberate honesty over stale cached values.
+Hidden sheets (`state`) are kept (`Sheet.isHidden`; veryHidden comes back as
+hidden). Everything else the model doesn't hold is dropped on save, so the
+reader lists it (`UnsupportedContent`: parts by content type, worksheet
+elements such as conditional formatting or print setup, rich-text runs,
+dropped pivots) and the first ⌘S over such a file asks: Save a Copy… /
+Save Anyway / Cancel (`DocumentSaving.plan`); Save As only notes it in the
+panel. Carrying unknown parts through unchanged is the longer-term fix.
+Both worksheet readers feed one `SheetCellBuilder` (row/column inference,
+shared formulas, value types, bounds on every number from the file), and a
+fuzz test checks they never trap and agree.
 
 **Pivot tables** are preserved *and* modelled. The reader keeps each pivot
 table, cache definition and records part verbatim, and also parses them into
@@ -263,7 +273,8 @@ or overlap with another pivot, asks before overwriting cells, and registers
 one undo step. Grouping edits the shared cache, so all pivots on it change.
 
 ### CSV (import/export)
-Import: BOM/UTF-16/UTF-8-validation/CP1252 decode chain; delimiter sniffing
+Import: BOM/UTF-16, then UTF-8 with only invalid bytes read as CP1252
+(per field, so one stray CP1252 byte doesn't re-decode the whole file); delimiter sniffing
 by column-count-consistency scoring; quote-aware state machine (CRLF/LF/CR,
 `""`, embedded newlines, ragged rows, unterminated-quote fail-soft);
 type inference through the shared ValueParser with leading-zero and
@@ -274,8 +285,10 @@ machine-canonical; dates ISO 8601; display-mode option.
 
 ### ZIP (under XLSX)
 Stored + raw-DEFLATE, correct CRC-32 in local + central headers, no data
-descriptors, no ZIP64; reader scans EOCD backward, trusts the central
-directory, verifies CRCs, and rejects CFB (encrypted/legacy .xls)
+descriptors, no ZIP64 (the writer throws `ZipError.tooLarge` past 4 GB or
+65,534 entries rather than truncating); reader scans EOCD backward, trusts
+the central directory within limits (4 GB per entry, 8 GB in all, no
+deflated entry over 8 MB claiming more than 1000:1), verifies CRCs, and rejects CFB (encrypted/legacy .xls)
 containers with a clear error. Inflate uses the Compression framework;
 deflate and CRC-32 use the system zlib. Deflate runs pigz-style on all
 cores: 1 MB chunks, each primed with the previous 32 KB and ended with a
@@ -286,15 +299,17 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   `make` on the main actor) behind a progress panel with Cancel
   (`FileLoading.swift`); the panel only appears after 0.25 s.
 - CSV (`CSVFastImport.swift`): bytes are scanned in place (the file is
-  memory-mapped and UTF-8 is validated as the scan goes, falling back to
-  CP1252 if needed); common fields (plain numbers, ISO dates, text that
+  memory-mapped, and each field is checked for UTF-8 as it is imported,
+  with invalid bytes read as CP1252); common fields (plain numbers, ISO dates, text that
   can't be a value, TRUE/FALSE) skip ValueParser with identical results;
   the import stops at 1,048,576 rows and reports truncation. The old
   String-based importer remains as the test reference.
 - XLSX (`XLSXSheetDataScanner.swift`): `<sheetData>` is read by a byte
-  scanner that mirrors the XMLParser delegate rule for rule; the rest of
-  the sheet still goes through XMLParser, and anything unexpected falls
-  back to XMLParser for the whole sheet. The writer builds `<sheetData>`
+  scanner (UTF-8 parts only) that shares its cell rules with the XMLParser
+  delegate and follows XML's line-end and attribute normalisation; the
+  rest of the sheet still goes through XMLParser, and anything unexpected
+  falls back to XMLParser for the whole sheet, which also reports progress
+  and stops on Cancel. The writer builds `<sheetData>`
   as bytes (`XLSXSheetDataWriter.swift`). Tests compare both directions
   with the XMLParser/String versions on every fixture.
 - Grid: `GridLayout` offsets are O(log k) over the rows/columns with

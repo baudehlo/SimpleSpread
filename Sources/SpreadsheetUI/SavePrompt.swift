@@ -11,14 +11,96 @@ enum DocumentSaving {
     /// yet (or `forceAs`). `completion(true)` only once the file is written.
     static func save(_ document: SpreadsheetDocument, as forceAs: Bool = false,
                      in window: NSWindow?, completion: @escaping (Bool) -> Void = { _ in }) {
-        if let url = document.fileURL, !forceAs {
+        switch plan(for: document, as: forceAs) {
+        case .write(let url):
             completion(write(document, to: url))
-            return
+        case .choose(let note):
+            choose(document, note: note, in: window, completion: completion)
+        case .confirmLoss(let url, let items):
+            confirmLoss(document, items: items, in: window) { choice in
+                switch choice {
+                case .alertFirstButtonReturn: // Save a Copy…
+                    choose(document, note: lossNote(document, items), copy: true, in: window, completion: completion)
+                case .alertSecondButtonReturn: // Save Anyway
+                    completion(write(document, to: url))
+                default:
+                    completion(false)
+                }
+            }
         }
+    }
+
+    /// What a save does next.
+    enum SavePlan: Equatable {
+        /// Write over the document's file.
+        case write(URL)
+        /// Ask first: writing over the file would remove `items`.
+        case confirmLoss(URL, [String])
+        /// Ask for a location; `lossNote` (shown in the panel) says what the
+        /// new file will not have.
+        case choose(lossNote: String?)
+    }
+
+    static func plan(for document: SpreadsheetDocument, as forceAs: Bool = false) -> SavePlan {
+        let lost = document.unsupportedContentAccepted ? [] : document.unsupportedContent
+        if let url = document.fileURL, !forceAs {
+            return lost.isEmpty ? .write(url) : .confirmLoss(url, lost)
+        }
+        // Save As leaves the original alone, so it only says what the copy
+        // lacks; once saved, the document is that copy and nothing is lost.
+        return .choose(lossNote: lost.isEmpty ? nil : lossNote(document, lost))
+    }
+
+    static func lossNote(_ document: SpreadsheetDocument, _ items: [String]) -> String {
+        "This copy won’t include the \(list(items)) from “\(document.saveFileName)”, "
+            + "which SimpleSpread can’t save. The original file is not changed."
+    }
+
+    /// "a", "a and b", "a, b and c".
+    static func list(_ items: [String]) -> String {
+        guard items.count > 1 else { return items.first ?? "" }
+        return items.dropLast().joined(separator: ", ") + " and " + items.last!
+    }
+
+    /// "Budget.xlsx" -> "Budget copy.xlsx".
+    static func copyName(for fileName: String) -> String {
+        let base = (fileName as NSString).deletingPathExtension
+        return base + " copy.xlsx"
+    }
+
+    /// The first ⌘S of a file holding content SimpleSpread can't write
+    /// back: Save a Copy… (default), Save Anyway, or Cancel.
+    private static func confirmLoss(_ document: SpreadsheetDocument, items: [String], in window: NSWindow?,
+                                    completion: @escaping (NSApplication.ModalResponse) -> Void) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "“\(document.displayName)” has content SimpleSpread can’t save"
+        alert.informativeText = "Saving over the original file will remove its \(list(items)). "
+            + "Save a copy to keep the original as it is."
+        alert.addButton(withTitle: "Save a Copy…")
+        alert.addButton(withTitle: "Save Anyway")
+        alert.addButton(withTitle: "Cancel") // Escape
+        let handle: (NSApplication.ModalResponse) -> Void = { response in
+            // Take the alert sheet down before a save panel sheet goes up.
+            alert.window.orderOut(nil)
+            completion(response)
+        }
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: handle)
+        } else {
+            handle(alert.runModal())
+        }
+    }
+
+    /// The Save panel. `copy`: offer "<name> copy.xlsx" beside the original.
+    private static func choose(_ document: SpreadsheetDocument, note: String?, copy: Bool = false,
+                               in window: NSWindow?, completion: @escaping (Bool) -> Void) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [xlsxType]
         // Pre-fill the source name (e.g. pricing.xlsx after opening pricing.csv).
-        panel.nameFieldStringValue = document.saveFileName
+        panel.nameFieldStringValue = copy ? copyName(for: document.saveFileName) : document.saveFileName
+        if let directory = document.fileURL?.deletingLastPathComponent() { panel.directoryURL = directory }
+        if let note { panel.message = note }
         let finish: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK, let url = panel.url else { return completion(false) }
             completion(write(document, to: url))
