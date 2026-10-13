@@ -82,12 +82,12 @@ Apple Numbers 14.1 opening the same `.xlsx` files:
 
 | Document | SimpleSpread | Numbers | |
 |---|---:|---:|---|
-| Empty workbook | 0.78 s | 2.12 s | 2.7× faster |
-| Simple (a short invoice with formulas) | 0.79 s | 2.08 s | 2.6× faster |
-| Complex (20,000 rows, 80,000 formulas, 7 sheets, 4 pivot tables) | 1.85 s | 5.43 s | 2.9× faster |
+| Empty workbook | 0.87 s | 2.12 s | 2.4× faster |
+| Simple (a short invoice with formulas) | 0.88 s | 2.08 s | 2.4× faster |
+| Complex (20,000 rows, 80,000 formulas, 7 sheets, 4 pivot tables) | 1.41 s | 5.43 s | 3.9× faster |
 
-SimpleSpread starts with a new, empty document in 0.36 s. The app is 8.0 MB
-(a 3.0 MB download); Numbers is 421 MB.
+SimpleSpread 1.5.0 starts with a new, empty document in 0.43 s. The app is
+8.6 MB (a 3.0 MB download); Numbers is 421 MB.
 
 ### Large files
 
