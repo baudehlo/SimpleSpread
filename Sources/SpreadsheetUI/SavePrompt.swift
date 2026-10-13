@@ -49,6 +49,8 @@ enum DocumentSaving {
     /// false means Cancel (or a failed/cancelled save).
     static func confirmDiscard(_ document: SpreadsheetDocument, in window: NSWindow?,
                                completion: @escaping (Bool) -> Void) {
+        // Typing still in an editor is part of the document's changes.
+        document.commitPendingEdit()
         guard document.isModified else { return completion(true) }
         let alert = NSAlert()
         alert.messageText = "Do you want to save the changes made to the document “\(document.displayName)”?"
@@ -83,7 +85,8 @@ enum DocumentSaving {
         NSApp.orderedWindows.compactMap { window in
             guard window.isVisible || window.isMiniaturized,
                   let proxy = window.delegate as? DocumentWindowDelegate,
-                  let document = proxy.document, document.isModified else { return nil }
+                  let document = proxy.document,
+                  document.isModified || document.hasPendingEdit else { return nil }
             return (window, document)
         }
     }
@@ -134,6 +137,9 @@ final class DocumentWindowDelegate: NSObject, NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         let originalAllows = original?.windowShouldClose?(sender) ?? true
+        // An open cell editor counts as unsaved work: commit it so the
+        // prompt below covers it.
+        if originalAllows, !closeConfirmed { document?.commitPendingEdit() }
         guard originalAllows, !closeConfirmed, let document, document.isModified else {
             return originalAllows
         }

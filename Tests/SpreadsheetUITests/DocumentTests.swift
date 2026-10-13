@@ -468,7 +468,7 @@ struct ClipboardFillTests {
         doc.selection.select(a("A3"))
         let payload = doc.selectionPayload()
         doc.selection.select(a("B3"))
-        doc.paste(payload: payload, sourceOrigin: a("A3"))
+        doc.paste(payload: payload)
         #expect(doc.activeSheet.cell(at: a("B3")).formula == "SUM(B1:B2)")
         doc.commitInput("10", at: a("B1"))
         doc.commitInput("20", at: a("B2"))
@@ -482,7 +482,7 @@ struct ClipboardFillTests {
         doc.toggleBold()
         let payload = doc.selectionPayload()
         doc.selection.select(a("C3"))
-        doc.paste(payload: payload, sourceOrigin: a("A1"))
+        doc.paste(payload: payload)
         #expect(doc.style(at: a("C3")).bold)
         #expect(doc.activeSheet.value(at: a("C3")) == .string("styled"))
     }
@@ -493,7 +493,7 @@ struct ClipboardFillTests {
         doc.selection.select(a("A1"))
         let payload = doc.selectionPayload()
         doc.selection.select(range: CellRange(a1: "B1:C2")!)
-        doc.paste(payload: payload, sourceOrigin: a("A1"))
+        doc.paste(payload: payload)
         for addr in ["B1", "C1", "B2", "C2"] {
             #expect(doc.activeSheet.value(at: a(addr)) == .number(9))
         }
@@ -507,7 +507,7 @@ struct ClipboardFillTests {
         let payload = doc.selectionPayload() // has A1 only; B2 empty in payload? no B2="old" is in range...
         doc.commitInput("victim", at: a("D4"))
         doc.selection.select(a("C3"))
-        doc.paste(payload: payload, sourceOrigin: a("A1"))
+        doc.paste(payload: payload)
         // target rect C3:D4 fully overwritten: D4 gets old B2 content
         #expect(doc.activeSheet.value(at: a("C3")) == .number(1))
         #expect(doc.activeSheet.value(at: a("D4")) == .string("old"))

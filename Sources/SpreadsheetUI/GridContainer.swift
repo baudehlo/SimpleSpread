@@ -91,37 +91,13 @@ struct DocumentFocusKey: FocusedValueKey {
     typealias Value = SpreadsheetDocument
 }
 
-struct GridFocusKey: FocusedValueKey {
-    typealias Value = GridActions
-}
-
-/// Grid actions surfaced to menus (editing state lives in AppKit).
-@MainActor
-public struct GridActions {
-    weak var grid: SpreadsheetGridView?
-
-    func commitPendingEdit() {
-        grid?.commitEditorIfNeeded()
-    }
-
-    func redraw() {
-        grid?.refreshSize()
-        grid?.needsDisplay = true
-    }
-
-    func scrollToActiveCell() {
-        grid?.scrollActiveCellToVisible()
-    }
-}
+// Menu commands reach a pending cell edit through the document
+// (SpreadsheetDocument.commitPendingEdit), and the standard Edit items
+// (cut/copy/paste/undo) reach the grid through the responder chain.
 
 extension FocusedValues {
     var spreadsheetDocument: SpreadsheetDocument? {
         get { self[DocumentFocusKey.self] }
         set { self[DocumentFocusKey.self] = newValue }
-    }
-
-    var gridActions: GridActions? {
-        get { self[GridFocusKey.self] }
-        set { self[GridFocusKey.self] = newValue }
     }
 }

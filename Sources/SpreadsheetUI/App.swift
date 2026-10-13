@@ -333,6 +333,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 let xlsxType = UTType(filenameExtension: "xlsx") ?? .data
 
+/// Run a menu command on the focused document. Commands act on committed
+/// cells, so any typing still in the cell editor or formula bar is written
+/// to its cell first (menu items do not take keyboard focus).
+@MainActor
+func perform(_ document: SpreadsheetDocument?, _ command: (SpreadsheetDocument) -> Void) {
+    guard let document else { return }
+    document.commitPendingEdit()
+    command(document)
+}
+
 /// App-menu items: "Check for Updates…" plus the automatic-check toggle,
 /// placed just under "About SimpleSpread". Backed by Sparkle.
 struct AppInfoCommands: Commands {
@@ -449,11 +459,13 @@ struct FileCommands: Commands {
 
     @MainActor private func save(as forceAs: Bool) {
         guard let document else { return }
+        document.commitPendingEdit()
         DocumentSaving.save(document, as: forceAs, in: NSApp.keyWindow)
     }
 
     @MainActor private func importCSV() {
         guard let document else { return }
+        document.commitPendingEdit()
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.commaSeparatedText, .tabSeparatedText, .plainText]
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -466,6 +478,7 @@ struct FileCommands: Commands {
 
     @MainActor private func exportCSV() {
         guard let document else { return }
+        document.commitPendingEdit()
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = document.activeSheet.name + ".csv"
@@ -489,85 +502,41 @@ struct EditCommands: Commands {
     @FocusedValue(\.spreadsheetDocument) var document
 
     var body: some Commands {
-        CommandGroup(replacing: .undoRedo) {
-            Button("Undo") {
-                document?.undoManager.undo()
-            }
-            .keyboardShortcut("z", modifiers: .command)
-            .disabled(document?.undoManager.canUndo != true)
-
-            Button("Redo") {
-                document?.undoManager.redo()
-            }
-            .keyboardShortcut("z", modifiers: [.command, .shift])
-            .disabled(document?.undoManager.canRedo != true)
-        }
-        CommandGroup(replacing: .pasteboard) {
-            Button("Cut") {
-                document?.copySelectionToPasteboard(cut: true)
-            }
-            .keyboardShortcut("x", modifiers: .command)
-            .disabled(document == nil)
-
-            Button("Copy") {
-                document?.copySelectionToPasteboard()
-            }
-            .keyboardShortcut("c", modifiers: .command)
-            .disabled(document == nil)
-
-            Button("Paste") {
-                document?.pasteFromPasteboard()
-            }
-            .keyboardShortcut("v", modifiers: .command)
-            .disabled(document == nil)
-
-            Button("Delete") {
-                document?.clearSelectionContents()
-            }
-            .disabled(document == nil)
-
-            Divider()
-
-            Button("Select All") {
-                if let document {
-                    let used = document.activeSheet.usedRange
-                        ?? CellRange(CellAddress(row: 0, column: 0))
-                    document.selection.select(range: CellRange(
-                        start: CellAddress(row: 0, column: 0), end: used.end))
-                }
-            }
-            .keyboardShortcut("a", modifiers: .command)
-            .disabled(document == nil)
-        }
+        // Undo/Redo and Cut/Copy/Paste/Delete/Select All are the standard
+        // items, which send undo:/copy:/paste:… to the first responder. A
+        // focused text field (cell editor, formula bar, Find, name box, sheet
+        // rename) handles them itself; SpreadsheetGridView handles them when
+        // the grid has focus. Replacing them with buttons that called the
+        // document made ⌘V/⌘Z/⌘A act on the grid while the user was typing.
         CommandGroup(after: .pasteboard) {
             Divider()
             Button("Fill Down") {
-                document?.fillDown()
+                perform(document) { $0.fillDown() }
             }
             .keyboardShortcut("d", modifiers: .command)
             .disabled(document == nil)
 
             Button("Fill Right") {
-                document?.fillRight()
+                perform(document) { $0.fillRight() }
             }
             .keyboardShortcut("r", modifiers: .command)
             .disabled(document == nil)
 
             Divider()
             Button("Find…") {
-                document?.presentFind()
+                perform(document) { $0.presentFind() }
             }
             .keyboardShortcut("f", modifiers: .command)
             .disabled(document == nil)
 
             Button("Find Next") {
-                document?.findNext()
+                perform(document) { $0.findNext() }
             }
             .keyboardShortcut("g", modifiers: .command)
             .disabled((document?.findMatches.isEmpty ?? true))
 
             Button("Find Previous") {
-                document?.findPrevious()
+                perform(document) { $0.findPrevious() }
             }
             .keyboardShortcut("g", modifiers: [.command, .shift])
             .disabled((document?.findMatches.isEmpty ?? true))
@@ -582,32 +551,32 @@ struct ViewCommands: Commands {
         // .toolbar placement lands these in the standard View menu.
         CommandGroup(before: .toolbar) {
             Button("Zoom In") {
-                document?.zoomIn()
+                perform(document) { $0.zoomIn() }
             }
             .keyboardShortcut("=", modifiers: .command) // acts as the conventional ⌘+
             .disabled(document == nil)
 
             Button("Zoom Out") {
-                document?.zoomOut()
+                perform(document) { $0.zoomOut() }
             }
             .keyboardShortcut("-", modifiers: .command)
             .disabled(document == nil)
 
             Button("Actual Size") {
-                document?.resetZoom()
+                perform(document) { $0.resetZoom() }
             }
             .keyboardShortcut("0", modifiers: .command)
             .disabled(document == nil)
 
             Divider()
 
-            Button("Freeze Panes") { document?.freezePanesAtSelection() }
+            Button("Freeze Panes") { perform(document) { $0.freezePanesAtSelection() } }
                 .disabled(document == nil || document?.selection.activeCell == CellAddress(row: 0, column: 0))
-            Button("Freeze Top Row") { document?.freezePanes(rows: 1, columns: 0) }
+            Button("Freeze Top Row") { perform(document) { $0.freezePanes(rows: 1, columns: 0) } }
                 .disabled(document == nil)
-            Button("Freeze First Column") { document?.freezePanes(rows: 0, columns: 1) }
+            Button("Freeze First Column") { perform(document) { $0.freezePanes(rows: 0, columns: 1) } }
                 .disabled(document == nil)
-            Button("Unfreeze Panes") { document?.freezePanes(rows: 0, columns: 0) }
+            Button("Unfreeze Panes") { perform(document) { $0.freezePanes(rows: 0, columns: 0) } }
                 .disabled(document?.hasFrozenPanes != true)
 
             Divider()
@@ -622,43 +591,49 @@ struct InsertCommands: Commands {
         CommandMenu("Insert") {
             Button("Row Above") {
                 guard let document else { return }
+                document.commitPendingEdit()
                 document.insertRows(at: document.selection.range.start.row,
                                     count: document.selection.range.rowCount)
             }
             Button("Row Below") {
                 guard let document else { return }
+                document.commitPendingEdit()
                 document.insertRows(at: document.selection.range.end.row + 1,
                                     count: document.selection.range.rowCount)
             }
             Button("Column Left") {
                 guard let document else { return }
+                document.commitPendingEdit()
                 document.insertColumns(at: document.selection.range.start.column,
                                        count: document.selection.range.columnCount)
             }
             Button("Column Right") {
                 guard let document else { return }
+                document.commitPendingEdit()
                 document.insertColumns(at: document.selection.range.end.column + 1,
                                        count: document.selection.range.columnCount)
             }
             Divider()
             Button("Delete Selected Rows") {
                 guard let document else { return }
+                document.commitPendingEdit()
                 document.deleteRows(at: document.selection.range.start.row,
                                     count: document.selection.range.rowCount)
             }
             Button("Delete Selected Columns") {
                 guard let document else { return }
+                document.commitPendingEdit()
                 document.deleteColumns(at: document.selection.range.start.column,
                                        count: document.selection.range.columnCount)
             }
             Divider()
             Button("New Sheet") {
-                document?.addSheet()
+                perform(document) { $0.addSheet() }
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
             Divider()
             Button("PivotTable…") {
-                document?.isInsertPivotPresented = true
+                perform(document) { $0.isInsertPivotPresented = true }
             }
             .disabled(document == nil)
         }
@@ -670,37 +645,38 @@ struct DataCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Data") {
-            Button("Sort A to Z") { document?.quickSort(ascending: true) }
+            Button("Sort A to Z") { perform(document) { $0.quickSort(ascending: true) } }
                 .disabled(document == nil)
-            Button("Sort Z to A") { document?.quickSort(ascending: false) }
+            Button("Sort Z to A") { perform(document) { $0.quickSort(ascending: false) } }
                 .disabled(document == nil)
-            Button("Custom Sort…") { document?.isSortPresented = true }
+            Button("Custom Sort…") { perform(document) { $0.isSortPresented = true } }
                 .disabled(document == nil)
             Divider()
             Button(document?.activeAutoFilter == nil ? "Filter" : "Remove Filter") {
-                document?.toggleAutoFilter()
+                perform(document) { $0.toggleAutoFilter() }
             }
             .keyboardShortcut("l", modifiers: [.command, .shift])
             .disabled(document == nil)
-            Button("Clear Filters") { document?.clearAllFilters() }
+            Button("Clear Filters") { perform(document) { $0.clearAllFilters() } }
                 .disabled(document?.activeAutoFilter?.columns.isEmpty ?? true)
-            Button("Reapply Filter") { document?.reapplyAutoFilter() }
+            Button("Reapply Filter") { perform(document) { $0.reapplyAutoFilter() } }
                 .disabled(document?.activeAutoFilter == nil)
             Divider()
             Button("Refresh") {
                 guard let document, let pivot = document.activePivotIndex else { return }
+                document.commitPendingEdit()
                 document.refreshPivot(pivot)
             }
             .keyboardShortcut(KeyEquivalent(Character(UnicodeScalar(NSF5FunctionKey)!)), modifiers: .option)
             .disabled(document?.activePivotIndex == nil)
             Button("Refresh All") {
-                document?.refreshAllPivots()
+                perform(document) { $0.refreshAllPivots() }
             }
             .keyboardShortcut(KeyEquivalent(Character(UnicodeScalar(NSF5FunctionKey)!)), modifiers: [.control, .option])
             .disabled(document?.workbook.pivotTables.isEmpty ?? true)
             Divider()
             Button(document?.isPivotPanelVisible == false ? "Show PivotTable Fields" : "Hide PivotTable Fields") {
-                document?.isPivotPanelVisible.toggle()
+                perform(document) { $0.isPivotPanelVisible.toggle() }
             }
             .disabled(document == nil)
         }
@@ -712,45 +688,45 @@ struct FormatCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Format") {
-            Button("Bold") { document?.toggleBold() }
+            Button("Bold") { perform(document) { $0.toggleBold() } }
                 .disabled(document == nil)
-            Button("Italic") { document?.toggleItalic() }
+            Button("Italic") { perform(document) { $0.toggleItalic() } }
                 .disabled(document == nil)
-            Button("Underline") { document?.toggleUnderline() }
+            Button("Underline") { perform(document) { $0.toggleUnderline() } }
                 .disabled(document == nil)
-            Button("Strikethrough") { document?.toggleStrikethrough() }
+            Button("Strikethrough") { perform(document) { $0.toggleStrikethrough() } }
                 .keyboardShortcut("x", modifiers: [.command, .shift])
                 .disabled(document == nil)
             Divider()
             ForEach(DocumentWindowView.formatChoices, id: \.0) { name, format in
                 Button(name) {
-                    document?.setNumberFormat(format)
+                    perform(document) { $0.setNumberFormat(format) }
                 }
                 .disabled(document == nil)
             }
             Divider()
-            Button("Increase Indent") { document?.adjustIndent(by: 1) }
+            Button("Increase Indent") { perform(document) { $0.adjustIndent(by: 1) } }
                 .keyboardShortcut("]", modifiers: [.command, .option])
                 .disabled(document == nil)
-            Button("Decrease Indent") { document?.adjustIndent(by: -1) }
+            Button("Decrease Indent") { perform(document) { $0.adjustIndent(by: -1) } }
                 .keyboardShortcut("[", modifiers: [.command, .option])
                 .disabled(document == nil)
             Menu("Borders") {
                 ForEach(DocumentWindowView.borderChoices, id: \.0) { name, preset in
-                    Button(name) { document?.applyBorders(preset) }
+                    Button(name) { perform(document) { $0.applyBorders(preset) } }
                 }
             }
             .disabled(document == nil)
             Menu("Merge Cells") {
-                Button("Merge & Center") { document?.mergeSelection(.mergeAndCenter) }
-                Button("Merge Across") { document?.mergeSelection(.mergeAcross) }
-                Button("Merge Cells") { document?.mergeSelection(.merge) }
-                Button("Unmerge Cells") { document?.unmergeSelection() }
+                Button("Merge & Center") { perform(document) { $0.mergeSelection(.mergeAndCenter) } }
+                Button("Merge Across") { perform(document) { $0.mergeSelection(.mergeAcross) } }
+                Button("Merge Cells") { perform(document) { $0.mergeSelection(.merge) } }
+                Button("Unmerge Cells") { perform(document) { $0.unmergeSelection() } }
                     .disabled(document?.selectionHasMerge != true)
             }
             .disabled(document == nil)
             Divider()
-            Button("Clear Formatting") { document?.clearFormattingInSelection() }
+            Button("Clear Formatting") { perform(document) { $0.clearFormattingInSelection() } }
                 .keyboardShortcut("\\", modifiers: .command)
                 .disabled(document == nil)
         }

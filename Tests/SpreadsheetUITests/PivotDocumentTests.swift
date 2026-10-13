@@ -136,7 +136,7 @@ struct PivotDocumentTests {
         doc.selection.select(range: r("E1:E2"))
         let payload = doc.selectionPayload()
         doc.selection.select(a("C7"))
-        doc.paste(payload: payload, sourceOrigin: a("E1"))
+        doc.paste(payload: payload)
         #expect(doc.activeSheet.value(at: a("C7")) == .number(2))
         #expect(doc.notice != nil)
     }
