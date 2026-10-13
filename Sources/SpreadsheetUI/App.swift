@@ -130,7 +130,7 @@ struct SimpleSpreadAppMain: App {
 
     var body: some Scene {
         WindowGroup(for: Int.self) { $docID in
-            DocumentWindowView(document: DocumentStore.shared.document(for: docID ?? 0))
+            DocumentWindowView(document: DocumentStore.shared.document(for: docID))
                 .frame(minWidth: 640, minHeight: 400)
                 // Finder double-click / `open <file>` / drag-onto-icon: route
                 // each URL through the same open flow the File menu uses.

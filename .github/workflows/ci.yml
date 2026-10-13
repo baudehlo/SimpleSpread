@@ -20,8 +20,10 @@ jobs:
       - name: Swift version
         run: swift --version
 
+      # Warnings fail the build: CI's Swift is older and stricter than a
+      # current Xcode, and new Sendable warnings are tomorrow's errors.
       - name: Build
-        run: swift build
+        run: swift build -Xswiftc -warnings-as-errors
 
       - name: Test
         run: swift test

@@ -1720,8 +1720,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
     nonisolated func control(_ control: NSControl, textView: NSTextView,
                              doCommandBy commandSelector: Selector) -> Bool {
         MainActor.assumeIsolated {
-            guard let document else { return false }
-            let l = layout
+            guard document != nil else { return false }
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
                 commitEditorIfNeeded()
