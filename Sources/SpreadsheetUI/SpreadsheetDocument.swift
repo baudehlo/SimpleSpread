@@ -80,6 +80,17 @@ public final class SpreadsheetDocument: ObservableObject {
         undoManager.groupsByEvent = false
     }
 
+    /// A document around a workbook whose engine was built elsewhere (a
+    /// background load).
+    init(workbook wb: Workbook, engine: CalculationEngine) {
+        self.workbook = wb
+        self.engine = engine
+        self.activeSheetID = wb.sheets[0].id
+        // Each operation forms its own undo group (see withUndoGroup) rather
+        // than one group per run-loop turn.
+        undoManager.groupsByEvent = false
+    }
+
     public var activeSheet: Sheet {
         workbook.sheet(withID: activeSheetID) ?? workbook.sheets[0]
     }
@@ -100,7 +111,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     /// File extensions treated as delimited-text imports (sniffed on load).
-    public static let textImportExtensions: Set<String> = ["csv", "tsv", "txt", "tab"]
+    nonisolated public static let textImportExtensions: Set<String> = ["csv", "tsv", "txt", "tab"]
 
     // MARK: - Display / edit strings
 
@@ -1054,13 +1065,26 @@ public final class SpreadsheetDocument: ObservableObject {
         let range = selection.range
         guard range.cellCount <= 1_000_000 else { return stats }
         // Like Excel's status bar, rows a filter hides are left out.
-        let hidden = activeSheet.hiddenRows
-        for (addr, cell) in activeSheet.cells where range.contains(addr) && !hidden.contains(addr.row) {
-            if cell.value.isEmpty { continue }
+        let sheet = activeSheet
+        let hidden = sheet.hiddenRows
+        func add(_ cell: Cell) {
+            if cell.value.isEmpty { return }
             stats.count += 1
             if case .number(let n) = cell.value {
                 stats.numericCount += 1
                 stats.sum += n
+            }
+        }
+        // Look up the selected cells, or scan the stored ones, whichever is fewer.
+        if range.cellCount < sheet.cells.count {
+            for row in range.start.row...range.end.row where !hidden.contains(row) {
+                for column in range.start.column...range.end.column {
+                    if let cell = sheet.cells[CellAddress(row: row, column: column)] { add(cell) }
+                }
+            }
+        } else {
+            for (addr, cell) in sheet.cells where range.contains(addr) && !hidden.contains(addr.row) {
+                add(cell)
             }
         }
         return stats
@@ -1077,23 +1101,64 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public static func open(url: URL) throws -> SpreadsheetDocument {
-        let data = try Data(contentsOf: url)
+        try make(from: load(url: url), url: url)
+    }
+
+    /// Read a file and build its calculation engine: the slow part of
+    /// opening, safe to run off the main thread. `progress(fraction, phase)`
+    /// reports along the way (nil fraction: no estimate); `shouldContinue`
+    /// is polled, and a false answer throws `CancellationError`.
+    nonisolated static func load(url: URL,
+                                 progress: @escaping (Double?, LoadPhase) -> Void = { _, _ in },
+                                 shouldContinue: @escaping () -> Bool = { true }) throws -> LoadedFile {
+        // Mapped: a 2 GB CSV is read only as far as the row limit.
+        let data = try Data(contentsOf: url, options: .alwaysMapped)
         let ext = url.pathExtension.lowercased()
         let baseName = url.deletingPathExtension().lastPathComponent
-        let workbook: Workbook
         let isTextImport = textImportExtensions.contains(ext)
+        let workbook: Workbook
+        var truncated = false
+        progress(0, .reading)
         if isTextImport {
-            workbook = CSV.importWorkbook(data: data, sheetName: baseName)
+            var report = CSVImportReport()
+            workbook = CSV.importWorkbook(data: data, sheetName: baseName, report: &report) { fraction in
+                progress(fraction, .reading)
+                return shouldContinue()
+            }
+            if report.cancelled { throw CancellationError() }
+            truncated = report.truncated
         } else {
-            workbook = try XLSXReader.read(data: data)
+            do {
+                workbook = try XLSXReader.read(data: data) { fraction in
+                    progress(fraction, .reading)
+                    return shouldContinue()
+                }
+            } catch XLSXError.cancelled {
+                throw CancellationError()
+            }
         }
-        let doc = SpreadsheetDocument(workbook: workbook)
-        if isTextImport {
+        guard shouldContinue() else { throw CancellationError() }
+        progress(nil, .calculating)
+        let engine = CalculationEngine(workbook: workbook)
+        return LoadedFile(workbook: workbook, engine: engine, isTextImport: isTextImport, truncatedRows: truncated)
+    }
+
+    /// The document for a loaded file (main thread).
+    static func make(from loaded: LoadedFile, url: URL) -> SpreadsheetDocument {
+        let doc = SpreadsheetDocument(workbook: loaded.workbook, engine: loaded.engine)
+        if loaded.isTextImport {
             // Delimited-text opens as an unsaved XLSX-native document: never
             // write back over the source file. Save-As pre-fills <base>.xlsx.
-            doc.suggestedFileName = baseName + ".xlsx"
+            doc.suggestedFileName = url.deletingPathExtension().lastPathComponent + ".xlsx"
         } else {
             doc.fileURL = url
+        }
+        if loaded.truncatedRows {
+            // Excel's "File not loaded completely", in our words.
+            doc.notice = DocumentNotice(
+                message: "This file has more rows than a sheet can hold.",
+                detail: "Only the first 1,048,576 rows were opened, as in Excel. "
+                    + "Saving writes those rows to a new file; the original is not changed.")
         }
         return doc
     }
@@ -1101,9 +1166,16 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Import a CSV file as a new sheet in this document.
     public func importCSVSheet(from url: URL) throws {
         registerWorkbookUndo(actionName: "Import CSV")
-        let data = try Data(contentsOf: url)
+        let data = try Data(contentsOf: url, options: .alwaysMapped)
+        var report = CSVImportReport()
         let imported = CSV.importWorkbook(data: data,
-                                          sheetName: url.deletingPathExtension().lastPathComponent)
+                                          sheetName: url.deletingPathExtension().lastPathComponent,
+                                          report: &report)
+        if report.truncated {
+            notice = DocumentNotice(
+                message: "This file has more rows than a sheet can hold.",
+                detail: "Only the first 1,048,576 rows were imported, as in Excel.")
+        }
         guard let source = imported.sheets.first else { return }
         let sheet = workbook.addSheet(named: source.name)
         for (addr, cell) in source.cells {

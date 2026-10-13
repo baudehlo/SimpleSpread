@@ -89,13 +89,30 @@ Apple Numbers 14.1 opening the same `.xlsx` files:
 SimpleSpread starts with a new, empty document in 0.36 s. The app is 8.0 MB
 (a 3.0 MB download); Numbers is 421 MB.
 
+### Large files
+
+Files open in the background with a progress bar and a Cancel button, so
+the app never stops responding. A sheet holds 1,048,576 rows, as in Excel;
+a bigger CSV opens its first 1,048,576 rows and says so. Time to read the
+file and build its sheet (release build, same Mac), against version 1.4.1:
+
+| File | Now | 1.4.1 | Peak memory |
+|---|---:|---:|---:|
+| 100 MB CSV (1.1 million rows) | 1.5 s | 29.8 s | 1.3 GB |
+| 500 MB CSV (5.4 million rows) | 1.4 s | 6 min | 1.3 GB |
+| 2 GB CSV (21 million rows) | 1.4 s | did not finish in 40 min | 1.3 GB |
+| 66 MB XLSX: a full sheet, 1,048,576 rows × 10 columns, 1 million formulas | 2.5 s, plus 4.3 s calculating | 29.6 s | 2.8 GB |
+
+Saving that full sheet takes 4.5 s (11.8 s in 1.4.1), at the same file size.
+`swift run -c release spreadsheet-bench <file> [--save]` times each step.
+
 ## Building
 
 Requires Xcode 16+ on macOS 14+.
 
 ```bash
 swift build            # debug build
-swift test             # 549 tests
+swift test             # 636 tests
 swift run SimpleSpread # run the app directly
 ./scripts/build-app.sh # assemble SimpleSpread.app + DMG (ad-hoc signed)
 ```

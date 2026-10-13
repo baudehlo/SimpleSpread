@@ -140,15 +140,10 @@ struct SimpleSpreadAppMain: App {
                     // windows opened N copies.
                     guard let request = note.object as? OpenRequest, request.claim() else { return }
                     let url = request.url
-                    do {
-                        let doc = try SpreadsheetDocument.open(url: url)
+                    // Loads in the background, with progress for big files.
+                    FileLoader.open(url) { doc in
                         RecentFilesManager.shared.record(url)
                         openWindow(value: DocumentStore.shared.register(doc))
-                    } catch {
-                        let alert = NSAlert()
-                        alert.messageText = "Could not open \(url.lastPathComponent)"
-                        alert.informativeText = error.localizedDescription
-                        alert.runModal()
                     }
                 }
         } defaultValue: {
@@ -243,8 +238,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 OpenRequest.post(URL(fileURLWithPath: openPath))
                 if ProcessInfo.processInfo.environment["SIMPLESPREAD_SCREENSHOT"] == nil {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        NSApp.terminate(nil)
+                    // Files load in the background: quit once it has opened.
+                    Self.whenLoaderIdle {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            NSApp.terminate(nil)
+                        }
                     }
                 }
             }
@@ -253,11 +251,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Headless smoke-test hook: render the main window to a PNG and quit.
         if let path = ProcessInfo.processInfo.environment["SIMPLESPREAD_SCREENSHOT"] {
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                Self.captureMainWindow(to: path)
-                NSApp.terminate(nil)
+                // A file opened by SIMPLESPREAD_OPEN may still be loading.
+                Self.whenLoaderIdle {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        Self.captureMainWindow(to: path)
+                        NSApp.terminate(nil)
+                    }
+                }
             }
         }
 
+    }
+
+    /// Run `body` once no file is loading (polled; for the headless hooks).
+    @MainActor
+    static func whenLoaderIdle(_ body: @escaping @MainActor () -> Void) {
+        if FileLoader.isIdle {
+            body()
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { whenLoaderIdle(body) }
+        }
     }
 
     @MainActor

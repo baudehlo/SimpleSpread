@@ -163,3 +163,76 @@ struct TextOverflowTests {
         #expect(span(5, 300, .both, filled: [4]) == 5...6)
     }
 }
+
+@Suite("Grid layout arithmetic")
+struct GridLayoutArithmeticTests {
+    /// The original linear-time arithmetic, as the reference.
+    struct Naive {
+        let sheet: Sheet
+        let rowCount: Int
+        let columnCount: Int
+        func height(_ r: Int) -> CGFloat { sheet.hiddenRows.contains(r) ? 0 : sheet.rowHeight(r) }
+        func yOffset(_ row: Int) -> CGFloat { (0..<max(0, min(row, rowCount))).reduce(0) { $0 + height($1) } }
+        func xOffset(_ col: Int) -> CGFloat {
+            (0..<max(0, min(col, columnCount))).reduce(0) { $0 + sheet.columnWidth($1) }
+        }
+        func row(atY y: CGFloat) -> Int {
+            var pos: CGFloat = 0
+            for r in 0..<rowCount { pos += height(r); if y < pos { return r } }
+            return rowCount - 1
+        }
+        func column(atX x: CGFloat) -> Int {
+            var pos: CGFloat = 0
+            for c in 0..<columnCount { pos += sheet.columnWidth(c); if x < pos { return c } }
+            return columnCount - 1
+        }
+    }
+
+    @Test func matchesTheLinearArithmetic() {
+        var rng = SystemRandomNumberGenerator()
+        for _ in 0..<60 {
+            let sheet = Sheet(id: 1, name: "S")
+            for _ in 0..<Int.random(in: 0...25, using: &rng) {
+                sheet.rowHeights[Int.random(in: 0..<120, using: &rng)] = CGFloat(Int.random(in: 10...60, using: &rng))
+            }
+            for _ in 0..<Int.random(in: 0...25, using: &rng) {
+                sheet.hiddenRows.insert(Int.random(in: 0..<120, using: &rng))
+            }
+            for _ in 0..<Int.random(in: 0...8, using: &rng) {
+                sheet.columnWidths[Int.random(in: 0..<30, using: &rng)] = CGFloat(Int.random(in: 16...300, using: &rng))
+            }
+            if Bool.random(using: &rng) { sheet.rowHeights[3] = sheet.defaultRowHeight } // equal to the default
+            let layout = GridLayout(sheet: sheet, minRows: 100, minColumns: 26)
+            let naive = Naive(sheet: sheet, rowCount: layout.rowCount, columnCount: layout.columnCount)
+            for row in -2...(layout.rowCount + 3) {
+                #expect(layout.yOffset(ofRow: row) == naive.yOffset(row))
+            }
+            for col in -2...(layout.columnCount + 3) {
+                #expect(layout.xOffset(ofColumn: col) == naive.xOffset(col))
+            }
+            var y: CGFloat = -10
+            while y < naive.yOffset(layout.rowCount) + 40 {
+                #expect(layout.row(atY: y) == naive.row(atY: y), "y = \(y)")
+                y += 3.5
+            }
+            var x: CGFloat = -10
+            while x < naive.xOffset(layout.columnCount) + 40 {
+                #expect(layout.column(atX: x) == naive.column(atX: x), "x = \(x)")
+                x += 7.25
+            }
+        }
+    }
+
+    @Test func millionRowOffsetsAreQuick() {
+        let sheet = Sheet(id: 1, name: "S")
+        sheet.setCell(Cell(value: .number(1)), at: CellAddress(row: 1_048_575, column: 0))
+        for r in stride(from: 0, to: 1_000_000, by: 7) { sheet.hiddenRows.insert(r) }
+        let layout = GridLayout(sheet: sheet)
+        let start = Date()
+        for k in 0..<10_000 {
+            _ = layout.row(atY: CGFloat(k) * 1800)
+            _ = layout.yOffset(ofRow: k * 100)
+        }
+        #expect(Date().timeIntervalSince(start) < 1.0)
+    }
+}

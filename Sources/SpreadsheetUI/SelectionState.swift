@@ -115,6 +115,10 @@ public struct SelectionState: Equatable, Sendable {
 
 /// Grid geometry: maps rows/columns to pixel offsets and back.
 /// Row/column sizes come from the sheet; results are in points.
+///
+/// Offsets cost O(log k), where k is the number of rows (or columns) whose
+/// size differs from the default (custom heights, hidden rows), so a
+/// million-row sheet scrolls as smoothly as a small one.
 public struct GridLayout {
     public let sheet: Sheet
     /// Rows/columns the grid presents (grows beyond the used range).
@@ -123,11 +127,19 @@ public struct GridLayout {
     public static let headerWidth: CGFloat = 46
     public static let headerHeight: CGFloat = 24
 
+    private let rows: AxisSizes
+    private let columns: AxisSizes
+
     public init(sheet: Sheet, minRows: Int = 200, minColumns: Int = 26) {
         self.sheet = sheet
         let used = sheet.usedRange
         rowCount = max(minRows, (used?.end.row ?? 0) + 50)
         columnCount = max(minColumns, (used?.end.column ?? 0) + 10)
+        var rowSizes = sheet.rowHeights.filter { $0.key >= 0 && !sheet.hiddenRows.contains($0.key) }
+        for row in sheet.hiddenRows where row >= 0 { rowSizes[row] = 0 }
+        rows = AxisSizes(defaultSize: sheet.defaultRowHeight, sizes: rowSizes)
+        columns = AxisSizes(defaultSize: sheet.defaultColumnWidth,
+                            sizes: sheet.columnWidths.filter { $0.key >= 0 })
     }
 
     public func columnWidth(_ column: Int) -> CGFloat {
@@ -147,19 +159,11 @@ public struct GridLayout {
 
     /// X origin of a column (grid content coordinates; excludes the header).
     public func xOffset(ofColumn column: Int) -> CGFloat {
-        var x: CGFloat = 0
-        for c in 0..<min(column, columnCount) {
-            x += columnWidth(c)
-        }
-        return x
+        columns.offset(of: min(max(0, column), columnCount))
     }
 
     public func yOffset(ofRow row: Int) -> CGFloat {
-        var y: CGFloat = 0
-        for r in 0..<min(row, rowCount) {
-            y += rowHeight(r)
-        }
-        return y
+        rows.offset(of: min(max(0, row), rowCount))
     }
 
     public var totalWidth: CGFloat { xOffset(ofColumn: columnCount) }
@@ -167,21 +171,12 @@ public struct GridLayout {
 
     /// Column containing x (content coordinates), clamped to bounds.
     public func column(atX x: CGFloat) -> Int {
-        var pos: CGFloat = 0
-        for c in 0..<columnCount {
-            pos += columnWidth(c)
-            if x < pos { return c }
-        }
-        return columnCount - 1
+        columns.index(at: x, count: columnCount)
     }
 
+    /// Row containing y; with hidden rows, the visible row the point is in.
     public func row(atY y: CGFloat) -> Int {
-        var pos: CGFloat = 0
-        for r in 0..<rowCount {
-            pos += rowHeight(r)
-            if y < pos { return r }
-        }
-        return rowCount - 1
+        rows.index(at: y, count: rowCount)
     }
 
     public func rect(of address: CellAddress) -> CGRect {
@@ -200,5 +195,58 @@ public struct GridLayout {
         let first = column(atX: max(0, rect.minX))
         let last = column(atX: max(0, rect.maxX))
         return first...max(first, last)
+    }
+}
+
+/// Positions along one axis: every index is `defaultSize` except a sorted
+/// few, whose differences from the default are kept as running totals.
+struct AxisSizes {
+    let defaultSize: CGFloat
+    /// Indices whose size differs from the default, ascending.
+    private let indices: [Int]
+    /// `deltaBefore[k]`: total (size - default) over `indices[0..<k]`.
+    private let deltaBefore: [CGFloat]
+
+    init(defaultSize: CGFloat, sizes: [Int: CGFloat]) {
+        self.defaultSize = defaultSize
+        let changed = sizes.filter { $0.value != defaultSize }.sorted { $0.key < $1.key }
+        indices = changed.map(\.key)
+        var running: CGFloat = 0
+        var totals: [CGFloat] = [0]
+        totals.reserveCapacity(changed.count + 1)
+        for (_, size) in changed {
+            running += size - defaultSize
+            totals.append(running)
+        }
+        deltaBefore = totals
+    }
+
+    /// Number of changed indices below `index`.
+    private func changedBelow(_ index: Int) -> Int {
+        var lo = 0, hi = indices.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if indices[mid] < index { lo = mid + 1 } else { hi = mid }
+        }
+        return lo
+    }
+
+    /// Start of `index` (the sum of all sizes before it).
+    func offset(of index: Int) -> CGFloat {
+        CGFloat(index) * defaultSize + deltaBefore[changedBelow(index)]
+    }
+
+    /// The last index in 0..<count starting at or before `position`: the
+    /// one the position falls in (zero-size indices start where the next one
+    /// does, so they are passed over). Clamped to the ends.
+    func index(at position: CGFloat, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        var lo = 0, hi = count - 1
+        guard offset(of: 0) <= position else { return 0 }
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if offset(of: mid) <= position { lo = mid } else { hi = mid - 1 }
+        }
+        return lo
     }
 }

@@ -59,7 +59,7 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
 | Decision | Choice | Rationale |
 |---|---|---|
 | Project layout | SwiftPM only, no .xcodeproj | Matches questrade-mac-menu; CI is `swift build`/`swift test`; app bundle assembled by script/workflow with PlistBuddy |
-| Dependencies | Sparkle only | Spreadsheet stack is from-scratch (ZIP via Compression framework raw DEFLATE, XML via Foundation XMLParser, UI via SwiftUI+AppKit); Sparkle added later for in-place software updates (docs/UPDATES.md) |
+| Dependencies | Sparkle only | Spreadsheet stack is from-scratch (ZIP via the Compression framework and the system zlib, XML via Foundation XMLParser plus byte scanners for cell data, UI via SwiftUI+AppKit); Sparkle added later for in-place software updates (docs/UPDATES.md) |
 | Module split | 4 targets: Core / Files / UI / app shell | Everything except the ~40-line executable is a testable library |
 | Concurrency | Swift 6 language mode; engine synchronous on the document's actor | Spreadsheet recalc is CPU-bound and fast at this scale; a background-calc actor is a roadmap item, not a v1 risk |
 | Grid rendering | Custom AppKit NSView in NSScrollView, virtualized draw | SwiftUI-only grids can't hit spreadsheet interaction/performance targets; this is the industry-standard shape |
@@ -101,7 +101,7 @@ Sources/
     FunctionsPivot.swift      GETPIVOTDATA
     ValueParser.swift         shared input-parsing pipeline
   SpreadsheetFiles/
-    ZipArchive.swift          minimal ZIP reader/writer + CRC32 + DEFLATE
+    ZipArchive.swift          minimal ZIP reader/writer + CRC32 + parallel DEFLATE
     XMLSupport.swift          escaping + _xHHHH_ encoding
     XLSXWriter.swift          OPC package writer (interop profile)
     XLSXReader.swift          SAX reader (rels-driven, tolerant)
@@ -110,6 +110,9 @@ Sources/
     PivotXMLWriter.swift      PivotCacheData/PivotDefinition → XML (carrying over the unmodelled)
     XMLRewriter.swift         streaming XML rewrite/scan/fragment extraction
     CSV.swift                 parser/sniffer/decoder/importer/exporter
+    CSVFastImport.swift       byte-level CSV import (row limit, progress)
+    XLSXSheetDataScanner.swift  byte-level <sheetData> reader
+    XLSXSheetDataWriter.swift   byte-level <sheetData> writer
   SpreadsheetUI/
     SelectionState.swift      selection model + data-edge navigation + GridLayout
     SpreadsheetDocument.swift document view-model (edit/undo/clipboard/files)
@@ -270,10 +273,36 @@ quoting; CRLF; UTF-8 BOM (Excel double-click compatibility); numbers
 machine-canonical; dates ISO 8601; display-mode option.
 
 ### ZIP (under XLSX)
-Stored + raw-DEFLATE (Compression framework `COMPRESSION_ZLIB`), correct
-CRC-32 in local + central headers, no data descriptors, no ZIP64; reader
-scans EOCD backward, trusts the central directory, verifies CRCs, and
-rejects CFB (encrypted/legacy .xls) containers with a clear error.
+Stored + raw-DEFLATE, correct CRC-32 in local + central headers, no data
+descriptors, no ZIP64; reader scans EOCD backward, trusts the central
+directory, verifies CRCs, and rejects CFB (encrypted/legacy .xls)
+containers with a clear error. Inflate uses the Compression framework;
+deflate and CRC-32 use the system zlib. Deflate runs pigz-style on all
+cores: 1 MB chunks, each primed with the previous 32 KB and ended with a
+sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
+
+### Large files
+- Opening runs off the main thread (`SpreadsheetDocument.load`, then
+  `make` on the main actor) behind a progress panel with Cancel
+  (`FileLoading.swift`); the panel only appears after 0.25 s.
+- CSV (`CSVFastImport.swift`): bytes are scanned in place (the file is
+  memory-mapped and UTF-8 is validated as the scan goes, falling back to
+  CP1252 if needed); common fields (plain numbers, ISO dates, text that
+  can't be a value, TRUE/FALSE) skip ValueParser with identical results;
+  the import stops at 1,048,576 rows and reports truncation. The old
+  String-based importer remains as the test reference.
+- XLSX (`XLSXSheetDataScanner.swift`): `<sheetData>` is read by a byte
+  scanner that mirrors the XMLParser delegate rule for rule; the rest of
+  the sheet still goes through XMLParser, and anything unexpected falls
+  back to XMLParser for the whole sheet. The writer builds `<sheetData>`
+  as bytes (`XLSXSheetDataWriter.swift`). Tests compare both directions
+  with the XMLParser/String versions on every fixture.
+- Grid: `GridLayout` offsets are O(log k) over the rows/columns with
+  non-default sizes (prefix sums + binary search), cached per revision;
+  status-bar statistics look up the selection rather than scan the sheet.
+- Still proportional to sheet size: the first calculation (~4 s per
+  million formulas), saving (~4.5 s for a full sheet, on the main thread),
+  and Find, which scans every cell per keystroke.
 
 ## 8. Application layer
 

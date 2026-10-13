@@ -19,7 +19,7 @@ public enum XLSXWriter {
         let styles = StyleParts(workbook: workbook, extraFormats: generatedPivotFormats(workbook))
 
         // Worksheets (collect shared strings while writing).
-        var sheetXMLs: [String] = []
+        var sheetXMLs: [Data] = []
         for sheet in workbook.sheets {
             sheetXMLs.append(worksheetXML(sheet: sheet, workbook: workbook,
                                           styles: styles, strings: &sharedStrings))
@@ -42,7 +42,7 @@ public enum XLSXWriter {
         zip.addEntry(name: "xl/styles.xml", data: Data(styles.xml().utf8))
         zip.addEntry(name: "xl/sharedStrings.xml", data: Data(sharedStrings.xml().utf8))
         for (i, xml) in sheetXMLs.enumerated() {
-            zip.addEntry(name: "xl/worksheets/sheet\(i + 1).xml", data: Data(xml.utf8))
+            zip.addEntry(name: "xl/worksheets/sheet\(i + 1).xml", data: xml)
             if let rels = pivots.sheetRelationships[i] {
                 zip.addEntry(name: "xl/worksheets/_rels/sheet\(i + 1).xml.rels",
                              data: Data(relationshipsXML(rels).utf8))
@@ -152,8 +152,11 @@ public enum XLSXWriter {
 
     // MARK: Worksheet
 
+    /// `fastSheetData: false` builds the cells as Strings, the reference
+    /// the byte writer is tested against.
     static func worksheetXML(sheet: Sheet, workbook: Workbook,
-                             styles: StyleParts, strings: inout SharedStringBuilder) -> String {
+                             styles: StyleParts, strings: inout SharedStringBuilder,
+                             fastSheetData: Bool = true) -> Data {
         var s = xmlHeader
         s += "<worksheet xmlns=\"\(mainNS)\" xmlns:r=\"\(relNS)\">"
 
@@ -191,6 +194,14 @@ public enum XLSXWriter {
         }
 
         // sheetData (rows carrying only a custom height or hidden still get written)
+        var head = Data()
+        var sheetData: [UInt8] = []
+        if fastSheetData {
+            head = Data(s.utf8)
+            s = ""
+            sheetData.reserveCapacity(sheet.cells.count * 40)
+            appendSheetData(of: sheet, to: &sheetData, strings: &strings)
+        } else {
         s += "<sheetData>"
         do {
             var rows: [Int: [(Int, Cell)]] = [:]
@@ -220,6 +231,7 @@ public enum XLSXWriter {
             }
         }
         s += "</sheetData>"
+        }
 
         // CT_Worksheet: sheetData, sheetCalcPr, sheetProtection,
         // protectedRanges, scenarios, autoFilter, sortState, ..., mergeCells.
@@ -238,7 +250,11 @@ public enum XLSXWriter {
 
         s += "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>"
         s += "</worksheet>"
-        return s
+        guard fastSheetData else { return Data(s.utf8) }
+        var data = head
+        data.append(contentsOf: sheetData)
+        data.append(Data(s.utf8))
+        return data
     }
 
     /// `<autoFilter>` with a `<filterColumn>` per active column. A column

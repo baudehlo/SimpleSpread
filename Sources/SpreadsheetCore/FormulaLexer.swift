@@ -117,9 +117,9 @@ enum FormulaLexer {
                 tokens.append(.errorLiteral(err))
                 i += matchedLength
             default:
-                if c.isNumber || (c == "." && (peek(1)?.isNumber ?? false)) {
+                if isDigit(c) || (c == "." && (peek(1).map(isDigit) ?? false)) {
                     var s = ""
-                    while let p = peek(), p.isNumber || p == "." {
+                    while let p = peek(), isDigit(p) || p == "." {
                         s.append(p); i += 1
                     }
                     // Scientific notation: 1e5, 2.5E-3 — but only when followed by
@@ -127,19 +127,19 @@ enum FormulaLexer {
                     // start with a digit, so any e/E here is an exponent attempt).
                     if let p = peek(), p == "e" || p == "E" {
                         let signOffset = (peek(1) == "+" || peek(1) == "-") ? 1 : 0
-                        if let d = peek(1 + signOffset), d.isNumber {
+                        if let d = peek(1 + signOffset), isDigit(d) {
                             s.append(p); i += 1
                             if signOffset == 1 { s.append(chars[i]); i += 1 }
-                            while let d2 = peek(), d2.isNumber { s.append(d2); i += 1 }
+                            while let d2 = peek(), isDigit(d2) { s.append(d2); i += 1 }
                         }
                     }
                     guard let value = Double(s) else {
                         throw FormulaLexError(message: "Malformed number: \(s)")
                     }
                     tokens.append(.number(value))
-                } else if c.isLetter || c == "_" || c == "$" {
+                } else if isLetter(c) || c == "_" || c == "$" {
                     var s = ""
-                    while let p = peek(), p.isLetter || p.isNumber || p == "_" || p == "$" || p == "." {
+                    while let p = peek(), isLetter(p) || isDigit(p) || p == "_" || p == "$" || p == "." {
                         s.append(p); i += 1
                     }
                     tokens.append(.name(s))
@@ -150,4 +150,17 @@ enum FormulaLexer {
         }
         return tokens
     }
+}
+
+/// `Character.isNumber` / `isLetter` with an ASCII fast path (the Unicode
+/// property lookups are slow, and formulas are almost all ASCII). For ASCII
+/// the answers are the same: 0-9, and A-Z / a-z.
+@inline(__always) func isDigit(_ c: Character) -> Bool {
+    if let a = c.asciiValue { return a >= 0x30 && a <= 0x39 }
+    return c.isNumber
+}
+
+@inline(__always) func isLetter(_ c: Character) -> Bool {
+    if let a = c.asciiValue { return (a >= 0x41 && a <= 0x5A) || (a >= 0x61 && a <= 0x7A) }
+    return c.isLetter
 }

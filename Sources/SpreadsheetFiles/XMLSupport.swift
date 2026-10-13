@@ -4,6 +4,8 @@ import Foundation
 enum XML {
     /// Escape text content: & < > (and CR stripped — LF round-trips fine).
     static func escapeText(_ s: String) -> String {
+        // Almost nothing needs escaping; skip the four passes when so.
+        guard s.utf8.contains(where: { $0 == 0x26 || $0 == 0x3C || $0 == 0x3E || $0 == 0x0D }) else { return s }
         var out = s.replacingOccurrences(of: "&", with: "&amp;")
         out = out.replacingOccurrences(of: "<", with: "&lt;")
         out = out.replacingOccurrences(of: ">", with: "&gt;")
@@ -21,6 +23,19 @@ enum XML {
     /// OOXML _xHHHH_ encoding for characters illegal in XML 1.0
     /// (< 0x20 except TAB/LF/CR). Also escapes literal "_xHHHH_" sequences.
     static func encodeIllegalCharacters(_ s: String) -> String {
+        // Nothing to encode unless a control character or "_x" appears (in
+        // UTF-8, bytes below 0x20 are only ever those characters).
+        var previous: UInt8 = 0
+        var clean = true
+        for byte in s.utf8 {
+            if (byte < 0x20 && byte != 0x09 && byte != 0x0A && byte != 0x0D)
+                || (previous == 0x5F && (byte == 0x78 || byte == 0x58)) {
+                clean = false
+                break
+            }
+            previous = byte
+        }
+        if clean { return s }
         var out = ""
         out.reserveCapacity(s.count)
         let scalars = Array(s.unicodeScalars)

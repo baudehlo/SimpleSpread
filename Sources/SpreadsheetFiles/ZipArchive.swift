@@ -1,5 +1,6 @@
 import Foundation
 import Compression
+import zlib
 
 /// Minimal ZIP (PKZIP) container support — exactly what XLSX needs:
 /// stored + deflate entries, correct CRC-32, no data descriptors, no ZIP64.
@@ -21,47 +22,91 @@ public struct ZipEntry: Sendable {
 
 // MARK: - CRC-32 (IEEE, reflected 0xEDB88320)
 
+/// zlib's crc32 (part of macOS), which is many times faster than a table
+/// loop on the hundreds of megabytes a big sheet inflates to.
 enum CRC32 {
-    static let table: [UInt32] = {
-        (0..<256).map { i -> UInt32 in
-            var c = UInt32(i)
-            for _ in 0..<8 {
-                c = (c & 1) != 0 ? (0xEDB88320 ^ (c >> 1)) : (c >> 1)
-            }
-            return c
-        }
-    }()
-
     static func checksum(_ data: Data) -> UInt32 {
-        var crc: UInt32 = 0xFFFFFFFF
-        for byte in data {
-            crc = table[Int((crc ^ UInt32(byte)) & 0xFF)] ^ (crc >> 8)
+        data.withUnsafeBytes { raw -> UInt32 in
+            guard var p = raw.bindMemory(to: Bytef.self).baseAddress else { return 0 }
+            var remaining = raw.count
+            var crc = zlib.crc32(0, nil, 0)
+            // zlib takes 32-bit lengths.
+            while remaining > 0 {
+                let chunk = min(remaining, 1 << 30)
+                crc = zlib.crc32(crc, p, uInt(chunk))
+                p += chunk
+                remaining -= chunk
+            }
+            return UInt32(crc)
         }
-        return crc ^ 0xFFFFFFFF
     }
 }
 
-// MARK: - Raw DEFLATE via the Compression framework
+// MARK: - Raw DEFLATE (zlib to compress, the Compression framework to inflate)
 
 enum Deflate {
-    /// Raw deflate (COMPRESSION_ZLIB in the Compression framework is
-    /// headerless DEFLATE — exactly the ZIP entry format). Returns nil when
+    /// Raw deflate with zlib at its default level. Large data is compressed
+    /// in 1 MB chunks on all cores, pigz-style: each chunk is primed with
+    /// the 32 KB before it and ends on a byte boundary (a sync flush), so
+    /// the pieces join into one ordinary deflate stream. Returns nil when
     /// compression doesn't shrink the data.
     static func compress(_ data: Data) -> Data? {
         guard !data.isEmpty else { return nil }
-        let capacity = data.count
-        var output = Data(count: capacity)
-        let written = output.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) -> Int in
-            data.withUnsafeBytes { (src: UnsafeRawBufferPointer) -> Int in
-                compression_encode_buffer(
-                    dst.bindMemory(to: UInt8.self).baseAddress!, capacity,
-                    src.bindMemory(to: UInt8.self).baseAddress!, data.count,
-                    nil, COMPRESSION_ZLIB
-                )
+        let chunkSize = 1 << 20
+        let chunkCount = (data.count + chunkSize - 1) / chunkSize
+        var pieces = [Data?](repeating: nil, count: chunkCount)
+        let failed = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+            let base = raw.bindMemory(to: Bytef.self).baseAddress!
+            let results = UnsafeMutableBufferPointer<Data?>.allocate(capacity: chunkCount)
+            results.initialize(repeating: nil)
+            defer { results.deallocate() }
+            let compressChunk = { (index: Int) in
+                let start = index * chunkSize
+                let count = min(chunkSize, raw.count - start)
+                let primer = min(start, 32 * 1024)
+                results[index] = deflateChunk(base + start, count: count,
+                                              dictionary: base + start - primer, dictionaryCount: primer,
+                                              last: index == chunkCount - 1)
             }
+            if chunkCount == 1 {
+                compressChunk(0)
+            } else {
+                DispatchQueue.concurrentPerform(iterations: chunkCount, execute: compressChunk)
+            }
+            for i in 0..<chunkCount { pieces[i] = results[i] }
+            return pieces.contains { $0 == nil }
         }
-        guard written > 0, written < data.count else { return nil }
-        output.removeSubrange(written..<output.count)
+        guard !failed else { return nil }
+        let total = pieces.reduce(0) { $0 + $1!.count }
+        guard total < data.count else { return nil }
+        var output = Data(capacity: total)
+        for piece in pieces { output.append(piece!) }
+        return output
+    }
+
+    /// Deflate one chunk at level 6. Every chunk but the last ends with a
+    /// sync flush (byte-aligned, stream left open); the last finishes it.
+    private static func deflateChunk(_ input: UnsafePointer<Bytef>, count: Int,
+                                     dictionary: UnsafePointer<Bytef>, dictionaryCount: Int,
+                                     last: Bool) -> Data? {
+        var stream = z_stream()
+        guard deflateInit2_(&stream, 6, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY,
+                            ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else { return nil }
+        defer { deflateEnd(&stream) }
+        if dictionaryCount > 0,
+           deflateSetDictionary(&stream, dictionary, uInt(dictionaryCount)) != Z_OK { return nil }
+        // Room for the worst case plus the flush marker.
+        let capacity = Int(deflateBound(&stream, uLong(count))) + 16
+        var output = Data(count: capacity)
+        let status = output.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) -> Int32 in
+            stream.next_in = UnsafeMutablePointer(mutating: input)
+            stream.avail_in = uInt(count)
+            stream.next_out = dst.bindMemory(to: Bytef.self).baseAddress!
+            stream.avail_out = uInt(capacity)
+            return deflate(&stream, last ? Z_FINISH : Z_SYNC_FLUSH)
+        }
+        guard last ? status == Z_STREAM_END : (status == Z_OK && stream.avail_in == 0) else { return nil }
+        output.removeSubrange(Int(stream.total_out)..<output.count)
         return output
     }
 

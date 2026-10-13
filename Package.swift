@@ -28,6 +28,9 @@ let package = Package(
         ]),
         // Thin app entry point.
         .executableTarget(name: "SimpleSpread", dependencies: ["SpreadsheetUI"]),
+        // Big-file load timing (`swift run -c release spreadsheet-bench <file>`);
+        // a developer tool, not shipped.
+        .executableTarget(name: "spreadsheet-bench", dependencies: ["SpreadsheetCore", "SpreadsheetFiles"]),
 
         .testTarget(name: "SpreadsheetCoreTests", dependencies: ["SpreadsheetCore"]),
         .testTarget(name: "SpreadsheetFilesTests", dependencies: ["SpreadsheetFiles"],
