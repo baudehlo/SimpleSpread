@@ -477,23 +477,27 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let sheet = document.activeSheet
         let rowRange = max(0, rows.lowerBound - 1)...(rows.upperBound + 1)
         let colRange = max(0, cols.lowerBound - 1)...(cols.upperBound + 1)
-        for (addr, cell) in sheet.cells where cell.styleIndex != 0
-            && rowRange.contains(addr.row) && colRange.contains(addr.column) {
-            let borders = document.workbook.style(at: cell.styleIndex).borders
-            guard !borders.isEmpty, l.rowHeight(addr.row) > 0 else { continue }
-            let rect = cellRect(addr, layout: l)
-            let merge = sheet.mergedRange(containing: addr)
-            if let line = borders.top, merge.map({ $0.start.row == addr.row }) ?? true {
-                strokeBorder(line, from: CGPoint(x: rect.minX, y: rect.minY), to: CGPoint(x: rect.maxX, y: rect.minY))
-            }
-            if let line = borders.bottom, merge.map({ $0.end.row == addr.row }) ?? true {
-                strokeBorder(line, from: CGPoint(x: rect.minX, y: rect.maxY), to: CGPoint(x: rect.maxX, y: rect.maxY))
-            }
-            if let line = borders.left, merge.map({ $0.start.column == addr.column }) ?? true {
-                strokeBorder(line, from: CGPoint(x: rect.minX, y: rect.minY), to: CGPoint(x: rect.minX, y: rect.maxY))
-            }
-            if let line = borders.right, merge.map({ $0.end.column == addr.column }) ?? true {
-                strokeBorder(line, from: CGPoint(x: rect.maxX, y: rect.minY), to: CGPoint(x: rect.maxX, y: rect.maxY))
+        for row in rowRange where l.rowHeight(row) > 0 {
+            for column in colRange {
+                let addr = CellAddress(row: row, column: column)
+                let cell = sheet.cell(at: addr)
+                guard cell.styleIndex != 0 else { continue }
+                let borders = document.workbook.style(at: cell.styleIndex).borders
+                guard !borders.isEmpty else { continue }
+                let rect = cellRect(addr, layout: l)
+                let merge = sheet.mergedRange(containing: addr)
+                if let line = borders.top, merge.map({ $0.start.row == addr.row }) ?? true {
+                    strokeBorder(line, from: CGPoint(x: rect.minX, y: rect.minY), to: CGPoint(x: rect.maxX, y: rect.minY))
+                }
+                if let line = borders.bottom, merge.map({ $0.end.row == addr.row }) ?? true {
+                    strokeBorder(line, from: CGPoint(x: rect.minX, y: rect.maxY), to: CGPoint(x: rect.maxX, y: rect.maxY))
+                }
+                if let line = borders.left, merge.map({ $0.start.column == addr.column }) ?? true {
+                    strokeBorder(line, from: CGPoint(x: rect.minX, y: rect.minY), to: CGPoint(x: rect.minX, y: rect.maxY))
+                }
+                if let line = borders.right, merge.map({ $0.end.column == addr.column }) ?? true {
+                    strokeBorder(line, from: CGPoint(x: rect.maxX, y: rect.minY), to: CGPoint(x: rect.maxX, y: rect.maxY))
+                }
             }
         }
     }
