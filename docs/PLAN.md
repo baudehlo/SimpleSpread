@@ -343,6 +343,12 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   split button). Larger font sizes grow short rows (never shrink) in the same
   undo step. Name box + formula bar, sheet tabs (add/rename/delete/switch), status bar
   (Sum/Avg/Count), standard menus with shortcuts.
+- Formatting a selection of up to 100,000 cells formats every cell in it.
+  A bigger one (whole columns, ⌘A on a big sheet) formats the cells inside
+  the used range — the stored ones and the blanks among them — and never
+  creates formatted blanks past the data (there are no whole-column
+  formats). Formatting undo restores styles only. Clear Formatting, Merge
+  and Sort walk the stored cells, not every address in the rectangle.
 - Windows: `WindowGroup(for: Int)` + DocumentStore registry; File→New/Open
   spawn windows; documents own their UndoManager.
 - Headless hooks: `SIMPLESPREAD_SCREENSHOT` renders the real window to PNG

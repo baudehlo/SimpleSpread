@@ -366,12 +366,12 @@ public final class SpreadsheetDocument: ObservableObject {
 
     // MARK: - Formatting
 
+    /// Restyle the selection (see `forEachFormattingTarget` for which cells
+    /// a big selection covers). One undo step.
     public func applyStyleToSelection(_ actionName: String, _ mutate: (inout CellStyle) -> Void) {
-        let addresses = selection.range.addresses
-        let snaps = snapshot(addresses)
-        workbook.modifyStyle(in: selection.range, ofSheetID: activeSheetID, mutate)
-        registerCellUndo(snaps, actionName: actionName)
-        markChanged()
+        applyStyle(to: selection.range, actionName: actionName, addressDependent: false) { _, style in
+            mutate(&style)
+        }
     }
 
     public func toggleBold() {
@@ -961,22 +961,22 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Clear Formatting (⌘\): reset every selected cell to the default style,
     /// leaving values and formulas intact.
     public func clearFormattingInSelection() {
-        let addresses = selection.range.addresses
-        let snaps = snapshot(addresses)
-        var changed = false
-        for addr in addresses {
-            var cell = activeSheet.cell(at: addr)
+        // Only stored cells can carry formatting.
+        let sheet = activeSheet
+        var snaps: [StyleSnapshot] = []
+        for addr in storedAddresses(in: selection.range, sheet: sheet) {
+            var cell = sheet.cell(at: addr)
             // A pivot's field buttons belong to the pivot, not the formatting.
             let target = workbook.style(at: cell.styleIndex).pivotButton
                 ? workbook.styleIndex(for: CellStyle(pivotButton: true)) : 0
             if cell.styleIndex != target {
+                snaps.append(StyleSnapshot(address: addr, styleIndex: cell.styleIndex))
                 cell.styleIndex = target
-                activeSheet.setCell(cell, at: addr)
-                changed = true
+                sheet.setCell(cell, at: addr)
             }
         }
-        guard changed else { return }
-        registerCellUndo(snaps, actionName: "Clear Formatting")
+        guard !snaps.isEmpty else { return }
+        registerStyleUndo(snaps, sheetID: sheet.id, actionName: "Clear Formatting")
         markChanged()
     }
 
@@ -1105,12 +1105,33 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func selectionStatistics() -> SelectionStats {
-        var stats = SelectionStats(count: 0, numericCount: 0, sum: 0)
-        // Cap the scan for enormous selections.
-        let range = selection.range
-        guard range.cellCount <= 1_000_000 else { return stats }
-        // Like Excel's status bar, rows a filter hides are left out.
         let sheet = activeSheet
+        let key = StatsKey(revision: revision, sheetID: sheet.id, range: selection.range)
+        if let cached = statsCache, cached.key == key { return cached.stats }
+        let stats = computeSelectionStatistics(sheet: sheet)
+        statsCache = (key, stats)
+        return stats
+    }
+
+    /// The status bar asks on every redraw; the answer only changes with
+    /// the selection or an edit.
+    private struct StatsKey: Equatable {
+        var revision: Int
+        var sheetID: Int
+        var range: CellRange
+    }
+    private var statsCache: (key: StatsKey, stats: SelectionStats)?
+
+    private func computeSelectionStatistics(sheet: Sheet) -> SelectionStats {
+        var stats = SelectionStats(count: 0, numericCount: 0, sum: 0)
+        // Only the used part of the selection can hold values (a whole
+        // column is a million addresses, mostly past the data).
+        guard let used = sheet.usedRange, let range = Self.intersection(selection.range, used) else {
+            return stats
+        }
+        // Cap the work (lookups or stored cells scanned) for enormous sheets.
+        guard min(range.cellCount, sheet.cells.count) <= 4_000_000 else { return stats }
+        // Like Excel's status bar, rows a filter hides are left out.
         let hidden = sheet.hiddenRows
         func add(_ cell: Cell) {
             if cell.value.isEmpty { return }
