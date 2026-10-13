@@ -69,6 +69,37 @@ jobs:
     needs: release_notes
     runs-on: macos-15
     steps:
+      # The appcast is pushed to main at the end; a release from any other
+      # ref would push that ref's commits to main (or fail after the GitHub
+      # Release already exists).
+      - name: Require main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases must be dispatched from main (got ${GITHUB_REF})."
+          exit 1
+
+      # A release must be signed, notarized and carry an appcast entry; fail
+      # rather than quietly ship an ad-hoc-signed, unsandboxed build.
+      - name: Require release secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY \
+                      APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID SPARKLE_PRIVATE_KEY; do
+            [[ -n "${!name:-}" ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} )); then
+            echo "::error::Missing release secrets: ${missing[*]}"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
 
       - name: Select Xcode
@@ -106,7 +137,6 @@ jobs:
           set -euo pipefail
           APP_NAME="SimpleSpread"
           BINARY_NAME="SimpleSpread"
-          BUNDLE_ID="com.kikiplan.simplespread"
           APP_DIR="${APP_NAME}.app"
           CONTENTS="${APP_DIR}/Contents"
 
@@ -114,28 +144,7 @@ jobs:
           cp ".build/release/${BINARY_NAME}" "${CONTENTS}/MacOS/${BINARY_NAME}"
           cp AppIcon.icns "${CONTENTS}/Resources/AppIcon.icns"
 
-          PLIST="${CONTENTS}/Info.plist"
-          /usr/libexec/PlistBuddy -c "Clear dict"                                                 "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleName               string ${APP_NAME}"         "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName        string ${APP_NAME}"         "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier         string ${BUNDLE_ID}"        "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleVersion            string ${VERSION}"          "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${VERSION}"          "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable         string ${BINARY_NAME}"      "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile           string AppIcon"             "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType        string APPL"                "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :NSHighResolutionCapable    bool   true"                "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :NSPrincipalClass           string NSApplication"       "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion     string 14.0"                "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes array"                            "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string Excel Workbook" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Editor" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes array"       "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string org.openxmlformats.spreadsheetml.sheet" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:CFBundleTypeName string CSV Document" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:CFBundleTypeRole string Editor" "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes array"       "$PLIST"
-          /usr/libexec/PlistBuddy -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes:0 string public.comma-separated-values-text" "$PLIST"
+          ./scripts/write-info-plist.sh "$APP_DIR" "$VERSION"
 
       - name: Embed Sparkle
         env:
@@ -175,9 +184,8 @@ jobs:
               --sign "$APPLE_SIGNING_IDENTITY" \
               "$APP_DIR"
           else
-            echo "No APPLE_CERTIFICATE secret — ad-hoc signing (Gatekeeper will warn on other machines)"
-            ./scripts/sign-sparkle.sh "$APP_DIR" "-"
-            codesign --force --sign - "$APP_DIR"
+            echo "::error::No APPLE_CERTIFICATE secret; refusing to ship an ad-hoc build."
+            exit 1
           fi
 
       - name: Create .dmg
@@ -226,7 +234,8 @@ jobs:
             xcrun stapler staple "$DMG_NAME"
             echo "Notarization complete."
           else
-            echo "No notarization secrets — skipping notarization"
+            echo "::error::No notarization secrets; refusing to ship an unnotarized build."
+            exit 1
           fi
 
           echo "DMG_NAME=$DMG_NAME" >> "$GITHUB_ENV"
@@ -242,7 +251,7 @@ jobs:
             "$DMG_NAME"
 
       # Sign the DMG with the Sparkle key and publish the appcast so existing
-      # installs can auto-update. No-ops until SPARKLE_PRIVATE_KEY is configured.
+      # installs can auto-update.
       - name: Publish Sparkle appcast
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
@@ -251,9 +260,8 @@ jobs:
         run: |
           set -euo pipefail
           if [[ -z "${SPARKLE_PRIVATE_KEY:-}" ]]; then
-            echo "No SPARKLE_PRIVATE_KEY secret — skipping appcast publish."
-            echo "Add the key (see docs/UPDATES.md) to enable in-place auto-updates."
-            exit 0
+            echo "::error::No SPARKLE_PRIVATE_KEY secret (see docs/UPDATES.md)."
+            exit 1
           fi
           DOWNLOAD_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/${DMG_NAME}"
           ./scripts/update-appcast.sh "$DMG_NAME" "$VERSION" "$DOWNLOAD_URL" "appcast.xml"
@@ -261,7 +269,19 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add appcast.xml
           git commit -m "appcast: SimpleSpread ${VERSION}"
-          git push origin HEAD:main
+          # main may have moved while the build ran: rebase onto it and retry,
+          # so the release never ends up without its appcast entry.
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo "Appcast pushed on attempt ${attempt}."
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 5))
+          done
+          echo "::error::Could not push the appcast to main; push it by hand (the GitHub Release exists)."
+          exit 1
 
   finalize_release_notes:
     needs: [release_notes, build]

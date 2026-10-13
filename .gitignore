@@ -11,3 +11,7 @@ DerivedData/
 /AppIcon.icns
 /AppIcon.iconset
 .env
+# Local tooling output
+/.playwright-mcp/
+/.claude/worktrees/
+/.claude/scheduled_tasks.lock
