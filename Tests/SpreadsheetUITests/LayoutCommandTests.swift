@@ -199,3 +199,82 @@ struct LayoutCommandTests {
         #expect(l.row(atY: l.rowHeight(0) + 1) == 2)
     }
 }
+
+@MainActor
+@Suite("Copy and Delete in filtered ranges")
+struct FilteredClipboardTests {
+    func a(_ a1: String) -> CellAddress { CellAddress(a1: a1)! }
+    func r(_ a1: String) -> CellRange { CellRange(a1: a1)! }
+
+    /// Fruit/Qty/Double table, filtered to hide Pear (row 3).
+    func filtered() -> SpreadsheetDocument {
+        let doc = SpreadsheetDocument()
+        let rows = [["Fruit", "Qty", "Double"], ["Apple", "5", "=B2*2"], ["Pear", "3", "=B3*2"],
+                    ["Fig", "1", "=B4*2"]]
+        for (i, row) in rows.enumerated() {
+            for (j, text) in row.enumerated() { doc.commitInput(text, at: CellAddress(row: i, column: j)) }
+        }
+        doc.selection.select(a("A1"))
+        doc.toggleAutoFilter()
+        doc.setColumnFilter(0, ColumnFilter(values: ["Apple", "Fig"]))
+        #expect(doc.activeSheet.hiddenRows == [2])
+        return doc
+    }
+
+    @Test func copyLeavesOutFilteredRows() {
+        let doc = filtered()
+        doc.selection.select(range: r("A1:C4"))
+        #expect(doc.selectionTSV() == "Fruit\tQty\tDouble\nApple\t5\t10\nFig\t1\t2")
+        let payload = doc.selectionPayload()
+        #expect(payload.rows == 3)
+        #expect(!payload.entries.contains { $0.cell.value == .string("Pear") })
+    }
+
+    @Test func pastedFormulasTranslateFromTheirRealRows() {
+        let doc = filtered()
+        doc.selection.select(range: r("A2:C4"))
+        let payload = doc.selectionPayload()
+        doc.selection.select(a("E10"))
+        doc.paste(payload: payload, sourceOrigin: a("A2"))
+        // Fig was in row 4 and lands in row 11: =B4*2 moves 7 rows to =F11*2.
+        #expect(doc.displayString(at: a("E11")) == "Fig")
+        #expect(doc.activeSheet.cell(at: a("G11")).formula == "F11*2")
+        #expect(doc.activeSheet.cell(at: a("G10")).formula == "F10*2")
+        #expect(doc.displayString(at: a("G11")) == "2")
+        #expect(doc.activeSheet.cell(at: a("E12")).isDefault) // closed up: 2 rows only
+    }
+
+    @Test func manuallyHiddenRowsAreStillCopied() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("x", at: a("A1"))
+        doc.commitInput("y", at: a("A2"))
+        doc.hideRows(1...1)
+        doc.selection.select(range: r("A1:A2"))
+        #expect(doc.selectionTSV() == "x\ny")
+    }
+
+    @Test func deleteLeavesFilteredRowsAlone() {
+        let doc = filtered()
+        doc.selection.select(range: r("A2:B4"))
+        doc.clearSelectionContents()
+        #expect(doc.activeSheet.value(at: a("A3")) == .string("Pear"))
+        #expect(doc.activeSheet.value(at: a("A2")) == .empty)
+        #expect(doc.activeSheet.value(at: a("A4")) == .empty)
+        doc.undoManager.undo()
+        #expect(doc.activeSheet.value(at: a("A2")) == .string("Apple"))
+    }
+
+    @Test func cutTakesEveryRow() {
+        let doc = filtered()
+        doc.selection.select(range: r("A2:A4"))
+        let payload = doc.selectionPayload(isCut: true)
+        #expect(payload.rows == 3)
+        #expect(doc.selectionTSV(skippingFiltered: false) == "Apple\nPear\nFig")
+    }
+
+    @Test func payloadsFromOlderBuildsDecode() throws {
+        let json = #"{"rows":1,"columns":1,"isCut":false,"entries":[{"rowOffset":0,"columnOffset":0,"cell":{"value":{"number":{"_0":1}},"styleIndex":0},"style":{"bold":false,"italic":false,"underline":false,"strikethrough":false,"horizontalAlignment":"automatic","verticalAlignment":"bottom","wrapText":false,"numberFormat":{"code":""}}}]}"#
+        let payload = try JSONDecoder().decode(ClipboardPayload.self, from: Data(json.utf8))
+        #expect(payload.entries.first?.sourceRowOffset == nil)
+    }
+}

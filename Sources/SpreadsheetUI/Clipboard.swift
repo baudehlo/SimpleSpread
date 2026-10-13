@@ -18,10 +18,10 @@ extension SpreadsheetDocument {
         if let encoded = try? JSONEncoder().encode(payload) {
             pasteboard.setData(encoded, forType: SpreadsheetDocument.payloadType)
         }
-        pasteboard.setString(selectionTSV(), forType: .string)
+        pasteboard.setString(selectionTSV(skippingFiltered: !cut), forType: .string)
         SpreadsheetDocument.copyOrigins[ObjectIdentifier(self)] = selection.range.start
         if cut {
-            clearSelectionContents()
+            clearSelectionContents(skippingFiltered: false)
         }
     }
 

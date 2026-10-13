@@ -406,8 +406,10 @@ Known gaps and the intended next steps, in priority order:
 1. **Interop bake-off:** open generated files in real Excel/Numbers/Sheets
    and fix nits (the writer follows the researched profile; nothing beats
    the real apps).
-2. Copy/paste and fill of filtered ranges should skip hidden rows (Excel
-   copies visible cells only); hidden columns; SUBTOTAL ignoring filtered rows.
+2. Filtered ranges, the rest of Excel's visible-cells-only behaviour: Copy
+   and Delete skip filtered rows (done); still to do are Fill Down and
+   formatting a filtered selection, hidden columns, and SUBTOTAL ignoring
+   filtered rows.
 3. Find & Replace (Find is done; add Replace / Replace All).
 4. Paste Special (values only), range-tiling paste.
 5. Autofill series inference (1,2→3; dates; weekday names).
