@@ -50,12 +50,30 @@ public struct ColumnFilter: Hashable, Sendable {
 
     public var isActive: Bool { values != nil || !conditions.isEmpty || preservedXML != nil }
 
-    /// Whether a cell passes, given its display text.
+    /// The key texts share when they are equal ignoring case, as
+    /// `caseInsensitiveCompare` judges it ("Straße" matches "STRASSE").
+    public static func folded(_ text: String) -> String {
+        text.folding(options: [.caseInsensitive], locale: nil)
+    }
+
+    /// Whether a cell passes, given its display text. To test many cells,
+    /// use `matcher()`, which folds the value list once.
     public func passes(_ value: CellValue, displayText: String) -> Bool {
-        if let values {
+        matcher()(value, displayText)
+    }
+
+    /// `passes` with the value list prepared once: testing a cell against
+    /// the shown values is then one hash lookup.
+    public func matcher() -> (CellValue, String) -> Bool {
+        let shown = values.map { Set($0.map(Self.folded)) }
+        return { value, displayText in self.passes(value, displayText: displayText, shown: shown) }
+    }
+
+    private func passes(_ value: CellValue, displayText: String, shown: Set<String>?) -> Bool {
+        if let shown {
             if value.isEmpty || displayText.isEmpty {
                 if !includeBlanks { return false }
-            } else if !values.contains(where: { $0.caseInsensitiveCompare(displayText) == .orderedSame }) {
+            } else if !shown.contains(Self.folded(displayText)) {
                 return false
             }
         }
@@ -177,8 +195,9 @@ extension Workbook {
         filter.range.end.row = Self.extendedFilterEnd(filter.range, in: sheet)
         sheet.autoFilter = filter
         guard let rows = filter.dataRows else { return }
+        let tests = columnTests(filter)
         for row in rows {
-            if rowPassesFilter(row, filter: filter, sheet: sheet) {
+            if rowPasses(row, tests, sheet: sheet) {
                 sheet.hiddenRows.remove(row)
             } else {
                 sheet.hiddenRows.insert(row)
@@ -187,10 +206,21 @@ extension Workbook {
     }
 
     public func rowPassesFilter(_ row: Int, filter: AutoFilter, sheet: Sheet) -> Bool {
-        for (offset, criteria) in filter.columns where criteria.isActive {
-            let address = CellAddress(row: row, column: filter.range.start.column + offset)
-            let value = sheet.value(at: address)
-            if !criteria.passes(value, displayText: displayText(of: sheet, at: address)) { return false }
+        rowPasses(row, columnTests(filter), sheet: sheet)
+    }
+
+    /// Each active column's test, prepared once per filter run.
+    private func columnTests(_ filter: AutoFilter) -> [(column: Int, test: (CellValue, String) -> Bool)] {
+        filter.columns.filter { $0.value.isActive }.map { offset, criteria in
+            (filter.range.start.column + offset, criteria.matcher())
+        }
+    }
+
+    private func rowPasses(_ row: Int, _ tests: [(column: Int, test: (CellValue, String) -> Bool)],
+                           sheet: Sheet) -> Bool {
+        for (column, test) in tests {
+            let address = CellAddress(row: row, column: column)
+            if !test(sheet.value(at: address), displayText(of: sheet, at: address)) { return false }
         }
         return true
     }
@@ -213,7 +243,8 @@ extension Workbook {
         guard let sheet = sheet(withID: sheetID), let filter = sheet.autoFilter,
               let rows = filter.dataRows else { return ([], false) }
         let column = filter.range.start.column + columnOffset
-        var seen: [String: CellValue] = [:]
+        // Keyed by the case-folded text; the first spelling seen is listed.
+        var seen: [String: (text: String, value: CellValue, row: Int)] = [:]
         var hasBlanks = false
         for row in rows {
             let address = CellAddress(row: row, column: column)
@@ -221,11 +252,19 @@ extension Workbook {
             let text = displayText(of: sheet, at: address)
             if value.isEmpty || text.isEmpty {
                 hasBlanks = true
-            } else if !seen.keys.contains(where: { $0.caseInsensitiveCompare(text) == .orderedSame }) {
-                seen[text] = value
+            } else {
+                let key = ColumnFilter.folded(text)
+                if seen[key] == nil { seen[key] = (text, value, row) }
             }
         }
-        let ordered = seen.sorted { SortComparison.compare($0.value, $1.value) == .orderedAscending }
-        return (ordered.map(\.key), hasBlanks)
+        // Values that compare equal keep the order they appear in.
+        let ordered = seen.values.sorted { lhs, rhs in
+            switch SortComparison.compare(lhs.value, rhs.value) {
+            case .orderedAscending: return true
+            case .orderedDescending: return false
+            case .orderedSame: return lhs.row < rhs.row
+            }
+        }
+        return (ordered.map(\.text), hasBlanks)
     }
 }
