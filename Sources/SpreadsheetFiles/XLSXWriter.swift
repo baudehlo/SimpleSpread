@@ -105,10 +105,12 @@ public enum XLSXWriter {
         var s = xmlHeader
         s += "<workbook xmlns=\"\(mainNS)\" xmlns:r=\"\(relNS)\">"
         s += "<workbookPr date1904=\"0\"/>"
-        s += "<bookViews><workbookView activeTab=\"0\"/></bookViews>"
+        let shown = firstVisibleSheetIndex(workbook)
+        s += "<bookViews><workbookView activeTab=\"\(shown)\"/></bookViews>"
         s += "<sheets>"
         for (i, sheet) in workbook.sheets.enumerated() {
-            s += "<sheet name=\"\(XML.escapeAttribute(sheet.name))\" sheetId=\"\(sheet.id)\" r:id=\"rId\(i + 1)\"/>"
+            let state = sheet.isHidden && i != shown ? " state=\"hidden\"" : ""
+            s += "<sheet name=\"\(XML.escapeAttribute(sheet.name))\" sheetId=\"\(sheet.id)\"\(state) r:id=\"rId\(i + 1)\"/>"
         }
         s += "</sheets>"
         // Excel names every AutoFilter's range (hidden, sheet-scoped) and
@@ -127,6 +129,12 @@ public enum XLSXWriter {
         s += pivotCaches // CT_Workbook: after sheets/definedNames/calcPr, before extLst
         s += "</workbook>"
         return s
+    }
+
+    /// The sheet Excel opens on: the first one not hidden. A workbook needs
+    /// one visible sheet, so if all are hidden the first is shown.
+    static func firstVisibleSheetIndex(_ workbook: Workbook) -> Int {
+        workbook.sheets.firstIndex { !$0.isHidden } ?? 0
     }
 
     /// "$A$1:$D$20" ("$A$1" for a single cell).
@@ -164,7 +172,8 @@ public enum XLSXWriter {
         s += "<dimension ref=\"\(used?.a1 ?? "A1")\"/>"
 
         // sheetViews (+ frozen panes)
-        let isFirst = workbook.sheets.first?.id == sheet.id
+        let shown = firstVisibleSheetIndex(workbook)
+        let isFirst = workbook.sheets.indices.contains(shown) && workbook.sheets[shown].id == sheet.id
         s += "<sheetViews><sheetView\(isFirst ? " tabSelected=\"1\"" : "") workbookViewId=\"0\">"
         if sheet.frozenRows > 0 || sheet.frozenColumns > 0 {
             let topLeft = CellAddress(row: sheet.frozenRows, column: sheet.frozenColumns).a1

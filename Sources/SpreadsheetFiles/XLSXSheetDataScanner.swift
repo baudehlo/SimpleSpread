@@ -7,30 +7,24 @@ import SpreadsheetCore
 /// rule; that delegate still reads everything else in the sheet, and tests
 /// compare the two on every fixture.
 struct SheetDataScanner {
-    let sheet: Sheet
-    let sharedStrings: [String]
-    let styleIndexMap: [Int: Int]
+    /// The cell rules, shared with the XMLParser reader.
+    private(set) var builder: SheetCellBuilder
 
-    // Parse state, as in the delegate.
-    private var currentRow = -1
-    private var nextColumn = 0
-    private var cellAddress: CellAddress?
-    private var cellType: CellType = .number
-    private var cellStyleIndex = 0
+    // Parse state: the text of the cell being read.
     private var value: [UInt8] = []
     private var formula: [UInt8]?
+    private var resolvedFormula: String?
     private var inlineText: [UInt8] = []
     private var inV = false, inF = false, inIS = false, inIST = false
     private var formulaIsShared = false
     private var sharedSI: String?
-    private var sharedFormulas: [String: (CellAddress, String)] = [:]
 
-    enum CellType { case number, shared, string, bool, error, inline, date, other }
+    /// Never reserve room for more cells than this up front: the estimate
+    /// is extrapolated, and the table grows as needed past it.
+    static let maxReservedCells = 16_000_000
 
     init(sheet: Sheet, sharedStrings: [String], styleIndexMap: [Int: Int]) {
-        self.sheet = sheet
-        self.sharedStrings = sharedStrings
-        self.styleIndexMap = styleIndexMap
+        builder = SheetCellBuilder(sheet: sheet, sharedStrings: sharedStrings, styleIndexMap: styleIndexMap)
     }
 
     /// Scan the bytes between `<sheetData>` and `</sheetData>`.
@@ -44,14 +38,16 @@ struct SheetDataScanner {
         let lt: UInt8 = 0x3C, gt: UInt8 = 0x3E, slash: UInt8 = 0x2F
 
         // Size the cell table from the density of the first stretch.
-        if n > 0 {
-            let sample = min(n, 256 * 1024)
+        let sample = min(n, 256 * 1024)
+        if sample >= 3 {
             var cells = 0
             for k in 0..<(sample - 2) where base[k] == lt && base[k + 1] == 0x63 // "<c"
                 && (base[k + 2] == 0x20 || base[k + 2] == gt || base[k + 2] == slash) {
                 cells += 1
             }
-            sheet.reserveCellCapacity(sheet.cells.count + Int(Double(cells) / Double(sample) * Double(n) * 1.05))
+            let estimate = Double(cells) / Double(sample) * Double(n) * 1.05
+            let sheet = builder.sheet
+            sheet.reserveCellCapacity(sheet.cells.count + min(Int(estimate), Self.maxReservedCells))
         }
 
         while i < n {
@@ -146,31 +142,16 @@ struct SheetDataScanner {
 
     private mutating func start(_ name: Element, _ attributes: Attributes) throws {
         if name == "row" {
-            if let r = attributes.int(.r), r >= 1 {
-                currentRow = r - 1
-            } else {
-                currentRow += 1
-            }
-            nextColumn = 0
-            if let ht = attributes.double(.ht) {
-                sheet.rowHeights[currentRow] = CGFloat(ht)
-            }
-            if attributes.bool(.hidden), currentRow < CellAddress.maxRows {
-                sheet.hiddenRows.insert(currentRow)
-            }
+            builder.startRow(r: attributes.int(.r), height: attributes.double(.ht),
+                             hidden: attributes.bool(.hidden), customFormat: attributes.bool(.customFormat),
+                             style: attributes.int(.s), outlineLevel: attributes.int(.outlineLevel))
         } else if name == "c" {
-            if let addr = attributes.address(.r) {
-                cellAddress = addr
-                nextColumn = addr.column + 1
-                if currentRow < 0 { currentRow = addr.row }
-            } else {
-                cellAddress = CellAddress(row: max(0, currentRow), column: nextColumn)
-                nextColumn += 1
-            }
-            cellType = attributes.cellType()
-            cellStyleIndex = attributes.int(.s) ?? 0
+            builder.startCell(address: attributes.address(.r),
+                              type: attributes.cellType(),
+                              style: attributes.int(.s))
             value.removeAll(keepingCapacity: true)
             formula = nil
+            resolvedFormula = nil
             inlineText.removeAll(keepingCapacity: true)
             sharedSI = nil
             formulaIsShared = false
@@ -194,64 +175,35 @@ struct SheetDataScanner {
             inV = false
         } else if name == "f" {
             inF = false
-            if formulaIsShared, let si = sharedSI, let addr = cellAddress {
-                if let text = formula, !text.isEmpty {
-                    sharedFormulas[si] = (addr, String(decoding: text, as: UTF8.self))
-                } else if let (masterAddr, masterText) = sharedFormulas[si] {
-                    // Follower: translate the master formula by the offset.
-                    let translated = XLSXReader.translateFormula(
-                        masterText, byRows: addr.row - masterAddr.row,
-                        columns: addr.column - masterAddr.column)
-                    formula = Array(translated.utf8)
-                }
-            }
+            resolvedFormula = builder.formula(text: formula.map { String(decoding: $0, as: UTF8.self) },
+                                              shared: formulaIsShared, si: sharedSI)
         } else if name == "t" {
             inIST = false
         } else if name == "is" {
             inIS = false
         } else if name == "c" {
-            commitCell()
+            builder.commitCell(value: value, inlineText: inlineText, formula: resolvedFormula)
+            resolvedFormula = nil
         }
-    }
-
-    private mutating func commitCell() {
-        guard let addr = cellAddress, addr.isValid else { return }
-        var cellValue = CellValue.empty
-        switch cellType {
-        case .number, .other:
-            if let n = Self.double(value) { cellValue = .number(n) }
-        case .shared:
-            if let idx = Self.int(value), idx >= 0, idx < sharedStrings.count {
-                cellValue = .string(sharedStrings[idx])
-            }
-        case .string:
-            cellValue = .string(XML.decodeIllegalCharacters(String(decoding: value, as: UTF8.self)))
-        case .bool:
-            let text = String(decoding: value, as: UTF8.self)
-            cellValue = .bool(text == "1" || text.lowercased() == "true")
-        case .error:
-            cellValue = .error(CellError.parse(String(decoding: value, as: UTF8.self)) ?? .value)
-        case .inline:
-            cellValue = .string(XML.decodeIllegalCharacters(String(decoding: inlineText, as: UTF8.self)))
-        case .date:
-            if let serial = XLSXReader.isoDateToSerial(String(decoding: value, as: UTF8.self)) {
-                cellValue = .number(serial)
-            }
-        }
-        let formulaText = formula.flatMap { $0.isEmpty ? nil : String(decoding: $0, as: UTF8.self) }
-        let cell = Cell(value: cellValue, formula: formulaText, styleIndex: styleIndexMap[cellStyleIndex] ?? 0)
-        if !cell.isDefault {
-            sheet.setCell(cell, at: addr)
-        }
-        cellAddress = nil
     }
 
     // MARK: Text
 
     /// Append character data, decoding the five XML entities and character
     /// references, to whichever value is being read.
+    /// Line ends are normalised first (CR LF and CR become LF), as XML
+    /// requires; a `&#13;` reference still gives a CR.
     private mutating func appendText(_ p: UnsafePointer<UInt8>, _ count: Int) throws {
         let buffer = UnsafeBufferPointer(start: p, count: count)
+        if buffer.contains(0x0D) {
+            let normalized = normalizedLineEnds(buffer)
+            try normalized.withUnsafeBufferPointer { try appendDecoded($0) }
+        } else {
+            try appendDecoded(buffer)
+        }
+    }
+
+    private mutating func appendDecoded(_ buffer: UnsafeBufferPointer<UInt8>) throws {
         if buffer.contains(0x26) {
             append(try Self.decodeEntities(buffer))
         } else {
@@ -384,10 +336,11 @@ struct Element {
 
 /// The few attributes the cell reader uses, kept as byte slices.
 struct Attributes {
-    enum Key: Int { case r, s, t, ht, hidden, si }
+    enum Key: Int { case r, s, t, ht, hidden, si, customFormat, outlineLevel }
     private var slots: (UnsafeBufferPointer<UInt8>?, UnsafeBufferPointer<UInt8>?, UnsafeBufferPointer<UInt8>?,
-                        UnsafeBufferPointer<UInt8>?, UnsafeBufferPointer<UInt8>?, UnsafeBufferPointer<UInt8>?)
-        = (nil, nil, nil, nil, nil, nil)
+                        UnsafeBufferPointer<UInt8>?, UnsafeBufferPointer<UInt8>?, UnsafeBufferPointer<UInt8>?,
+                        UnsafeBufferPointer<UInt8>?, UnsafeBufferPointer<UInt8>?)
+        = (nil, nil, nil, nil, nil, nil, nil, nil)
 
     mutating func set(_ name: Element, _ value: UnsafeBufferPointer<UInt8>) {
         if name == "r" { slots.0 = value }
@@ -396,6 +349,8 @@ struct Attributes {
         else if name == "ht" { slots.3 = value }
         else if name == "hidden" { slots.4 = value }
         else if name == "si" { slots.5 = value }
+        else if name == "customFormat" { slots.6 = value }
+        else if name == "outlineLevel" { slots.7 = value }
     }
 
     private func slot(_ key: Key) -> UnsafeBufferPointer<UInt8>? {
@@ -406,27 +361,35 @@ struct Attributes {
         case .ht: return slots.3
         case .hidden: return slots.4
         case .si: return slots.5
+        case .customFormat: return slots.6
+        case .outlineLevel: return slots.7
         }
     }
 
-    /// Attribute text, entity-decoded as XMLParser would.
+    /// True when the value needs XML's attribute processing (entities, or
+    /// whitespace to normalise) before it can be compared.
+    private static func needsProcessing(_ bytes: UnsafeBufferPointer<UInt8>) -> Bool {
+        bytes.contains { $0 == 0x26 || $0 == 0x09 || $0 == 0x0A || $0 == 0x0D }
+    }
+
+    /// Attribute text, normalised and entity-decoded as XMLParser does it.
     func string(_ key: Key) -> String? {
         guard let bytes = slot(key) else { return nil }
-        if bytes.contains(0x26), let decoded = try? SheetDataScanner.decodeEntities(bytes) {
-            return String(decoding: decoded, as: UTF8.self)
-        }
-        return String(decoding: bytes, as: UTF8.self)
+        guard Self.needsProcessing(bytes) else { return String(decoding: bytes, as: UTF8.self) }
+        let normalized = normalizedAttributeBytes(bytes)
+        let decoded = normalized.withUnsafeBufferPointer { try? SheetDataScanner.decodeEntities($0) }
+        return String(decoding: decoded ?? normalized, as: UTF8.self)
     }
 
     func int(_ key: Key) -> Int? {
         guard let bytes = slot(key) else { return nil }
-        if bytes.contains(0x26) { return string(key).flatMap { Int($0) } }
-        return SheetDataScanner.int(Array(bytes))
+        if Self.needsProcessing(bytes) { return string(key).flatMap { Int($0) } }
+        return SheetDataScanner.int(bytes)
     }
 
     func double(_ key: Key) -> Double? {
         guard let bytes = slot(key) else { return nil }
-        if bytes.contains(0x26) { return string(key).flatMap { Double($0) } }
+        if Self.needsProcessing(bytes) { return string(key).flatMap { Double($0) } }
         return SheetDataScanner.double(Array(bytes))
     }
 
@@ -456,7 +419,7 @@ struct Attributes {
         return CellAddress(row: row - 1, column: column - 1)
     }
 
-    func cellType() -> SheetDataScanner.CellType {
+    func cellType() -> SheetCellBuilder.CellType {
         guard let bytes = slots.2 else { return .number }
         if bytes.count == 1 {
             switch bytes[0] {
@@ -465,13 +428,9 @@ struct Attributes {
             case 0x62: return .bool     // b
             case 0x65: return .error    // e
             case 0x64: return .date     // d
-            default: return .other
+            default: break
             }
         }
-        switch String(decoding: bytes, as: UTF8.self) {
-        case "str": return .string
-        case "inlineStr": return .inline
-        default: return .other
-        }
+        return SheetCellBuilder.CellType(string(.t))
     }
 }
