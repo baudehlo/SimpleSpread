@@ -16,7 +16,8 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
 - **XLSX native**: reads and writes OOXML SpreadsheetML interoperable with
   Excel, Numbers, and Google Sheets — including a from-scratch ZIP layer,
   shared strings, styles, number formats, formulas with cached values,
-  merged ranges, frozen panes, and 1904-date-system normalization on read.
+  borders, merged ranges, frozen panes, hidden rows, AutoFilters, and
+  1904-date-system normalization on read.
 - **Pivot tables**: Insert ▸ PivotTable… and a PivotTable Fields panel
   like Excel's: drag fields into rows, columns, values and filters;
   summarize by sum/count/average/…; show values as % of total/row/column,
@@ -52,14 +53,26 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
   background checks, and one-click download-verify-replace-relaunch. See
   [docs/UPDATES.md](docs/UPDATES.md) for the signing-key and release setup.
 - **Formatting**: font and size, bold/italic/underline/strikethrough,
-  colors, horizontal and vertical alignment, wrap text, indent, a format
+  colors, borders (Excel's presets: bottom, outside, thick box, all, inside,
+  double bottom and more, in every Excel line style), merged cells (Merge &
+  Center, Merge Across, Unmerge), horizontal and vertical alignment, wrap
+  text, indent, a format
   painter, increase/decrease decimal, one-click currency and percent, and the
   number-format menu (automatic, number, percent, currency, date, time,
   scientific, plain text) backed by a full Excel format-code renderer.
-- **Toolbar**: undo/redo, format painter, clear formatting, number, font and
-  alignment controls, and AutoSum (Σ: Sum, plus Average, Count, Max and Min
-  from its menu), laid out in the order Excel's Home tab and the Google
-  Sheets toolbar share.
+- **Sort and filter**: sort A→Z / Z→A by the selected column, or Custom
+  Sort… with up to three levels; the table and its header row are found for
+  you, whole rows move, and formulas follow their rows as in Excel. Data ▸
+  Filter (⇧⌘L) puts filter buttons on the header row: pick values from a
+  searchable checklist, or filter by condition (equals, contains, begins
+  with, greater than, …). Filtered rows hide, their numbers turn blue, and
+  the status bar leaves them out. Hide and unhide rows from the row header.
+- **Frozen panes**: View ▸ Freeze Panes / Top Row / First Column keeps
+  headers in place while the rest of the sheet scrolls.
+- **Toolbar**: undo/redo, format painter, clear formatting, number, font,
+  border, alignment and merge controls, Sort & Filter, and AutoSum (Σ: Sum,
+  plus Average, Count, Max and Min from its menu), laid out in the order
+  Excel's Home tab and the Google Sheets toolbar share.
 
 ## Performance
 

@@ -45,5 +45,57 @@ struct SampleFileGeneration {
         try xlsx.write(to: URL(fileURLWithPath: dir).appendingPathComponent("sample.xlsx"))
         let csv = CSV.export(sheet: wb.sheets[0], workbook: wb)
         try csv.write(to: URL(fileURLWithPath: dir).appendingPathComponent("sample.csv"))
+        try layoutSample().write(to: URL(fileURLWithPath: dir).appendingPathComponent("layout.xlsx"))
+    }
+
+    /// Borders, merged cells, frozen panes, hidden rows and an AutoFilter
+    /// with value and condition criteria, on a sheet whose name needs quotes.
+    func layoutSample() throws -> Data {
+        let wb = Workbook.newDocument()
+        let sheet = wb.sheets[0]
+        _ = wb.renameSheet(withID: sheet.id, to: "Fruit Sales")
+        let engine = CalculationEngine(workbook: wb)
+        func put(_ a1: String, _ value: CellValue) {
+            engine.setCellValue(value, at: AbsoluteAddress(sheetID: sheet.id, address: CellAddress(a1: a1)!))
+        }
+        put("A1", .string("Quarterly fruit sales"))
+        sheet.mergedRanges = [CellRange(a1: "A1:C1")!]
+        put("A2", .string("Fruit")); put("B2", .string("Region")); put("C2", .string("Qty"))
+        let rows: [(String, String, Double)] = [("Apple", "North", 12), ("Pear", "South", 3),
+                                                 ("Fig", "North", 45), ("Apple", "South", 7),
+                                                 ("Plum", "East", 20)]
+        for (i, row) in rows.enumerated() {
+            put("A\(i + 3)", .string(row.0)); put("B\(i + 3)", .string(row.1)); put("C\(i + 3)", .number(row.2))
+        }
+        wb.modifyStyle(in: CellRange(a1: "A1")!, ofSheetID: sheet.id) {
+            $0.bold = true; $0.horizontalAlignment = .center; $0.fontSize = 14
+            $0.borders = CellBorders(bottom: BorderLine(.double))
+        }
+        wb.modifyStyle(in: CellRange(a1: "A2:C2")!, ofSheetID: sheet.id) {
+            $0.bold = true
+            $0.borders.bottom = BorderLine(.medium, color: RGBAColor(red: 0x1F, green: 0x4E, blue: 0x79))
+        }
+        wb.modifyStyle(in: CellRange(a1: "A3:C7")!, ofSheetID: sheet.id) {
+            $0.borders = CellBorders(top: BorderLine(.hair), bottom: BorderLine(.hair),
+                                     left: BorderLine(.dotted), right: BorderLine(.dashed))
+        }
+        sheet.frozenRows = 2
+        sheet.frozenColumns = 1
+        sheet.autoFilter = AutoFilter(range: CellRange(a1: "A2:C7")!, columns: [
+            0: ColumnFilter(values: ["Apple", "Fig", "Plum"]),
+            2: ColumnFilter(conditions: [FilterCondition(.greaterThan, "5")]),
+        ])
+        wb.applyAutoFilter(onSheetID: sheet.id)
+        engine.rebuildAll()
+        return try XLSXWriter.data(for: wb)
+    }
+
+    @Test func layoutSampleFiltersAsExpected() throws {
+        let wb = try XLSXReader.read(data: layoutSample())
+        let sheet = wb.sheets[0]
+        // Pear (row 4) fails the values; nothing else fails Qty > 5.
+        #expect(sheet.hiddenRows == [3])
+        #expect(sheet.mergedRanges == [CellRange(a1: "A1:C1")!])
+        #expect(sheet.autoFilter?.columns.count == 2)
     }
 }

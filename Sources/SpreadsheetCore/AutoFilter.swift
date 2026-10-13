@@ -197,7 +197,7 @@ extension Workbook {
 
     /// Excel grows a filter over data typed directly beneath it: keep going
     /// down while the next row has something in the filter's columns.
-    static func extendedFilterEnd(_ range: CellRange, in sheet: Sheet) -> Int {
+    public static func extendedFilterEnd(_ range: CellRange, in sheet: Sheet) -> Int {
         var end = range.end.row
         let columns = range.start.column...range.end.column
         while end + 1 < CellAddress.maxRows,

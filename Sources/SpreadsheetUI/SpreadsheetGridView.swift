@@ -82,13 +82,103 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         CGPoint(x: GridLayout.headerWidth, y: GridLayout.headerHeight)
     }
 
-    /// Convert a view point to grid content coordinates.
+    /// Convert a view point to grid content coordinates. A point over a
+    /// frozen pane maps to the frozen rows/columns drawn there.
     private func contentPoint(_ viewPoint: CGPoint) -> CGPoint {
-        CGPoint(x: viewPoint.x - contentOrigin.x, y: viewPoint.y - contentOrigin.y)
+        let l = layout
+        let visible = visibleArea
+        var point = CGPoint(x: viewPoint.x - contentOrigin.x, y: viewPoint.y - contentOrigin.y)
+        if l.frozenColumns > 0, viewPoint.x < visible.minX + contentOrigin.x + l.frozenWidth {
+            point.x -= visible.minX
+        }
+        if l.frozenRows > 0, viewPoint.y < visible.minY + contentOrigin.y + l.frozenHeight {
+            point.y -= visible.minY
+        }
+        return point
     }
 
     private func cellRect(_ address: CellAddress, layout l: GridLayout) -> CGRect {
         l.rect(of: address).offsetBy(dx: contentOrigin.x, dy: contentOrigin.y)
+    }
+
+    // MARK: Panes (frozen rows and columns)
+
+    /// One region of the grid. Frozen rows and columns are drawn pinned to
+    /// the visible rect, like the headers: their content is shifted by the
+    /// scroll offset (`shift`) and clipped to `clip`. The scrolling body has
+    /// no shift. View position = content position + contentOrigin + shift.
+    struct Pane {
+        var rows: ClosedRange<Int>
+        var cols: ClosedRange<Int>
+        var shift: CGPoint
+        /// View coordinates.
+        var clip: CGRect
+        /// The clip in unshifted view coordinates: the part of the sheet shown.
+        var visible: CGRect { clip.offsetBy(dx: -shift.x, dy: -shift.y) }
+    }
+
+    private var visibleArea: CGRect {
+        enclosingScrollView?.documentVisibleRect ?? bounds
+    }
+
+    /// The horizontal bands (frozen columns, then scrolling columns), as
+    /// (columns, x shift, view minX, view maxX); vertical bands likewise.
+    private func columnBands(layout l: GridLayout, visible: CGRect) -> [(ClosedRange<Int>, CGFloat, CGFloat, CGFloat)] {
+        var bands: [(ClosedRange<Int>, CGFloat, CGFloat, CGFloat)] = []
+        let frozen = l.frozenColumns
+        let bodyLeft = visible.minX + contentOrigin.x + l.frozenWidth
+        if frozen > 0 {
+            bands.append((0...(frozen - 1), visible.minX, visible.minX + contentOrigin.x, min(bodyLeft, visible.maxX)))
+        }
+        if bodyLeft < visible.maxX {
+            let cols = l.visibleColumns(in: CGRect(x: bodyLeft - contentOrigin.x, y: 0,
+                                                   width: visible.maxX - bodyLeft, height: 1))
+            let lower = max(frozen, cols.lowerBound)
+            bands.append((lower...max(lower, cols.upperBound), 0, bodyLeft, visible.maxX))
+        }
+        return bands
+    }
+
+    private func rowBands(layout l: GridLayout, visible: CGRect) -> [(ClosedRange<Int>, CGFloat, CGFloat, CGFloat)] {
+        var bands: [(ClosedRange<Int>, CGFloat, CGFloat, CGFloat)] = []
+        let frozen = l.frozenRows
+        let bodyTop = visible.minY + contentOrigin.y + l.frozenHeight
+        if frozen > 0 {
+            bands.append((0...(frozen - 1), visible.minY, visible.minY + contentOrigin.y, min(bodyTop, visible.maxY)))
+        }
+        if bodyTop < visible.maxY {
+            let rows = l.visibleRows(in: CGRect(x: 0, y: bodyTop - contentOrigin.y,
+                                                width: 1, height: visible.maxY - bodyTop))
+            let lower = max(frozen, rows.lowerBound)
+            bands.append((lower...max(lower, rows.upperBound), 0, bodyTop, visible.maxY))
+        }
+        return bands
+    }
+
+    private func panes(layout l: GridLayout, visible: CGRect) -> [Pane] {
+        var result: [Pane] = []
+        for (rows, dy, minY, maxY) in rowBands(layout: l, visible: visible) {
+            for (cols, dx, minX, maxX) in columnBands(layout: l, visible: visible) {
+                result.append(Pane(rows: rows, cols: cols, shift: CGPoint(x: dx, y: dy),
+                                   clip: CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)))
+            }
+        }
+        return result
+    }
+
+    /// Where a cell is drawn in the view, allowing for frozen panes.
+    func viewRect(_ address: CellAddress, layout l: GridLayout) -> CGRect {
+        var rect = cellRect(address, layout: l)
+        let visible = visibleArea
+        if address.row < l.frozenRows { rect.origin.y += visible.minY }
+        if address.column < l.frozenColumns { rect.origin.x += visible.minX }
+        return rect
+    }
+
+    /// A cell's view rect, covering its whole merged range.
+    func viewRectIncludingMerge(_ address: CellAddress, layout l: GridLayout) -> CGRect {
+        guard let merge = l.sheet.mergedRange(containing: address) else { return viewRect(address, layout: l) }
+        return viewRect(merge.start, layout: l).union(viewRect(merge.end, layout: l))
     }
 
     // MARK: Drawing
@@ -96,18 +186,50 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
     override func draw(_ dirtyRect: NSRect) {
         guard let document else { return }
         let l = layout
-        let visible = enclosingScrollView?.documentVisibleRect ?? bounds
+        let visible = visibleArea
 
         NSColor.textBackgroundColor.setFill()
         dirtyRect.fill()
 
-        let contentVisible = CGRect(
-            x: max(0, visible.minX - contentOrigin.x),
-            y: max(0, visible.minY - contentOrigin.y),
-            width: visible.width,
-            height: visible.height)
-        let rows = l.visibleRows(in: contentVisible)
-        let cols = l.visibleColumns(in: contentVisible)
+        for pane in panes(layout: l, visible: visible) where pane.clip.width > 0 && pane.clip.height > 0 {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: pane.clip).addClip()
+            let shift = NSAffineTransform()
+            shift.translateX(by: pane.shift.x, yBy: pane.shift.y)
+            shift.concat()
+            drawPane(pane, document: document, layout: l)
+            NSGraphicsContext.restoreGraphicsState()
+        }
+
+        // The lines where frozen panes meet the scrolling body.
+        if l.frozenRows > 0 || l.frozenColumns > 0 {
+            NSColor.tertiaryLabelColor.setStroke()
+            let divider = NSBezierPath()
+            divider.lineWidth = 1
+            if l.frozenRows > 0 {
+                let y = (visible.minY + contentOrigin.y + l.frozenHeight).rounded() + 0.5
+                divider.move(to: CGPoint(x: visible.minX, y: y))
+                divider.line(to: CGPoint(x: visible.maxX, y: y))
+            }
+            if l.frozenColumns > 0 {
+                let x = (visible.minX + contentOrigin.x + l.frozenWidth).rounded() + 0.5
+                divider.move(to: CGPoint(x: x, y: visible.minY))
+                divider.line(to: CGPoint(x: x, y: visible.maxY))
+            }
+            divider.stroke()
+        }
+
+        // --- Headers (pinned to the visible rect) ---
+        drawHeaders(layout: l, visible: visible, selectionRange: document.selection.range)
+    }
+
+    /// Draw one pane's cells, in unshifted coordinates (the caller has set
+    /// the clip and the translation).
+    private func drawPane(_ pane: Pane, document: SpreadsheetDocument, layout l: GridLayout) {
+        let visible = pane.visible
+        let rows = pane.rows
+        let cols = pane.cols
+        let sheet = document.activeSheet
         let selection = document.selection
         let selectionRange = selection.range
 
@@ -118,23 +240,55 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let role: (CellAddress) -> PivotCellRole? = { document.pivotRole(at: $0) }
         var pivotButtons: [CGRect] = []
 
+        // Merged ranges showing in this pane, and the cells they cover.
+        let paneRange = CellRange(start: CellAddress(row: rows.lowerBound, column: cols.lowerBound),
+                                  end: CellAddress(row: rows.upperBound, column: cols.upperBound))
+        let merges = sheet.mergedRanges.filter { $0.intersects(paneRange) }
+        var mergeOf: [CellAddress: CellRange] = [:]
+        for merge in merges {
+            for row in max(merge.start.row, rows.lowerBound)...min(merge.end.row, rows.upperBound) {
+                for col in max(merge.start.column, cols.lowerBound)...min(merge.end.column, cols.upperBound) {
+                    mergeOf[CellAddress(row: row, column: col)] = merge
+                }
+            }
+        }
+        func mergeRect(_ merge: CellRange) -> CGRect {
+            cellRect(merge.start, layout: l).union(cellRect(merge.end, layout: l))
+        }
+
+        // AutoFilter header buttons.
+        let filter = sheet.autoFilter
+        func hasFilterButton(_ address: CellAddress) -> Bool {
+            guard let filter else { return false }
+            return address.row == filter.headerRow
+                && (filter.range.start.column...filter.range.end.column).contains(address.column)
+        }
+
         // --- Cell backgrounds ---
-        for row in rows {
+        for merge in merges {
+            let style = document.workbook.style(at: sheet.cell(at: merge.start).styleIndex)
+            if let fill = style.fillColor {
+                nsColor(fill).setFill()
+                mergeRect(merge).fill()
+            }
+        }
+        for row in rows where l.rowHeight(row) > 0 {
             for col in cols {
                 let addr = CellAddress(row: row, column: col)
                 let rect = cellRect(addr, layout: l)
-                guard rect.intersects(dirtyRect) || rect.intersects(visible) else { continue }
-                let cell = document.activeSheet.cell(at: addr)
-                let style = document.workbook.style(at: cell.styleIndex)
-
-                if let fill = style.fillColor {
-                    nsColor(fill).setFill()
-                    rect.fill()
-                } else if !bands.isEmpty, bands.contains(where: { $0.isShaded(addr, role: role) }) {
-                    SpreadsheetGridView.pivotBandFill.setFill()
-                    rect.fill()
+                guard rect.intersects(visible) else { continue }
+                if mergeOf[addr] == nil {
+                    let cell = sheet.cell(at: addr)
+                    let style = document.workbook.style(at: cell.styleIndex)
+                    if let fill = style.fillColor {
+                        nsColor(fill).setFill()
+                        rect.fill()
+                    } else if !bands.isEmpty, bands.contains(where: { $0.isShaded(addr, role: role) }) {
+                        SpreadsheetGridView.pivotBandFill.setFill()
+                        rect.fill()
+                    }
+                    if style.pivotButton { pivotButtons.append(rect) }
                 }
-                if style.pivotButton { pivotButtons.append(rect) }
                 if selectionRange.contains(addr) {
                     SpreadsheetGridView.selectionFill.setFill()
                     rect.fill()
@@ -147,14 +301,17 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         // neighbour (Excel-style overflow) is not painted over by that
         // neighbour's fill. A spilled run hides the grid lines inside it.
         var hiddenBoundaries: [Int: Set<Int>] = [:]
-        for row in rows {
+        for row in rows where l.rowHeight(row) > 0 {
             for col in textSourceColumns(row: row, visible: cols, layout: l) {
                 let addr = CellAddress(row: row, column: col)
-                let cell = document.activeSheet.cell(at: addr)
+                if mergeOf[addr] != nil { continue }
+                let cell = sheet.cell(at: addr)
                 guard !cell.value.isEmpty else { continue }
+                if !cols.contains(col), sheet.mergedRange(containing: addr) != nil { continue }
                 var style = document.workbook.style(at: cell.styleIndex)
                 if !bands.isEmpty, let r = role(addr), PivotBands.isBold(r) { style.bold = true }
-                let span = drawCellText(cell: cell, style: style, at: addr, layout: l)
+                let span = drawCellText(cell: cell, style: style, at: addr, layout: l,
+                                        reserveButton: hasFilterButton(addr))
                 if span.count > 1 {
                     for boundary in (span.lowerBound + 1)...span.upperBound {
                         hiddenBoundaries[row, default: []].insert(boundary)
@@ -162,13 +319,37 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 }
             }
         }
+        for merge in merges {
+            let cell = sheet.cell(at: merge.start)
+            guard !cell.value.isEmpty else { continue }
+            let style = document.workbook.style(at: cell.styleIndex)
+            drawCellText(cell: cell, style: style, at: merge.start, layout: l,
+                         reserveButton: hasFilterButton(merge.start), in: mergeRect(merge))
+        }
 
         // --- Grid lines ---
+        // Lines inside a merged range are left out, as are the vertical
+        // lines that overflowing text runs across.
+        var hiddenRules: [Int: Set<Int>] = [:]   // row boundary -> columns
+        for merge in merges {
+            for row in merge.start.row...merge.end.row {
+                for boundary in (merge.start.column + 1)..<(merge.end.column + 1) {
+                    hiddenBoundaries[row, default: []].insert(boundary)
+                }
+            }
+            for boundary in (merge.start.row + 1)..<(merge.end.row + 1) {
+                for col in merge.start.column...merge.end.column {
+                    hiddenRules[boundary, default: []].insert(col)
+                }
+            }
+        }
         SpreadsheetGridView.gridLineColor.setStroke()
         let path = NSBezierPath()
         path.lineWidth = 1
         let lineTop = max(visible.minY, contentOrigin.y)
         let lineBottom = min(visible.maxY, contentOrigin.y + l.totalHeight)
+        let lineLeft = max(visible.minX, contentOrigin.x)
+        let lineRight = min(visible.maxX, contentOrigin.x + l.totalWidth)
         // Row tops for the visible rows, so vertical lines can skip the rows
         // where overflowing text runs across a boundary.
         var rowTops: [CGFloat] = []
@@ -199,10 +380,32 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             }
             if col <= cols.upperBound { x += l.columnWidth(col) }
         }
+        var colLefts: [CGFloat] = []
+        var colLeft = contentOrigin.x + l.xOffset(ofColumn: cols.lowerBound)
+        for col in cols {
+            colLefts.append(colLeft)
+            colLeft += l.columnWidth(col)
+        }
         var y = contentOrigin.y + l.yOffset(ofRow: rows.lowerBound)
         for row in rows.lowerBound...(rows.upperBound + 1) {
-            path.move(to: CGPoint(x: max(visible.minX, contentOrigin.x), y: y))
-            path.line(to: CGPoint(x: min(visible.maxX, contentOrigin.x + l.totalWidth), y: y))
+            if let hidden = hiddenRules[row] {
+                var segmentStart: CGFloat? = lineLeft
+                for (index, col) in cols.enumerated() where hidden.contains(col) {
+                    let left = max(lineLeft, colLefts[index])
+                    if let start = segmentStart, left > start {
+                        path.move(to: CGPoint(x: start, y: y))
+                        path.line(to: CGPoint(x: left, y: y))
+                    }
+                    segmentStart = colLefts[index] + l.columnWidth(col)
+                }
+                if let start = segmentStart, lineRight > start {
+                    path.move(to: CGPoint(x: start, y: y))
+                    path.line(to: CGPoint(x: lineRight, y: y))
+                }
+            } else {
+                path.move(to: CGPoint(x: lineLeft, y: y))
+                path.line(to: CGPoint(x: lineRight, y: y))
+            }
             if row <= rows.upperBound { y += l.rowHeight(row) }
         }
         path.stroke()
@@ -211,6 +414,23 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             drawPivotRules(bands, role: role, layout: l, rows: rows)
         }
         for rect in pivotButtons { drawPivotButton(in: rect) }
+
+        // --- Cell borders ---
+        drawBorders(document: document, layout: l, rows: rows, cols: cols)
+
+        // --- AutoFilter buttons ---
+        if let filter, rows.contains(filter.headerRow) {
+            let lo = max(cols.lowerBound, filter.range.start.column)
+            let hi = min(cols.upperBound, filter.range.end.column)
+            if lo <= hi {
+                for col in lo...hi {
+                    let addr = CellAddress(row: filter.headerRow, column: col)
+                    let rect = mergeOf[addr].map(mergeRect) ?? cellRect(addr, layout: l)
+                    let active = filter.columns[col - filter.range.start.column]?.isActive == true
+                    drawFilterButton(in: rect, active: active)
+                }
+            }
+        }
 
         // --- Selection border + fill handle ---
         let selStart = cellRect(selectionRange.start, layout: l)
@@ -221,8 +441,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         selPath.lineWidth = 2
         selPath.stroke()
         // Active cell gets a white inner keyline when part of a bigger range.
-        if !selection.isSingleCell {
-            let activeRect = cellRect(selection.activeCell, layout: l)
+        let activeMerge = sheet.mergedRange(containing: selection.activeCell)
+        if !selection.isSingleCell, activeMerge != selectionRange {
+            let activeRect = activeMerge.map(mergeRect) ?? cellRect(selection.activeCell, layout: l)
             NSColor.textBackgroundColor.setStroke()
             let activePath = NSBezierPath(rect: activeRect.insetBy(dx: 1, dy: 1))
             activePath.lineWidth = 2
@@ -244,10 +465,74 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             dash.lineWidth = 1.5
             dash.stroke()
         }
+    }
 
-        // --- Headers (pinned to the visible rect) ---
-        drawHeaders(layout: l, visible: visible, rows: rows, cols: cols,
-                    selectionRange: selectionRange)
+    // MARK: Borders
+
+    /// Each cell draws its own edges; an edge inside a merged range is left
+    /// out. One row and column beyond the pane are included so an edge set
+    /// on a cell just out of view still shows.
+    private func drawBorders(document: SpreadsheetDocument, layout l: GridLayout,
+                             rows: ClosedRange<Int>, cols: ClosedRange<Int>) {
+        let sheet = document.activeSheet
+        let rowRange = max(0, rows.lowerBound - 1)...(rows.upperBound + 1)
+        let colRange = max(0, cols.lowerBound - 1)...(cols.upperBound + 1)
+        for (addr, cell) in sheet.cells where cell.styleIndex != 0
+            && rowRange.contains(addr.row) && colRange.contains(addr.column) {
+            let borders = document.workbook.style(at: cell.styleIndex).borders
+            guard !borders.isEmpty, l.rowHeight(addr.row) > 0 else { continue }
+            let rect = cellRect(addr, layout: l)
+            let merge = sheet.mergedRange(containing: addr)
+            if let line = borders.top, merge.map({ $0.start.row == addr.row }) ?? true {
+                strokeBorder(line, from: CGPoint(x: rect.minX, y: rect.minY), to: CGPoint(x: rect.maxX, y: rect.minY))
+            }
+            if let line = borders.bottom, merge.map({ $0.end.row == addr.row }) ?? true {
+                strokeBorder(line, from: CGPoint(x: rect.minX, y: rect.maxY), to: CGPoint(x: rect.maxX, y: rect.maxY))
+            }
+            if let line = borders.left, merge.map({ $0.start.column == addr.column }) ?? true {
+                strokeBorder(line, from: CGPoint(x: rect.minX, y: rect.minY), to: CGPoint(x: rect.minX, y: rect.maxY))
+            }
+            if let line = borders.right, merge.map({ $0.end.column == addr.column }) ?? true {
+                strokeBorder(line, from: CGPoint(x: rect.maxX, y: rect.minY), to: CGPoint(x: rect.maxX, y: rect.maxY))
+            }
+        }
+    }
+
+    /// Stroke one border edge in Excel's line styles. Automatic colour is
+    /// the label colour, so borders stay visible in dark mode.
+    private func strokeBorder(_ line: BorderLine, from a: CGPoint, to b: CGPoint) {
+        (line.color.map(nsColor) ?? NSColor.labelColor).setStroke()
+        let horizontal = a.y == b.y
+        func stroke(offset: CGFloat, width: CGFloat, dash: [CGFloat]) {
+            let path = NSBezierPath()
+            let dx: CGFloat = horizontal ? 0 : offset, dy: CGFloat = horizontal ? offset : 0
+            // Extend half a width at each end so corners meet squarely.
+            let ext = width / 2
+            let ex: CGFloat = horizontal ? ext : 0, ey: CGFloat = horizontal ? 0 : ext
+            path.move(to: CGPoint(x: a.x + dx - ex, y: a.y + dy - ey))
+            path.line(to: CGPoint(x: b.x + dx + ex, y: b.y + dy + ey))
+            path.lineWidth = width
+            if !dash.isEmpty { path.setLineDash(dash, count: dash.count, phase: 0) }
+            path.stroke()
+        }
+        switch line.style {
+        case .hair: stroke(offset: 0, width: 0.5, dash: [])
+        case .thin: stroke(offset: 0, width: 1, dash: [])
+        case .medium: stroke(offset: 0, width: 2, dash: [])
+        case .thick: stroke(offset: 0, width: 3, dash: [])
+        case .double:
+            // Two hairline-gap lines, offset to land on whole pixels.
+            stroke(offset: -1.5, width: 1, dash: [])
+            stroke(offset: 1.5, width: 1, dash: [])
+        case .dotted: stroke(offset: 0, width: 1, dash: [1, 1])
+        case .dashed: stroke(offset: 0, width: 1, dash: [3, 2])
+        case .dashDot: stroke(offset: 0, width: 1, dash: [4, 2, 1, 2])
+        case .dashDotDot: stroke(offset: 0, width: 1, dash: [4, 2, 1, 2, 1, 2])
+        case .slantDashDot: stroke(offset: 0, width: 2, dash: [5, 1, 2, 1])
+        case .mediumDashed: stroke(offset: 0, width: 2, dash: [5, 2])
+        case .mediumDashDot: stroke(offset: 0, width: 2, dash: [5, 2, 2, 2])
+        case .mediumDashDotDot: stroke(offset: 0, width: 2, dash: [5, 2, 2, 2, 2, 2])
+        }
     }
 
     private func pivotBands(_ document: SpreadsheetDocument) -> [PivotBands] {
@@ -324,6 +609,44 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         chevron.stroke()
     }
 
+    /// The box an AutoFilter or pivot button occupies in a cell (view or
+    /// content coordinates alike): at the right edge, vertically centred.
+    static func dropdownButtonRect(in cell: CGRect) -> CGRect? {
+        let size = min(pivotButtonSize, cell.height - 4)
+        guard size > 4 else { return nil }
+        return CGRect(x: (cell.maxX - size - 3).rounded() + 0.5,
+                      y: (cell.midY - size / 2).rounded() + 0.5,
+                      width: size - 1, height: size - 1)
+    }
+
+    /// An AutoFilter button: the pivot field button, or when the column is
+    /// filtered, the box in the accent colour with a funnel in it.
+    private func drawFilterButton(in cell: CGRect, active: Bool) {
+        guard active else {
+            drawPivotButton(in: cell)
+            return
+        }
+        guard let box = SpreadsheetGridView.dropdownButtonRect(in: cell) else { return }
+        let outline = NSBezierPath(roundedRect: box, xRadius: 2.5, yRadius: 2.5)
+        NSColor.controlAccentColor.withAlphaComponent(0.18).setFill()
+        outline.fill()
+        NSColor.controlAccentColor.setStroke()
+        outline.lineWidth = 1
+        outline.stroke()
+        // A funnel: a triangle over a short stem.
+        let funnel = NSBezierPath()
+        let w = box.width * 0.32, top = box.midY - box.height * 0.22
+        funnel.move(to: CGPoint(x: box.midX - w, y: top))
+        funnel.line(to: CGPoint(x: box.midX + w, y: top))
+        funnel.line(to: CGPoint(x: box.midX + 0.8, y: box.midY + 0.5))
+        funnel.line(to: CGPoint(x: box.midX + 0.8, y: box.midY + box.height * 0.26))
+        funnel.line(to: CGPoint(x: box.midX - 0.8, y: box.midY + box.height * 0.18))
+        funnel.line(to: CGPoint(x: box.midX - 0.8, y: box.midY + 0.5))
+        funnel.close()
+        NSColor.controlAccentColor.setFill()
+        funnel.fill()
+    }
+
     /// The columns whose text can show in `row`: every visible column, plus
     /// the nearest non-empty cell on each side, whose text may spill into view.
     private func textSourceColumns(row: Int, visible cols: ClosedRange<Int>,
@@ -353,12 +676,16 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
     /// Draws a cell's text and returns the columns it covered (more than one
     /// when non-wrapped text spills into empty neighbours, as in Excel).
+    /// `reserveButton` keeps text clear of a filter button; `rectOverride`
+    /// draws a merged cell across its whole range (merged text never spills).
     @discardableResult
     private func drawCellText(cell: Cell, style: CellStyle, at address: CellAddress,
-                              layout l: GridLayout) -> ClosedRange<Int> {
+                              layout l: GridLayout, reserveButton: Bool = false,
+                              in rectOverride: CGRect? = nil) -> ClosedRange<Int> {
         let own = address.column...address.column
         guard let document else { return own }
-        let rect = cellRect(address, layout: l)
+        let rect = rectOverride ?? cellRect(address, layout: l)
+        let hasButton = style.pivotButton || reserveButton
         let text = NumberFormatEngine.displayString(for: cell.value, format: style.numberFormat)
         guard !text.isEmpty else { return own }
 
@@ -399,7 +726,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let horizontalInset: CGFloat = 3
         var inset = rect.insetBy(dx: horizontalInset, dy: 2)
         // A pivot field button sits at the right edge; text stops short of it.
-        if style.pivotButton {
+        if hasButton {
             inset.size.width = max(0, inset.width - SpreadsheetGridView.pivotButtonReserve + horizontalInset)
         }
         let indent = CellTextIndent.width(level: style.indent, fontSize: fontSize)
@@ -420,7 +747,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
         // Only text overflows. Numbers, booleans and errors stay in their cell.
         var span = own
-        if !style.wrapText, !style.pivotButton, case .string = cell.value {
+        if !style.wrapText, !hasButton, rectOverride == nil, case .string = cell.value {
             let needed = ceil(textSize.width) + 2 * horizontalInset + 1
                 + (alignment == .center ? 0 : indent)
             let direction: TextOverflow.Direction
@@ -434,14 +761,17 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 column: address.column, neededWidth: needed, direction: direction,
                 columnCount: l.columnCount,
                 columnWidth: { l.columnWidth($0) },
-                isEmpty: { sheet.cell(at: CellAddress(row: address.row, column: $0)).value.isEmpty })
+                isEmpty: {
+                    let neighbour = CellAddress(row: address.row, column: $0)
+                    return sheet.cell(at: neighbour).value.isEmpty && sheet.mergedRange(containing: neighbour) == nil
+                })
         }
 
         if span == own {
-            if style.pivotButton {
+            if hasButton || rectOverride != nil {
                 // Keep long field names from running under the button.
                 NSGraphicsContext.saveGraphicsState()
-                NSBezierPath(rect: drawRect).setClip()
+                NSBezierPath(rect: drawRect).addClip()
                 attributed.draw(with: drawRect, options: [.usesLineFragmentOrigin])
                 NSGraphicsContext.restoreGraphicsState()
                 return own
@@ -465,15 +795,13 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         }
         drawRect.size.width = fullWidth
         NSGraphicsContext.saveGraphicsState()
-        NSBezierPath(rect: spanRect.insetBy(dx: 1, dy: 0)).setClip()
+        NSBezierPath(rect: spanRect.insetBy(dx: 1, dy: 0)).addClip()
         attributed.draw(with: drawRect, options: [.usesLineFragmentOrigin])
         NSGraphicsContext.restoreGraphicsState()
         return span
     }
 
-    private func drawHeaders(layout l: GridLayout, visible: CGRect,
-                             rows: ClosedRange<Int>, cols: ClosedRange<Int>,
-                             selectionRange: CellRange) {
+    private func drawHeaders(layout l: GridLayout, visible: CGRect, selectionRange: CellRange) {
         let headerFont = NSFont.systemFont(ofSize: 10.5, weight: .medium)
 
         // Column header strip.
@@ -487,54 +815,84 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         SpreadsheetGridView.headerColor.setFill()
         rowStrip.fill()
 
-        // Column labels.
-        for col in cols {
-            let x = contentOrigin.x + l.xOffset(ofColumn: col)
-            let rect = CGRect(x: x, y: visible.minY, width: l.columnWidth(col),
-                              height: GridLayout.headerHeight)
-            let isSelected = col >= selectionRange.start.column && col <= selectionRange.end.column
-            if isSelected {
-                NSColor.controlAccentColor.withAlphaComponent(0.2).setFill()
-                rect.fill()
+        // Column labels, per band: frozen columns stay put, the rest scroll.
+        for (cols, shift, minX, maxX) in columnBands(layout: l, visible: visible) where maxX > minX {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: CGRect(x: minX, y: visible.minY, width: maxX - minX,
+                                      height: GridLayout.headerHeight)).addClip()
+            for col in cols {
+                let x = contentOrigin.x + l.xOffset(ofColumn: col) + shift
+                let rect = CGRect(x: x, y: visible.minY, width: l.columnWidth(col),
+                                  height: GridLayout.headerHeight)
+                let isSelected = col >= selectionRange.start.column && col <= selectionRange.end.column
+                if isSelected {
+                    NSColor.controlAccentColor.withAlphaComponent(0.2).setFill()
+                    rect.fill()
+                }
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: headerFont,
+                    .foregroundColor: isSelected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor,
+                ]
+                let label = NSAttributedString(string: CellAddress.columnName(col), attributes: attrs)
+                let size = label.size()
+                label.draw(at: CGPoint(x: rect.midX - size.width / 2,
+                                       y: rect.midY - size.height / 2))
+                SpreadsheetGridView.gridLineColor.setStroke()
+                let tick = NSBezierPath()
+                tick.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+                tick.line(to: CGPoint(x: rect.maxX, y: rect.maxY))
+                tick.stroke()
             }
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: headerFont,
-                .foregroundColor: isSelected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor,
-            ]
-            let label = NSAttributedString(string: CellAddress.columnName(col), attributes: attrs)
-            let size = label.size()
-            label.draw(at: CGPoint(x: rect.midX - size.width / 2,
-                                   y: rect.midY - size.height / 2))
-            SpreadsheetGridView.gridLineColor.setStroke()
-            let tick = NSBezierPath()
-            tick.move(to: CGPoint(x: rect.maxX, y: rect.minY))
-            tick.line(to: CGPoint(x: rect.maxX, y: rect.maxY))
-            tick.stroke()
+            NSGraphicsContext.restoreGraphicsState()
         }
 
-        // Row labels.
-        for row in rows {
-            let y = contentOrigin.y + l.yOffset(ofRow: row)
-            let rect = CGRect(x: visible.minX, y: y, width: GridLayout.headerWidth,
-                              height: l.rowHeight(row))
-            let isSelected = row >= selectionRange.start.row && row <= selectionRange.end.row
-            if isSelected {
-                NSColor.controlAccentColor.withAlphaComponent(0.2).setFill()
-                rect.fill()
+        // Row labels. Hidden rows have no label; rows under an active filter
+        // are numbered in blue, as in Excel.
+        let filter = l.sheet.autoFilter
+        let filteredRows = filter?.isFiltering == true ? filter?.dataRows : nil
+        for (rows, shift, minY, maxY) in rowBands(layout: l, visible: visible) where maxY > minY {
+            NSGraphicsContext.saveGraphicsState()
+            NSBezierPath(rect: CGRect(x: visible.minX, y: minY, width: GridLayout.headerWidth,
+                                      height: maxY - minY)).addClip()
+            for row in rows where l.rowHeight(row) > 0 {
+                let y = contentOrigin.y + l.yOffset(ofRow: row) + shift
+                let rect = CGRect(x: visible.minX, y: y, width: GridLayout.headerWidth,
+                                  height: l.rowHeight(row))
+                let isSelected = row >= selectionRange.start.row && row <= selectionRange.end.row
+                if isSelected {
+                    NSColor.controlAccentColor.withAlphaComponent(0.2).setFill()
+                    rect.fill()
+                }
+                let color: NSColor
+                if isSelected {
+                    color = .controlAccentColor
+                } else if filteredRows?.contains(row) == true {
+                    color = .systemBlue
+                } else {
+                    color = .secondaryLabelColor
+                }
+                let attrs: [NSAttributedString.Key: Any] = [.font: headerFont, .foregroundColor: color]
+                let label = NSAttributedString(string: String(row + 1), attributes: attrs)
+                let size = label.size()
+                label.draw(at: CGPoint(x: rect.midX - size.width / 2,
+                                       y: rect.midY - size.height / 2))
+                // A row after hidden rows gets a heavier rule above it, so the
+                // gap in the numbering is easy to spot.
+                if row > 0, l.sheet.hiddenRows.contains(row - 1) {
+                    NSColor.secondaryLabelColor.setStroke()
+                    let mark = NSBezierPath()
+                    mark.lineWidth = 2
+                    mark.move(to: CGPoint(x: rect.minX, y: rect.minY))
+                    mark.line(to: CGPoint(x: rect.maxX, y: rect.minY))
+                    mark.stroke()
+                }
+                SpreadsheetGridView.gridLineColor.setStroke()
+                let tick = NSBezierPath()
+                tick.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+                tick.line(to: CGPoint(x: rect.maxX, y: rect.maxY))
+                tick.stroke()
             }
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: headerFont,
-                .foregroundColor: isSelected ? NSColor.controlAccentColor : NSColor.secondaryLabelColor,
-            ]
-            let label = NSAttributedString(string: String(row + 1), attributes: attrs)
-            let size = label.size()
-            label.draw(at: CGPoint(x: rect.midX - size.width / 2,
-                                   y: rect.midY - size.height / 2))
-            SpreadsheetGridView.gridLineColor.setStroke()
-            let tick = NSBezierPath()
-            tick.move(to: CGPoint(x: rect.minX, y: rect.maxY))
-            tick.line(to: CGPoint(x: rect.maxX, y: rect.maxY))
-            tick.stroke()
+            NSGraphicsContext.restoreGraphicsState()
         }
 
         // Header edges. When the sheet is scrolled, part of a column sits
@@ -579,11 +937,42 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         needsDisplay = true
     }
 
+    /// Scroll so the active cell (or its merged range) shows clear of the
+    /// headers and any frozen pane. Frozen cells are always in view.
     func scrollActiveCellToVisible() {
-        guard let document else { return }
-        let rect = cellRect(document.selection.activeCell, layout: layout)
-            .insetBy(dx: -20, dy: -20)
-        scrollToVisible(rect)
+        guard let document, let scroll = enclosingScrollView else { return }
+        let l = layout
+        let active = document.selection.activeCell
+        let target = l.sheet.mergedRange(containing: active) ?? CellRange(active)
+        let rect = cellRect(target.start, layout: l).union(cellRect(target.end, layout: l))
+        let visible = scroll.documentVisibleRect
+        var origin = visible.origin
+        let margin: CGFloat = 20
+        if active.row >= l.frozenRows {
+            let top = visible.minY + contentOrigin.y + l.frozenHeight
+            if rect.minY < top {
+                origin.y = rect.minY - contentOrigin.y - l.frozenHeight
+            } else if rect.maxY + margin > visible.maxY {
+                origin.y = min(rect.minY - contentOrigin.y - l.frozenHeight,
+                               rect.maxY + margin - visible.height)
+            }
+        }
+        if active.column >= l.frozenColumns {
+            let left = visible.minX + contentOrigin.x + l.frozenWidth
+            if rect.minX < left {
+                origin.x = rect.minX - contentOrigin.x - l.frozenWidth
+            } else if rect.maxX + margin > visible.maxX {
+                origin.x = min(rect.minX - contentOrigin.x - l.frozenWidth,
+                               rect.maxX + margin - visible.width)
+            }
+        }
+        origin.x = max(0, min(origin.x, bounds.width - visible.width))
+        origin.y = max(0, min(origin.y, bounds.height - visible.height))
+        if origin != visible.origin {
+            scroll.contentView.scroll(to: origin)
+            scroll.reflectScrolledClipView(scroll.contentView)
+            needsDisplay = true
+        }
     }
 
     // MARK: Mouse
@@ -671,8 +1060,8 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         }
 
         // Fill handle?
-        let selRect = cellRect(document.selection.range.start, layout: l)
-            .union(cellRect(document.selection.range.end, layout: l))
+        let selRect = viewRect(document.selection.range.start, layout: l)
+            .union(viewRect(document.selection.range.end, layout: l))
         let handle = CGRect(x: selRect.maxX - 6, y: selRect.maxY - 6, width: 12, height: 12)
         if handle.contains(point) {
             dragMode = .fillHandle(source: document.selection.range)
@@ -681,17 +1070,50 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
         let content = contentPoint(point)
         let addr = CellAddress(row: l.row(atY: content.y), column: l.column(atX: content.x))
+
+        // AutoFilter button?
+        if let filter = l.sheet.autoFilter, addr.row == filter.headerRow,
+           filter.range.start.column...filter.range.end.column ~= addr.column,
+           let button = SpreadsheetGridView.dropdownButtonRect(in: viewRectIncludingMerge(addr, layout: l)),
+           button.insetBy(dx: -3, dy: -3).contains(point) {
+            showFilterPopover(columnOffset: addr.column - filter.range.start.column,
+                              from: viewRectIncludingMerge(addr, layout: l))
+            return
+        }
+
         if event.clickCount == 2 {
             beginEditing(mode: .edit, initialText: nil)
             return
         }
         if event.modifierFlags.contains(.shift) {
             document.selection.extend(to: addr)
+            normalizeSelectionForMerges()
+        } else if let merge = l.sheet.mergedRange(containing: addr) {
+            document.selection.select(range: merge, active: merge.start)
         } else {
             document.selection.select(addr)
         }
         dragMode = .selectCells
         stateChanged()
+    }
+
+    /// Grow the selection so it never cuts through a merged range, keeping
+    /// the anchor and focus on their sides of it.
+    private func normalizeSelectionForMerges() {
+        guard let document else { return }
+        let sheet = document.activeSheet
+        guard !sheet.mergedRanges.isEmpty else { return }
+        var selection = document.selection
+        let range = selection.range
+        let grown = sheet.expandedForMerges(range)
+        guard grown != range else { return }
+        let anchorTop = selection.anchor.row <= selection.focus.row
+        let anchorLeft = selection.anchor.column <= selection.focus.column
+        selection.anchor = CellAddress(row: anchorTop ? grown.start.row : grown.end.row,
+                                       column: anchorLeft ? grown.start.column : grown.end.column)
+        selection.focus = CellAddress(row: anchorTop ? grown.end.row : grown.start.row,
+                                      column: anchorLeft ? grown.end.column : grown.start.column)
+        document.selection = selection
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -704,7 +1126,14 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         case .selectCells:
             let addr = CellAddress(row: l.row(atY: max(0, content.y)),
                                    column: l.column(atX: max(0, content.x)))
+            let anchor = document.selection.anchor
             document.selection.extend(to: addr)
+            // Keep the anchor's merge whole when the drag started on one.
+            if let merge = l.sheet.mergedRange(containing: anchor), merge.contains(addr) {
+                document.selection.select(range: merge, active: merge.start)
+            } else {
+                normalizeSelectionForMerges()
+            }
             autoscroll(with: event)
             stateChanged()
         case .selectColumns(let anchor):
@@ -816,6 +1245,18 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 self?.document?.deleteRows(at: start, count: count)
                 self?.stateChanged()
             })
+            menu.addItem(.separator())
+            menu.addItem(ActionMenuItem("Hide \(noun)") { [weak self] in
+                self?.document?.hideRows(start...end)
+                self?.stateChanged()
+            })
+            // Unhide covers the rows around a gap: select rows 3–6 to show 4–5.
+            if document.activeSheet.hiddenRows.contains(where: (start...end).contains) {
+                menu.addItem(ActionMenuItem("Unhide Rows") { [weak self] in
+                    self?.document?.unhideRows(start...end)
+                    self?.stateChanged()
+                })
+            }
         } else {
             let col = l.column(atX: content.x)
             var range = document.selection.range
@@ -845,23 +1286,25 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
     }
 
     override func resetCursorRects() {
-        // Column/row resize cursors over header boundaries.
+        // Column/row resize cursors over header boundaries, per pane.
         guard let scroll = enclosingScrollView else { return }
         let visible = scroll.documentVisibleRect
         let l = layout
-        let cols = l.visibleColumns(in: CGRect(x: max(0, visible.minX - contentOrigin.x),
-                                               y: 0, width: visible.width, height: 1))
-        for col in cols {
-            let x = contentOrigin.x + l.xOffset(ofColumn: col) + l.columnWidth(col)
-            let rect = CGRect(x: x - 3, y: visible.minY, width: 6, height: GridLayout.headerHeight)
-            addCursorRect(rect, cursor: .resizeLeftRight)
+        for (cols, shift, minX, maxX) in columnBands(layout: l, visible: visible) {
+            for col in cols {
+                let x = contentOrigin.x + l.xOffset(ofColumn: col) + l.columnWidth(col) + shift
+                guard x >= minX, x <= maxX else { continue }
+                let rect = CGRect(x: x - 3, y: visible.minY, width: 6, height: GridLayout.headerHeight)
+                addCursorRect(rect, cursor: .resizeLeftRight)
+            }
         }
-        let rows = l.visibleRows(in: CGRect(x: 0, y: max(0, visible.minY - contentOrigin.y),
-                                            width: 1, height: visible.height))
-        for row in rows {
-            let y = contentOrigin.y + l.yOffset(ofRow: row) + l.rowHeight(row)
-            let rect = CGRect(x: visible.minX, y: y - 3, width: GridLayout.headerWidth, height: 6)
-            addCursorRect(rect, cursor: .resizeUpDown)
+        for (rows, shift, minY, maxY) in rowBands(layout: l, visible: visible) {
+            for row in rows where l.rowHeight(row) > 0 {
+                let y = contentOrigin.y + l.yOffset(ofRow: row) + l.rowHeight(row) + shift
+                guard y >= minY, y <= maxY else { continue }
+                let rect = CGRect(x: visible.minX, y: y - 3, width: GridLayout.headerWidth, height: 6)
+                addCursorRect(rect, cursor: .resizeUpDown)
+            }
         }
     }
 
@@ -937,9 +1380,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                     document.selection.select(edge)
                 }
             } else if hasShift {
-                document.selection.extendMove(dir, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                navigate(dir, extend: true)
             } else {
-                document.selection.move(dir, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                navigate(dir)
             }
             afterNavigation()
             return
@@ -948,16 +1391,16 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         switch event.keyCode {
         case 36: // Return
             if hasShift {
-                document.selection.move(.up, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                navigate(.up)
             } else {
-                document.selection.move(.down, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                navigate(.down)
             }
             afterNavigation()
         case 48: // Tab
             if hasShift {
-                document.selection.move(.left, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                navigate(.left)
             } else {
-                document.selection.move(.right, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                navigate(.right)
             }
             afterNavigation()
         case 51, 117: // Delete / Forward delete
@@ -987,6 +1430,51 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 return
             }
             super.keyDown(with: event)
+        }
+    }
+
+    /// Arrow/Return/Tab movement. Steps out of a merged range from its far
+    /// edge, lands on a merged range as a whole, and skips hidden rows.
+    private func navigate(_ direction: SelectionState.Direction, extend: Bool = false) {
+        guard let document else { return }
+        let l = layout
+        let sheet = l.sheet
+        func step(_ from: CellAddress) -> CellAddress {
+            var next = SelectionState.step(from: from, direction: direction,
+                                           rowLimit: l.rowCount, columnLimit: l.columnCount)
+            // Skip rows a filter (or the user) hid, unless only hidden rows remain.
+            var probe = next
+            while sheet.hiddenRows.contains(probe.row) {
+                let after = SelectionState.step(from: probe, direction: direction,
+                                                rowLimit: l.rowCount, columnLimit: l.columnCount)
+                if after == probe { break }
+                probe = after
+            }
+            if !sheet.hiddenRows.contains(probe.row) { next = probe }
+            return next
+        }
+        if extend {
+            var selection = document.selection
+            selection.focus = step(selection.focus)
+            selection.activeCell = selection.anchor
+            document.selection = selection
+            normalizeSelectionForMerges()
+            return
+        }
+        var from = document.selection.activeCell
+        if let merge = sheet.mergedRange(containing: from) {
+            switch direction {
+            case .down: from.row = merge.end.row
+            case .up: from.row = merge.start.row
+            case .right: from.column = merge.end.column
+            case .left: from.column = merge.start.column
+            }
+        }
+        let next = step(from)
+        if let merge = sheet.mergedRange(containing: next) {
+            document.selection.select(range: merge, active: merge.start)
+        } else {
+            document.selection.select(next)
         }
     }
 
@@ -1036,8 +1524,10 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         editingAddress = addr
         editMode = mode
 
+        // Scroll first: a frozen cell's position depends on the scroll offset.
+        scrollActiveCellToVisible()
         let l = layout
-        let rect = cellRect(addr, layout: l).insetBy(dx: -1, dy: -1)
+        let rect = viewRectIncludingMerge(addr, layout: l).insetBy(dx: -1, dy: -1)
         let field = NSTextField(frame: rect)
         field.delegate = self
         field.isBordered = true
@@ -1054,7 +1544,6 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             editor.selectedRange = NSRange(location: field.stringValue.count, length: 0)
         }
         editorField = field
-        scrollToVisible(rect.insetBy(dx: -10, dy: -10))
     }
 
     func commitEditorIfNeeded() {
@@ -1090,17 +1579,17 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
                 commitEditorIfNeeded()
-                document.selection.move(.down, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                navigate(.down)
                 afterNavigation()
                 return true
             case #selector(NSResponder.insertTab(_:)):
                 commitEditorIfNeeded()
-                document.selection.move(.right, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                navigate(.right)
                 afterNavigation()
                 return true
             case #selector(NSResponder.insertBacktab(_:)):
                 commitEditorIfNeeded()
-                document.selection.move(.left, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                navigate(.left)
                 afterNavigation()
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
@@ -1111,7 +1600,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                     let dir: SelectionState.Direction =
                         commandSelector == #selector(NSResponder.moveUp(_:)) ? .up : .down
                     commitEditorIfNeeded()
-                    document.selection.move(dir, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                    navigate(dir)
                     afterNavigation()
                     return true
                 }
@@ -1121,7 +1610,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                     let dir: SelectionState.Direction =
                         commandSelector == #selector(NSResponder.moveLeft(_:)) ? .left : .right
                     commitEditorIfNeeded()
-                    document.selection.move(dir, rowLimit: l.rowCount, columnLimit: l.columnCount)
+                    navigate(dir)
                     afterNavigation()
                     return true
                 }
