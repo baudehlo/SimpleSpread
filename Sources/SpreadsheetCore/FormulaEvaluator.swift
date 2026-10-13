@@ -79,13 +79,22 @@ public struct ResolvedRange {
         return sheet.value(at: addr)
     }
 
-    /// Iterate all values in row-major order (including empties).
+    /// Iterate all values in row-major order (including empties, except in a
+    /// sparse large range, where only stored values are visited).
     public func forEachValue(_ body: (CellValue) throws -> Void) rethrows {
         guard !isEmpty else { return }
-        // For sparse large ranges, iterate storage instead of the rect.
-        if range.cellCount > 4096 && range.cellCount > sheet.cells.count * 4 {
-            for (addr, cell) in sheet.cells where range.contains(addr) {
-                try body(cell.value)
+        // For sparse large ranges, iterate storage instead of the rect, in
+        // row-major order like the rect: sums of floating-point values and
+        // the first error found must not depend on Dictionary order.
+        let cells = sheet.cells
+        if range.cellCount > 4096 && range.cellCount > cells.count * 4 {
+            var found: [(address: CellAddress, value: CellValue)] = []
+            for (addr, cell) in cells where range.contains(addr) && !cell.value.isEmpty {
+                found.append((addr, cell.value))
+            }
+            found.sort { ($0.address.row, $0.address.column) < ($1.address.row, $1.address.column) }
+            for entry in found {
+                try body(entry.value)
             }
             return
         }

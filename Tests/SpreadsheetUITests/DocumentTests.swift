@@ -183,6 +183,16 @@ struct DocumentTests {
         #expect(doc.activeSheet.value(at: a("B1")) == .number(99))
     }
 
+    @Test func referenceToSheetAddedLaterResolves() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("=Sheet2!A1+1", at: a("B1"))
+        #expect(doc.activeSheet.value(at: a("B1")).errorValue == .ref)
+        doc.addSheet() // Sheet2
+        #expect(doc.workbook.sheets[0].value(at: a("B1")) == .number(1))
+        doc.commitInput("41", at: a("A1"))
+        #expect(doc.workbook.sheets[0].value(at: a("B1")) == .number(42))
+    }
+
     @Test func zoomControls() {
         let doc = SpreadsheetDocument()
         #expect(doc.zoomLevel == 1.0)

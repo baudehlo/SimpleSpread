@@ -89,6 +89,7 @@ Sources/
     FunctionRegistry.swift    registry, GridArg, shared arg helpers
     Functions*.swift          9 category files, 157 functions
     CalculationEngine.swift   dependency graph, dirty propagation, cycles
+    RangeDependencyIndex.swift large-range dependents: per-column interval trees
     WorkbookOperations.swift  structural edits with formula rewriting
     PivotTables.swift         pivot tables/caches: typed facts + preserved XML
     PivotModel.swift          parsed cache (fields, shared items, groups, records) + definition
@@ -167,11 +168,16 @@ per cell in the engine and reused for dependency extraction and transforms.
 - **Errors are values** internally; helpers throw typed `CellError` which the
   evaluator converts back to error values at the cell boundary.
 - **Recalculation:** precedent→dependent edges (cell-level for ranges ≤ 256
-  cells, interval entries for larger), dirty-set BFS, DFS topological
-  evaluation with visiting-state cycle detection, volatile set (NOW, TODAY,
-  RAND, RANDBETWEEN, and GETPIVOTDATA — it reads pivot cells its arguments
-  don't name) recalculated on every edit. Structural edits rebuild the
-  whole graph (`rebuildAll`) — correct first, incremental later.
+  cells; a larger range is one shared graph node, found from a cell through
+  a per-sheet, per-column interval-tree index in O(log n + k)). One iterative
+  Tarjan SCC pass from the edited cells finds what to recalculate and orders
+  it; every formula in a cycle gets #CYCLE! (deterministic, whatever the walk
+  order). Volatile set (NOW, TODAY, RAND, RANDBETWEEN, and GETPIVOTDATA — it
+  reads pivot cells its arguments don't name) recalculated on every edit.
+  Formulas naming a sheet that doesn't exist yet are re-installed when it
+  appears. Sheets keep their used range up to date incrementally. Structural
+  edits rebuild the whole graph (`rebuildAll`) — correct first, incremental
+  later. `spreadsheet-bench --edits` times edits on synthetic workbooks.
 - **Iterative solvers** (IRR/XIRR/RATE): Newton–Raphson with numeric
   derivative, bracketing-scan + bisection fallback, #NUM! on non-convergence.
 

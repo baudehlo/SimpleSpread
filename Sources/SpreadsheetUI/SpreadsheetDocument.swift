@@ -702,6 +702,7 @@ public final class SpreadsheetDocument: ObservableObject {
         commitPendingEdit()
         registerWorkbookUndo(actionName: "Add Sheet")
         let sheet = workbook.addSheet()
+        engine.sheetsDidChange() // formulas that named it before it existed
         activeSheetID = sheet.id
         selection = SelectionState()
         markChanged()
