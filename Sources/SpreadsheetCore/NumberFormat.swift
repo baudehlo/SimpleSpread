@@ -114,6 +114,82 @@ public enum NumberFormatEngine {
         return s
     }
 
+    // MARK: Number -> text for round trips and coercion
+    //
+    // `generalString` is for the grid only (it keeps ~10 significant digits
+    // to fit a cell). Text that is read back in -- formula constants, the
+    // cell editor -- uses `roundTripString`; the text a number becomes in a
+    // formula (`&`, text functions, criteria built with `&`) uses
+    // `textCoercionString`, Excel's 15 significant digits.
+
+    /// The shortest text that reads back as exactly `n`: plain decimal from
+    /// 1E-9 up to 1E+15, otherwise scientific ("1.2345678901234567E+20").
+    /// Both the formula lexer and `ValueParser` read it back exactly.
+    public static func roundTripString(for n: Double) -> String {
+        guard n.isFinite else { return CellError.num.rawValue }
+        if n == 0 { return "0" }
+        // Swift's description is the shortest representation that round-trips.
+        guard let (digits, exponent) = decimalDigits(of: abs(n).description) else {
+            return n.description
+        }
+        return (n < 0 ? "-" : "") + layOut(digits: digits, exponent: exponent)
+    }
+
+    /// Excel's number-to-text coercion: 15 significant digits, plain decimal
+    /// from 1E-9 up to 1E+15, otherwise scientific ("1.23456789012346E+17").
+    public static func textCoercionString(for n: Double) -> String {
+        guard n.isFinite else { return CellError.num.rawValue }
+        if n == 0 { return "0" }
+        guard let (digits, exponent) = decimalDigits(of: String(format: "%.14e", abs(n))),
+              digits != "0" else { return "0" }
+        return (n < 0 ? "-" : "") + layOut(digits: digits, exponent: exponent)
+    }
+
+    /// Significant digits (no leading/trailing zeros) and the decimal
+    /// exponent of the first one, from "123.45", "0.001", "1.5e-07" or
+    /// "1.23400000000000e+05". Nil for anything else.
+    static func decimalDigits(of text: String) -> (String, Int)? {
+        let lower = text.lowercased()
+        var mantissa = Substring(lower)
+        var exp = 0
+        if let e = lower.firstIndex(of: "e") {
+            mantissa = lower[..<e]
+            guard let x = Int(lower[lower.index(after: e)...]) else { return nil }
+            exp = x
+        }
+        let parts = mantissa.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count <= 2 else { return nil }
+        let intPart = parts[0]
+        let fracPart = parts.count == 2 ? parts[1] : ""
+        let all = Array(intPart + fracPart)
+        guard !all.isEmpty, all.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        guard let firstNonZero = all.firstIndex(where: { $0 != "0" }) else { return ("0", 0) }
+        var digits = String(all[firstNonZero...])
+        while digits.count > 1 && digits.hasSuffix("0") { digits.removeLast() }
+        // The first significant digit sits at 10^(intPart.count - 1 - firstNonZero).
+        return (digits, exp + intPart.count - 1 - firstNonZero)
+    }
+
+    /// Plain decimal for 1E-9 <= x < 1E+15, scientific (Excel style,
+    /// two-digit exponent minimum) outside it.
+    static func layOut(digits: String, exponent: Int) -> String {
+        if exponent >= 15 || exponent < -9 {
+            var s = String(digits.first!)
+            if digits.count > 1 { s += "." + digits.dropFirst() }
+            let magnitude = abs(exponent)
+            return s + (exponent < 0 ? "E-" : "E+") + (magnitude < 10 ? "0" : "") + String(magnitude)
+        }
+        if exponent < 0 {
+            return "0." + String(repeating: "0", count: -exponent - 1) + digits
+        }
+        let intCount = exponent + 1
+        if digits.count <= intCount {
+            return digits + String(repeating: "0", count: intCount - digits.count)
+        }
+        let split = digits.index(digits.startIndex, offsetBy: intCount)
+        return String(digits[..<split]) + "." + String(digits[split...])
+    }
+
     static func scientificString(_ n: Double, mantissaDigits: Int) -> String {
         var s = String(format: "%.\(mantissaDigits)E", n)
         // Trim trailing zeros in the mantissa: 1.00000E+21 -> 1E+21

@@ -85,6 +85,95 @@ public struct ReferenceExpr: Hashable, Sendable {
                          end: CellAddress(row: endRow, column: endCol))
     }
 
+    /// Shift relative components by (rows, columns) -- copy/paste and fill.
+    /// Absolute components stay put; nil when shifted off the grid (#REF!).
+    public func shiftedForCopy(byRows rows: Int, columns: Int) -> ReferenceExpr? {
+        var ref = self
+        func shift(_ c: RefComponent) -> RefComponent? {
+            var c = c
+            if let row = c.row, !c.rowAbsolute {
+                let newRow = row + rows
+                guard newRow >= 0, newRow < CellAddress.maxRows else { return nil }
+                c.row = newRow
+            }
+            if let col = c.column, !c.columnAbsolute {
+                let newCol = col + columns
+                guard newCol >= 0, newCol < CellAddress.maxColumns else { return nil }
+                c.column = newCol
+            }
+            return c
+        }
+        guard let newStart = shift(ref.start) else { return nil }
+        ref.start = newStart
+        if let end = ref.end {
+            guard let newEnd = shift(end) else { return nil }
+            ref.end = newEnd
+        }
+        return ref
+    }
+
+    /// This reference after `count` rows/columns are inserted (positive) or
+    /// deleted (negative) at `index` on the sheet it points at. Absolute
+    /// components move too; ranges spanning the edit grow or shrink; nil
+    /// when every cell it named was deleted (#REF!).
+    public func adjustedForStructuralChange(axisIsRow: Bool, index: Int, count: Int) -> ReferenceExpr? {
+        var ref = self
+
+        func adjust(_ value: Int, isStart: Bool, partnerValue: Int?) -> Int? {
+            if count > 0 {
+                // Insertion at `index`: positions >= index shift down/right.
+                return value >= index ? value + count : value
+            } else {
+                // Deletion of [index, index+|count|-1].
+                let delCount = -count
+                let delEnd = index + delCount - 1
+                if value < index { return value }
+                if value > delEnd { return value + count }
+                // Endpoint inside the deleted span.
+                if let partner = partnerValue {
+                    // Part of a range: contract toward the surviving side.
+                    if isStart {
+                        // start inside deletion: move to `index` if partner survives past delEnd
+                        if partner > delEnd { return index }
+                        return nil
+                    } else {
+                        // end inside deletion: move to index-1 if partner is before index
+                        if partner < index { return index - 1 }
+                        return nil
+                    }
+                }
+                return nil // single cell deleted -> #REF!
+            }
+        }
+
+        if axisIsRow {
+            let startRow = ref.start.row
+            let endRow = ref.end?.row
+            if let sr = startRow {
+                let partner = ref.end == nil ? nil : endRow
+                guard let newStart = adjust(sr, isStart: true, partnerValue: partner) else { return nil }
+                ref.start.row = newStart
+            }
+            if ref.end != nil, let er = endRow {
+                guard let newEnd = adjust(er, isStart: false, partnerValue: startRow) else { return nil }
+                ref.end?.row = newEnd
+            }
+        } else {
+            let startCol = ref.start.column
+            let endCol = ref.end?.column
+            if let sc = startCol {
+                let partner = ref.end == nil ? nil : endCol
+                guard let newStart = adjust(sc, isStart: true, partnerValue: partner) else { return nil }
+                ref.start.column = newStart
+            }
+            if ref.end != nil, let ec = endCol {
+                guard let newEnd = adjust(ec, isStart: false, partnerValue: startCol) else { return nil }
+                ref.end?.column = newEnd
+            }
+        }
+        return ref
+    }
+
     public var isWholeColumn: Bool { start.row == nil }
     public var isWholeRow: Bool { start.column == nil }
 }
@@ -123,13 +212,23 @@ public indirect enum FormulaExpr: Hashable, Sendable {
     case binary(BinaryOperator, FormulaExpr, FormulaExpr)
     case function(String, [FormulaExpr])
     case paren(FormulaExpr)
+    /// An empty function argument (`IF(a,,b)`, `VLOOKUP(x,r,2,)`). Not the
+    /// same as an omitted one: it counts as given, with the value 0 / "" /
+    /// FALSE as the parameter needs (see `FormulaEvaluator`).
+    case missing
+    /// A defined name with its formula substituted (`CalculationEngine`
+    /// expands names when it installs a formula, so their references are
+    /// tracked); prints as the name.
+    case definedName(String, FormulaExpr)
 
     // MARK: Serialization back to canonical formula text (no leading '=').
 
     public var text: String {
         switch self {
         case .number(let n):
-            return NumberFormatEngine.generalString(for: n)
+            // Exact: printing must not change a constant (the grid's
+            // General form keeps only ~10 digits).
+            return NumberFormatEngine.roundTripString(for: n)
         case .string(let s):
             return "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\""
         case .boolean(let b):
@@ -150,6 +249,10 @@ public indirect enum FormulaExpr: Hashable, Sendable {
             return name + "(" + args.map(\.text).joined(separator: ",") + ")"
         case .paren(let e):
             return "(" + e.text + ")"
+        case .missing:
+            return ""
+        case .definedName(let name, _):
+            return name
         }
     }
 
@@ -162,6 +265,7 @@ public indirect enum FormulaExpr: Hashable, Sendable {
         case .unary(_, let e), .percent(let e), .paren(let e): return e.references
         case .binary(_, let l, let r): return l.references + r.references
         case .function(_, let args): return args.flatMap(\.references)
+        case .definedName(_, let e): return e.references
         default: return []
         }
     }
@@ -191,30 +295,7 @@ public indirect enum FormulaExpr: Hashable, Sendable {
     /// Shift relative references by (rows, columns) — copy/paste and fill
     /// semantics. Absolute components stay put; refs shifted off-grid become #REF!.
     public func adjustedForCopy(byRows rows: Int, columns: Int) -> FormulaExpr {
-        mappingReferences { ref in
-            var ref = ref
-            func shift(_ c: RefComponent) -> RefComponent? {
-                var c = c
-                if let row = c.row, !c.rowAbsolute {
-                    let newRow = row + rows
-                    guard newRow >= 0, newRow < CellAddress.maxRows else { return nil }
-                    c.row = newRow
-                }
-                if let col = c.column, !c.columnAbsolute {
-                    let newCol = col + columns
-                    guard newCol >= 0, newCol < CellAddress.maxColumns else { return nil }
-                    c.column = newCol
-                }
-                return c
-            }
-            guard let newStart = shift(ref.start) else { return nil }
-            ref.start = newStart
-            if let end = ref.end {
-                guard let newEnd = shift(end) else { return nil }
-                ref.end = newEnd
-            }
-            return ref
-        }
+        mappingReferences { $0.shiftedForCopy(byRows: rows, columns: columns) }
     }
 
     /// Adjust references for rows/columns inserted or deleted in `sheetName`
@@ -235,61 +316,7 @@ public indirect enum FormulaExpr: Hashable, Sendable {
         mappingReferences { ref in
             let target = ref.sheetName ?? ownSheet
             guard target.caseInsensitiveCompare(editedSheet) == .orderedSame else { return ref }
-            var ref = ref
-
-            func adjust(_ value: Int, isStart: Bool, partnerValue: Int?) -> Int? {
-                if count > 0 {
-                    // Insertion at `index`: positions >= index shift down/right.
-                    return value >= index ? value + count : value
-                } else {
-                    // Deletion of [index, index+|count|-1].
-                    let delCount = -count
-                    let delEnd = index + delCount - 1
-                    if value < index { return value }
-                    if value > delEnd { return value + count }
-                    // Endpoint inside the deleted span.
-                    if let partner = partnerValue {
-                        // Part of a range: contract toward the surviving side.
-                        if isStart {
-                            // start inside deletion: move to `index` if partner survives past delEnd
-                            if partner > delEnd { return index }
-                            return nil
-                        } else {
-                            // end inside deletion: move to index-1 if partner is before index
-                            if partner < index { return index - 1 }
-                            return nil
-                        }
-                    }
-                    return nil // single cell deleted -> #REF!
-                }
-            }
-
-            if axisIsRow {
-                let startRow = ref.start.row
-                let endRow = ref.end?.row
-                if let sr = startRow {
-                    let partner = ref.end == nil ? nil : endRow
-                    guard let newStart = adjust(sr, isStart: true, partnerValue: partner) else { return nil }
-                    ref.start.row = newStart
-                }
-                if ref.end != nil, let er = endRow {
-                    guard let newEnd = adjust(er, isStart: false, partnerValue: startRow) else { return nil }
-                    ref.end?.row = newEnd
-                }
-            } else {
-                let startCol = ref.start.column
-                let endCol = ref.end?.column
-                if let sc = startCol {
-                    let partner = ref.end == nil ? nil : endCol
-                    guard let newStart = adjust(sc, isStart: true, partnerValue: partner) else { return nil }
-                    ref.start.column = newStart
-                }
-                if ref.end != nil, let ec = endCol {
-                    guard let newEnd = adjust(ec, isStart: false, partnerValue: startCol) else { return nil }
-                    ref.end?.column = newEnd
-                }
-            }
-            return ref
+            return ref.adjustedForStructuralChange(axisIsRow: axisIsRow, index: index, count: count)
         }
     }
 
@@ -310,12 +337,62 @@ public indirect enum FormulaExpr: Hashable, Sendable {
         case .function(let name, let args):
             if FunctionRegistry.volatileFunctions.contains(name.uppercased()) { return true }
             return args.contains { $0.isVolatile }
-        case .unary(_, let e), .percent(let e), .paren(let e):
+        case .unary(_, let e), .percent(let e), .paren(let e), .definedName(_, let e):
             return e.isVolatile
         case .binary(_, let l, let r):
             return l.isVolatile || r.isVolatile
         default:
             return false
+        }
+    }
+
+    /// True if the expression calls a function the engine doesn't have or
+    /// uses a name nothing defines: evaluating it can only give #NAME?, so
+    /// on open the file's cached value is kept instead.
+    public var hasUnsupportedNames: Bool {
+        switch self {
+        case .unknownName:
+            return true
+        case .function(let name, let args):
+            if FunctionRegistry.function(named: name) == nil { return true }
+            return args.contains { $0.hasUnsupportedNames }
+        case .unary(_, let e), .percent(let e), .paren(let e), .definedName(_, let e):
+            return e.hasUnsupportedNames
+        case .binary(_, let l, let r):
+            return l.hasUnsupportedNames || r.hasUnsupportedNames
+        default:
+            return false
+        }
+    }
+
+    /// Substitute defined names (`lookup` gives a name's parsed formula, or
+    /// nil when undefined). Names inside names are expanded too, to a fixed
+    /// depth; a name that refers to itself becomes #NAME?.
+    public func expandingDefinedNames(_ lookup: (String) -> FormulaExpr?) -> FormulaExpr {
+        expandingDefinedNames(lookup, depth: 0)
+    }
+
+    private func expandingDefinedNames(_ lookup: (String) -> FormulaExpr?, depth: Int) -> FormulaExpr {
+        switch self {
+        case .unknownName(let name):
+            guard let body = lookup(name) else { return self }
+            // A name defined in terms of itself.
+            guard depth < 16 else { return .errorLiteral(.name) }
+            let expanded = body.expandingDefinedNames(lookup, depth: depth + 1)
+            return .definedName(name, expanded)
+        case .unary(let op, let e):
+            return .unary(op, e.expandingDefinedNames(lookup, depth: depth))
+        case .percent(let e):
+            return .percent(e.expandingDefinedNames(lookup, depth: depth))
+        case .paren(let e):
+            return .paren(e.expandingDefinedNames(lookup, depth: depth))
+        case .binary(let op, let l, let r):
+            return .binary(op, l.expandingDefinedNames(lookup, depth: depth),
+                           r.expandingDefinedNames(lookup, depth: depth))
+        case .function(let name, let args):
+            return .function(name, args.map { $0.expandingDefinedNames(lookup, depth: depth) })
+        default:
+            return self
         }
     }
 }

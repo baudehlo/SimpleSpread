@@ -238,7 +238,10 @@ struct SheetDataScanner {
                 cellValue = .number(serial)
             }
         }
-        let formulaText = formula.flatMap { $0.isEmpty ? nil : String(decoding: $0, as: UTF8.self) }
+        // Files spell newer functions `_xlfn.IFNA`; the model doesn't.
+        let formulaText = formula.flatMap {
+            $0.isEmpty ? nil : FormulaFunctionPrefixes.stripped(String(decoding: $0, as: UTF8.self))
+        }
         let cell = Cell(value: cellValue, formula: formulaText, styleIndex: styleIndexMap[cellStyleIndex] ?? 0)
         if !cell.isDefault {
             sheet.setCell(cell, at: addr)

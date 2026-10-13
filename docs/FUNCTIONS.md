@@ -162,3 +162,7 @@ errors thrown mid-evaluation (`ISERROR(1/0)` → TRUE).
 - LEN counts grapheme clusters, not UTF-16 code units.
 - Circular references display #CYCLE! rather than #REF!-with-message.
 - Locale is fixed to en-US for input parsing and function argument text.
+- An empty argument (`IF(a,,b)`, `VLOOKUP(x,r,2,)`) counts as given, with
+  the value 0, "" or FALSE as the parameter needs (an empty IF/IFERROR/
+  CHOOSE branch gives 0), as in Excel. Functions that count their arguments
+  (COUNT, AVERAGE) skip it rather than counting it as 0.

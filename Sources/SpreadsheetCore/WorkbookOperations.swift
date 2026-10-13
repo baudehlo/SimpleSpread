@@ -71,10 +71,18 @@ public enum WorkbookOperations {
             sheet.autoFilter = remapAutoFilter(filter, axisIsRow: axisIsRow, index: index, count: count)
         }
 
-        // 4. Rewrite formulas everywhere.
-        rewriteFormulas(in: workbook) { expr, ownSheetName in
-            expr.adjustedForStructuralChange(axisIsRow: axisIsRow, index: index, count: count,
-                                             editedSheet: editedSheetName, ownSheet: ownSheetName)
+        // 4. Rewrite formulas (and defined names) everywhere.
+        rewriteFormulas(in: workbook) { found, ownSheetName in
+            // Excel leaves a 3-D reference alone when only one of its
+            // sheets changes shape.
+            guard !found.isThreeD,
+                  let target = found.ref.sheetName ?? ownSheetName,
+                  target.caseInsensitiveCompare(editedSheetName) == .orderedSame else { return found }
+            guard let adjusted = found.ref.adjustedForStructuralChange(
+                axisIsRow: axisIsRow, index: index, count: count) else { return nil }
+            var result = found
+            result.ref = adjusted
+            return result
         }
 
         // 5. Keep preserved pivot tables and their sources in step.
@@ -274,18 +282,33 @@ public enum WorkbookOperations {
         guard let sheet = workbook.sheet(withID: sheetID) else { return nil }
         let oldName = sheet.name
         guard let applied = workbook.renameSheet(withID: sheetID, to: newName) else { return nil }
-        guard applied.caseInsensitiveCompare(oldName) != .orderedSame else { return applied }
-        rewriteFormulas(in: workbook) { expr, _ in
-            expr.renamingSheet(from: oldName, to: applied)
+        guard applied != oldName else { return applied }
+        func renamed(_ name: String?) -> String? {
+            guard let name, name.caseInsensitiveCompare(oldName) == .orderedSame else { return name }
+            return applied
+        }
+        // A formula that doesn't mention the name can't refer to the sheet
+        // (a quoted name with an apostrophe is written with it doubled).
+        let mentions: ((String) -> Bool)? = oldName.contains("'") ? nil : {
+            $0.range(of: oldName, options: .caseInsensitive) != nil
+        }
+        rewriteFormulas(in: workbook, onlyIf: mentions) { found, _ in
+            var result = found
+            result.ref.sheetName = renamed(found.ref.sheetName)
+            result.lastSheetName = renamed(found.lastSheetName)
+            return result
         }
         return applied
     }
 
-    /// Delete a sheet; formulas referencing it become #REF!.
+    /// Delete a sheet; formulas referencing it become #REF!, and names
+    /// scoped to it go with it. A 3-D reference that ends on it shrinks to
+    /// the sheets that are left, as in Excel.
     @discardableResult
     public static func deleteSheet(in workbook: Workbook, sheetID: Int) -> Bool {
         guard let sheet = workbook.sheet(withID: sheetID) else { return false }
         let name = sheet.name
+        let order = workbook.sheets.map(\.name)
         guard workbook.removeSheet(withID: sheetID) != nil else { return false }
         // Pivot tables on the sheet go with it; caches it fed keep their
         // snapshot (pivots elsewhere still display) but lose their source.
@@ -296,44 +319,81 @@ public enum WorkbookOperations {
                 workbook.pivotCaches[c].sourceRanges[r].target = .detached(sheetName: name)
             }
         }
-        rewriteFormulas(in: workbook) { expr, _ in
-            expr.mappingReferences { ref in
-                if let s = ref.sheetName, s.caseInsensitiveCompare(name) == .orderedSame {
-                    return nil // -> #REF!
-                }
-                return ref
+        if workbook.definedNames.contains(where: { $0.scopeSheetID == sheetID }) {
+            workbook.definedNames.removeAll { $0.scopeSheetID == sheetID }
+        }
+        func isDeleted(_ s: String?) -> Bool { s?.caseInsensitiveCompare(name) == .orderedSame }
+        func position(_ s: String) -> Int? { order.firstIndex { $0.caseInsensitiveCompare(s) == .orderedSame } }
+        let mentions: ((String) -> Bool)? = name.contains("'") ? nil : {
+            $0.range(of: name, options: .caseInsensitive) != nil
+        }
+        rewriteFormulas(in: workbook, onlyIf: mentions) { found, _ in
+            guard let last = found.lastSheetName, let first = found.ref.sheetName else {
+                return isDeleted(found.ref.sheetName) ? nil : found
             }
+            guard isDeleted(first) || isDeleted(last) else { return found }
+            guard let f = position(first), let l = position(last), f != l else { return nil }
+            // Move the deleted end one sheet toward the other end.
+            var result = found
+            if isDeleted(first) {
+                result.ref.sheetName = order[f + (l > f ? 1 : -1)]
+            } else {
+                result.lastSheetName = order[l + (f > l ? 1 : -1)]
+            }
+            if result.ref.sheetName == result.lastSheetName { result.lastSheetName = nil }
+            return result
         }
         return true
     }
 
     // MARK: Copy / fill translation
 
-    /// Translate a formula for a copy/paste or fill offset. Unparseable
-    /// formulas are returned unchanged.
+    /// Translate a formula for a copy/paste or fill offset: relative
+    /// references move, everything else is kept exactly as written. Works on
+    /// the text's tokens, so formulas the parser can't read move too.
     public static func translatedFormula(_ text: String, byRows rows: Int, columns: Int) -> String {
         guard rows != 0 || columns != 0 else { return text }
-        guard let expr = try? FormulaParser.parse(text) else { return text }
-        return expr.adjustedForCopy(byRows: rows, columns: columns).text
+        return FormulaTextRewriter.rewritingReferences(in: text) { found in
+            guard let shifted = found.ref.shiftedForCopy(byRows: rows, columns: columns) else { return nil }
+            var result = found
+            result.ref = shifted
+            return result
+        }
     }
 
     // MARK: Shared
 
+    /// Rewrite the references in every formula and defined name. `transform`
+    /// gets each reference and the name of the sheet the formula is on (nil
+    /// for a workbook-scoped name, whose unqualified references aren't tied
+    /// to a sheet); nil turns the reference into #REF!. Works on tokens, so
+    /// formulas the parser rejects are adjusted too (see FormulaTextRewriter).
+    /// `onlyIf` is a cheap pre-check: text it rejects is left alone.
     private static func rewriteFormulas(
         in workbook: Workbook,
-        _ transform: (FormulaExpr, _ ownSheetName: String) -> FormulaExpr
+        onlyIf mayAffect: ((String) -> Bool)? = nil,
+        _ transform: (FormulaTextReference, _ ownSheetName: String?) -> FormulaTextReference?
     ) {
         for sheet in workbook.sheets {
+            let ownName = sheet.name
             for (addr, cell) in sheet.cells {
-                guard let formula = cell.formula,
-                      let expr = try? FormulaParser.parse(formula) else { continue }
-                let newExpr = transform(expr, sheet.name)
-                if newExpr != expr {
+                guard let formula = cell.formula, mayAffect?(formula) ?? true else { continue }
+                let rewritten = FormulaTextRewriter.rewritingReferences(in: formula) { transform($0, ownName) }
+                if rewritten != formula {
                     var newCell = cell
-                    newCell.formula = newExpr.text
+                    newCell.formula = rewritten
                     sheet.setCell(newCell, at: addr)
                 }
             }
         }
+        guard !workbook.definedNames.isEmpty else { return }
+        var names = workbook.definedNames
+        for i in names.indices where mayAffect?(names[i].formula) ?? true {
+            let scope = names[i].scopeSheetID.flatMap { workbook.sheet(withID: $0)?.name }
+            names[i].formula = FormulaTextRewriter.rewritingReferences(in: names[i].formula) {
+                transform($0, scope)
+            }
+        }
+        if names != workbook.definedNames { workbook.definedNames = names }
     }
 }

@@ -170,8 +170,23 @@ public enum FormulaEvaluator {
             return .scalar(.bool(b))
         case .errorLiteral(let e):
             return .scalar(.error(e))
-        case .unknownName:
-            return .scalar(.error(.name))
+        case .unknownName(let name):
+            // Formulas the engine installed have their names expanded
+            // already; this is for an expression evaluated on its own.
+            guard let body = context.workbook.definedNameFormula(name, sheetID: context.sheetID) else {
+                return .scalar(.error(.name))
+            }
+            let expanded = body.expandingDefinedNames {
+                context.workbook.definedNameFormula($0, sheetID: context.sheetID)
+            }
+            return try evalValue(expanded, context: context)
+        case .definedName(_, let body):
+            return try evalValue(body, context: context)
+        case .missing:
+            // An empty argument reads as blank: 0, "" or FALSE, whichever
+            // the parameter wants (VLOOKUP's 4th -> FALSE, SUBSTITUTE's 3rd
+            // -> "", ROUND's 2nd -> 0).
+            return .scalar(.empty)
         case .paren(let inner):
             return try evalValue(inner, context: context)
         case .reference(let ref):
@@ -247,7 +262,10 @@ public enum FormulaEvaluator {
         }
         let fnContext = FunctionContext(eval: context)
         if fn.isLazy {
-            return try fn.evalLazy!(args, fnContext)
+            // A branch left empty (IF(c,,x), IFERROR(x,), CHOOSE(i,a,)) gives
+            // 0, as in Excel, not a blank.
+            let lazyArgs = args.contains(.missing) ? args.map { $0 == .missing ? .number(0) : $0 } : args
+            return try fn.evalLazy!(lazyArgs, fnContext)
         }
         let values = try args.map { try evalValue($0, context: context) }
         return try fn.evalEager!(values, fnContext)

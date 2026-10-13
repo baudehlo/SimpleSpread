@@ -110,6 +110,9 @@ public enum XLSXReader {
             workbook.addSheet()
         }
 
+        // 4b. Defined names (the AutoFilter's own name is rebuilt on save).
+        workbook.definedNames = definedNames(workbookInfo.definedNames, sheetParts: sheetParts)
+
         // 5. Pivot tables (definitions only; their cells are already loaded).
         report.droppedPivots = readPivotTables(PivotReadContext(
             zip: zip, workbookInfo: workbookInfo, workbookRels: wbRels, sheetParts: sheetParts,
@@ -131,6 +134,24 @@ public enum XLSXReader {
             }
         }
         return workbook
+    }
+
+    /// The model's defined names: sheet scopes by sheet id, formulas
+    /// without '=' or `_xlfn.` prefixes. Names scoped to a sheet that wasn't
+    /// loaded are dropped.
+    static func definedNames(_ names: [WorkbookInfo.DefinedName], sheetParts: [SheetPart]) -> [DefinedName] {
+        names.compactMap { defined in
+            guard defined.name.caseInsensitiveCompare("_xlnm._FilterDatabase") != .orderedSame else { return nil }
+            var scope: Int?
+            if let local = defined.localSheetIndex {
+                guard let part = sheetParts.first(where: { $0.sheetIndex == local }) else { return nil }
+                scope = part.sheetID
+            }
+            var formula = defined.formula.trimmingCharacters(in: .whitespacesAndNewlines)
+            if formula.hasPrefix("=") { formula.removeFirst() }
+            return DefinedName(name: defined.name, scopeSheetID: scope,
+                               formula: FormulaFunctionPrefixes.stripped(formula), hidden: defined.hidden)
+        }
     }
 
     // MARK: Path helpers
@@ -222,6 +243,7 @@ public enum XLSXReader {
             /// Index into `sheets` for a sheet-scoped name; nil = workbook scope.
             let localSheetIndex: Int?
             let formula: String
+            var hidden = false
         }
         var sheets: [SheetMeta] = []
         var date1904 = false
@@ -234,7 +256,7 @@ public enum XLSXReader {
             var info = WorkbookInfo()
             var depth = 0
             var inPivotCaches = false
-            var definedName: (name: String, local: Int?)?
+            var definedName: (name: String, local: Int?, hidden: Bool)?
             var definedNameText = ""
             func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                         qualifiedName: String?, attributes: [String: String]) {
@@ -250,7 +272,8 @@ public enum XLSXReader {
                     }
                 case "definedName":
                     if let n = attributes["name"] {
-                        definedName = (n, Int(attributes["localSheetId"] ?? ""))
+                        let hidden = attributes["hidden"].map { $0 == "1" || $0.lowercased() == "true" } ?? false
+                        definedName = (n, Int(attributes["localSheetId"] ?? ""), hidden)
                         definedNameText = ""
                     }
                 case "workbookPr":
@@ -276,8 +299,9 @@ public enum XLSXReader {
                         qualifiedName: String?) {
                 if depth == 2 && localName(name) == "pivotCaches" { inPivotCaches = false }
                 depth -= 1
-                if localName(name) == "definedName", let (n, local) = definedName {
-                    info.definedNames.append(.init(name: n, localSheetIndex: local, formula: definedNameText))
+                if localName(name) == "definedName", let (n, local, hidden) = definedName {
+                    info.definedNames.append(.init(name: n, localSheetIndex: local, formula: definedNameText,
+                                                   hidden: hidden))
                     definedName = nil
                 }
             }
@@ -843,7 +867,9 @@ public enum XLSXReader {
                     if let n = Double(valueText) { value = .number(n) }
                 }
                 let mappedStyle = styleIndexMap[cellStyleIndex] ?? 0
-                let cell = Cell(value: value, formula: formulaText.flatMap { $0.isEmpty ? nil : $0 },
+                // Files spell newer functions `_xlfn.IFNA`; the model doesn't.
+                let cell = Cell(value: value,
+                                formula: formulaText.flatMap { $0.isEmpty ? nil : FormulaFunctionPrefixes.stripped($0) },
                                 styleIndex: mappedStyle)
                 if !cell.isDefault {
                     sheet.setCell(cell, at: addr)
