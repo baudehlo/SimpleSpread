@@ -56,41 +56,28 @@ enum MathFunctions {
         .eager("INT", min: 1, max: 1) { args, _ in
             .number((try numArg(args[0])).rounded(.down))
         },
+        // ROUND and friends work on the 15-significant-digit decimal value,
+        // like Excel: ROUND(1.005,2) = 1.01 although 1.005 is stored as
+        // 1.00499999999999989...
         .eager("TRUNC", min: 1, max: 2) { args, _ in
-            let n = try numArg(args[0])
-            let places = try optionalInt(args, 1, default: 0)
-            let f = pow(10.0, Double(places))
-            return .number((n * f).rounded(.towardZero) / f)
+            .number(try decimalRound(args, .towardZero))
         },
         .eager("ROUND", min: 1, max: 2) { args, _ in
-            let n = try numArg(args[0])
-            let places = try optionalInt(args, 1, default: 0)
-            let f = pow(10.0, Double(places))
-            return .number((n * f).rounded(.toNearestOrAwayFromZero) / f)
+            .number(try decimalRound(args, .halfAwayFromZero))
         },
         .eager("ROUNDUP", min: 1, max: 2) { args, _ in
-            let n = try numArg(args[0])
-            let places = try optionalInt(args, 1, default: 0)
-            let f = pow(10.0, Double(places))
-            let scaled = n * f
-            // Round away from zero, tolerating float fuzz on exact values.
-            let result = scaled >= 0 ? fuzzyCeil(scaled) : -fuzzyCeil(-scaled)
-            return .number(result / f)
+            .number(try decimalRound(args, .awayFromZero))
         },
         .eager("ROUNDDOWN", min: 1, max: 2) { args, _ in
-            let n = try numArg(args[0])
-            let places = try optionalInt(args, 1, default: 0)
-            let f = pow(10.0, Double(places))
-            let scaled = n * f
-            let result = scaled >= 0 ? fuzzyFloor(scaled) : -fuzzyFloor(-scaled)
-            return .number(result / f)
+            .number(try decimalRound(args, .towardZero))
         },
         .eager("MROUND", min: 2, max: 2) { args, _ in
             let n = try numArg(args[0])
             let factor = try numArg(args[1])
             if factor == 0 { return .number(0) }
             guard (n >= 0) == (factor >= 0) || n == 0 else { throw CellError.num }
-            return .number((n / factor).rounded(.toNearestOrAwayFromZero) * factor)
+            let multiples = roundedToFifteenDigits(n / factor).rounded(.toNearestOrAwayFromZero)
+            return .number(multiples * factor)
         },
         .eager("CEILING", min: 1, max: 2) { args, _ in
             let n = try numArg(args[0])
@@ -152,26 +139,30 @@ enum MathFunctions {
             let n = try intArg(args[0])
             let k = try intArg(args[1])
             guard n >= 0, k >= 0, k <= n else { throw CellError.num }
+            // C(n, k) >= 2^min(k, n-k), so the product overflows (and the
+            // loop stops) within about 1,030 steps, however large n is.
             var result = 1.0
             for i in 0..<min(k, n - k) {
                 result = result * Double(n - i) / Double(i + 1)
+                guard result.isFinite else { throw CellError.num }
             }
             return .number(result.rounded())
         },
         .eager("GCD", min: 1, max: nil) { args, _ in
-            let nums = try Coerce.collectNumbers(args).map { $0.rounded(.down) }
-            guard nums.allSatisfy({ $0 >= 0 }) else { throw CellError.num }
-            let ints = nums.map { Int($0) }
-            let g = ints.reduce(0) { gcd($0, $1) }
-            return .number(Double(g))
+            let ints = try gcdArguments(args)
+            return .number(Double(ints.reduce(0) { gcd($0, $1) }))
         },
         .eager("LCM", min: 1, max: nil) { args, _ in
-            let nums = try Coerce.collectNumbers(args).map { $0.rounded(.down) }
-            guard nums.allSatisfy({ $0 >= 0 }) else { throw CellError.num }
-            let ints = nums.map { Int($0) }
+            let ints = try gcdArguments(args)
             if ints.contains(0) { return .number(0) }
-            let l = ints.reduce(1) { lcm($0, $1) }
-            return .number(Double(l))
+            var result = 1
+            for value in ints {
+                let (product, overflow) = (result / gcd(result, value)).multipliedReportingOverflow(by: value)
+                // Excel: a result of 2^53 or more is #NUM!.
+                guard !overflow, product < excelIntegerLimit else { throw CellError.num }
+                result = product
+            }
+            return .number(Double(result))
         },
         .eager("RAND", min: 0, max: 0) { _, ctx in
             .number(ctx.eval.clock.random())
@@ -188,41 +179,17 @@ enum MathFunctions {
 
     private static let conditional: [BuiltinFunction] = [
         .eager("SUMIF", min: 2, max: 3) { args, _ in
-            let range = GridArg(args[0])
-            let criterion = Criterion.parse(try args[1].toScalar())
-            let sumGrid = args.count > 2 ? GridArg(args[2]) : range
-            var total = 0.0
-            for r in 0..<range.rows {
-                for c in 0..<range.columns {
-                    let v = range.value(atRow: r, column: c)
-                    if case .error(let e) = v { throw e }
-                    guard criterion.matches(v) else { continue }
-                    let sv = sumGrid.value(atRow: r, column: c)
-                    if case .error(let e) = sv { throw e }
-                    if case .number(let n) = sv { total += n }
-                }
-            }
-            return .number(total)
+            let cells = try matchingCells(criteriaPairs(Array(args.prefix(2)), from: 0))
+            let sumGrid = GridArg(args.count > 2 ? args[2] : args[0])
+            return .number(try criteriaNumbers(sumGrid, at: cells).reduce(0, +))
         },
         .eager("SUMIFS", min: 3, max: nil) { args, _ in
-            guard (args.count - 1) % 2 == 0 else { throw CellError.na }
             let sumGrid = GridArg(args[0])
-            var pairs: [(GridArg, Criterion)] = []
-            var i = 1
-            while i + 1 < args.count {
-                pairs.append((GridArg(args[i]), Criterion.parse(try args[i + 1].toScalar())))
-                i += 2
-            }
+            let pairs = try criteriaPairs(args, from: 1)
             guard pairs.allSatisfy({ $0.0.rows == sumGrid.rows && $0.0.columns == sumGrid.columns }) else {
                 throw CellError.value
             }
-            var total = 0.0
-            for idx in try matchingIndices(criteriaPairs: pairs) {
-                let v = sumGrid.value(atRow: idx / sumGrid.columns, column: idx % sumGrid.columns)
-                if case .error(let e) = v { throw e }
-                if case .number(let n) = v { total += n }
-            }
-            return .number(total)
+            return .number(try criteriaNumbers(sumGrid, at: matchingCells(pairs)).reduce(0, +))
         },
         .eager("SUMPRODUCT", min: 1, max: nil) { args, _ in
             let grids = args.map(GridArg.init)
@@ -254,17 +221,34 @@ enum MathFunctions {
     ]
 }
 
-/// ceil that forgives float fuzz just below an integer (1.9999999999999998 -> 2).
+/// ceil that forgives float fuzz below Excel's 15 significant digits
+/// (1.9999999999999998 -> 2) but not a real difference
+/// (1.0000000001 -> 2): the tolerance is relative, not absolute.
 func fuzzyCeil(_ x: Double) -> Double {
-    let nearest = x.rounded()
-    if abs(x - nearest) < 1e-9 { return nearest }
-    return x.rounded(.up)
+    roundedToFifteenDigits(x).rounded(.up)
 }
 
 func fuzzyFloor(_ x: Double) -> Double {
-    let nearest = x.rounded()
-    if abs(x - nearest) < 1e-9 { return nearest }
-    return x.rounded(.down)
+    roundedToFifteenDigits(x).rounded(.down)
+}
+
+/// Excel rejects GCD/LCM arguments (and LCM results) of 2^53 or more.
+private let excelIntegerLimit = 9007199254740992
+
+/// GCD/LCM arguments: truncated, non-negative and below 2^53.
+private func gcdArguments(_ args: [EvalValue]) throws -> [Int] {
+    try Coerce.collectNumbers(args).map { n in
+        guard n >= 0, let i = checkedInt(n, limit: Double(excelIntegerLimit)) else { throw CellError.num }
+        return i
+    }
+}
+
+/// ROUND/ROUNDUP/ROUNDDOWN/TRUNC(x, [places]) on the decimal value.
+private func decimalRound(_ args: [EvalValue], _ rule: DecimalDigits.Rounding) throws -> Double {
+    let n = try numArg(args[0])
+    let places = try optionalInt(args, 1, default: 0)
+    guard let result = excelRound(n, places: places, rule) else { throw CellError.num }
+    return result
 }
 
 private func gcd(_ a: Int, _ b: Int) -> Int {
