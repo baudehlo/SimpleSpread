@@ -75,20 +75,20 @@ struct RangeDependencyTests {
         #expect(h.value("C1") == .number(31))
     }
 
-    /// The review measured 4k formulas at 1.7 s per edit and 8k at 6.7 s
-    /// (debug). The guard is generous so slow CI machines don't flake.
+    /// The review measured n formulas over one large range (SUMIF filled
+    /// down) at 1.7 s per edit for 4k and 6.7 s for 8k, in debug. ROWS doesn't
+    /// read the cells, so the time here is the engine's own bookkeeping; the
+    /// guard is generous so slow or busy CI machines don't flake.
     @Test func oneEditUnderManySharedRangeFormulasIsFast() {
         let wb = Workbook()
         let sheet = wb.addSheet(named: "Sheet1")
-        for r in 0..<300 { sheet.setCell(Cell(value: .number(1)), at: CellAddress(row: r, column: 0)) }
-        let n = 8_000
+        let n = 20_000
         for r in 0..<n {
-            sheet.setCell(Cell(formula: "SUM($A$1:$A$300)+\(r)"), at: CellAddress(row: r, column: 2))
+            sheet.setCell(Cell(formula: "ROWS($A$1:$A$50000)+\(r)"), at: CellAddress(row: r, column: 2))
         }
         let engine = CalculationEngine(workbook: wb)
-        #expect(sheet.value(at: CellAddress(row: n - 1, column: 2)) == .number(Double(300 + n - 1)))
         let elapsed = seconds { engine.setCellValue(.number(2), at: at(sheet, "A5")) }
-        #expect(sheet.value(at: CellAddress(row: n - 1, column: 2)) == .number(Double(301 + n - 1)))
+        #expect(sheet.value(at: CellAddress(row: n - 1, column: 2)) == .number(Double(50_000 + n - 1)))
         #expect(elapsed < 2, "one edit took \(elapsed)s")
     }
 
