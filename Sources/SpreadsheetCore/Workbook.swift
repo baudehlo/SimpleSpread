@@ -33,6 +33,9 @@ public final class Sheet {
     public var frozenRows: Int = 0
     public var frozenColumns: Int = 0
     public var mergedRanges: [CellRange] = []
+    /// Rows hidden by hand or by the AutoFilter (XLSX `row@hidden`).
+    public var hiddenRows: Set<Int> = []
+    public var autoFilter: AutoFilter?
 
     public init(id: Int, name: String) {
         self.id = id
@@ -85,6 +88,8 @@ public final class Sheet {
         frozenRows = other.frozenRows
         frozenColumns = other.frozenColumns
         mergedRanges = other.mergedRanges
+        hiddenRows = other.hiddenRows
+        autoFilter = other.autoFilter
     }
 }
 

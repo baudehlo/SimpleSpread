@@ -45,6 +45,40 @@ public enum TextAlignmentV: String, Hashable, Sendable, Codable {
     case bottom
 }
 
+/// A border line's pattern. Raw values are the OOXML `ST_BorderStyle` names.
+public enum BorderLineStyle: String, Hashable, Sendable, Codable, CaseIterable {
+    case hair, thin, medium, thick, double
+    case dotted, dashed, dashDot, dashDotDot, slantDashDot
+    case mediumDashed, mediumDashDot, mediumDashDotDot
+}
+
+/// One edge of a cell's border. A nil color is "automatic" (black in
+/// Excel; the label color on screen).
+public struct BorderLine: Hashable, Sendable, Codable {
+    public var style: BorderLineStyle
+    public var color: RGBAColor?
+
+    public init(_ style: BorderLineStyle = .thin, color: RGBAColor? = nil) {
+        self.style = style
+        self.color = color
+    }
+}
+
+/// The four edges of a cell's border (diagonals are not modelled).
+public struct CellBorders: Hashable, Sendable, Codable {
+    public var top: BorderLine?
+    public var bottom: BorderLine?
+    public var left: BorderLine?
+    public var right: BorderLine?
+
+    public init(top: BorderLine? = nil, bottom: BorderLine? = nil,
+                left: BorderLine? = nil, right: BorderLine? = nil) {
+        self.top = top; self.bottom = bottom; self.left = left; self.right = right
+    }
+
+    public var isEmpty: Bool { top == nil && bottom == nil && left == nil && right == nil }
+}
+
 /// Visual + number formatting attributes of a cell. Value semantics; deduplicated
 /// into a workbook-level style table (mirrors XLSX cellXfs).
 public struct CellStyle: Hashable, Sendable, Codable {
@@ -66,12 +100,13 @@ public struct CellStyle: Hashable, Sendable, Codable {
     public var pivotButton: Bool = false
     /// Indent level (XLSX alignment indent; each level ~3 characters).
     public var indent: Int = 0
+    public var borders = CellBorders()
 
-    // Explicit so clipboard payloads from builds before pivotButton/indent decode.
+    // Explicit so clipboard payloads from builds before pivotButton/indent/borders decode.
     private enum CodingKeys: String, CodingKey {
         case fontName, fontSize, bold, italic, underline, strikethrough
         case textColor, fillColor, horizontalAlignment, verticalAlignment, wrapText, numberFormat
-        case indent
+        case indent, borders
     }
 
     public init(from decoder: Decoder) throws {
@@ -89,6 +124,7 @@ public struct CellStyle: Hashable, Sendable, Codable {
         wrapText = try c.decode(Bool.self, forKey: .wrapText)
         numberFormat = try c.decode(NumberFormat.self, forKey: .numberFormat)
         indent = try c.decodeIfPresent(Int.self, forKey: .indent) ?? 0
+        borders = try c.decodeIfPresent(CellBorders.self, forKey: .borders) ?? CellBorders()
     }
 
     public init(
@@ -105,7 +141,8 @@ public struct CellStyle: Hashable, Sendable, Codable {
         wrapText: Bool = false,
         numberFormat: NumberFormat = .general,
         pivotButton: Bool = false,
-        indent: Int = 0
+        indent: Int = 0,
+        borders: CellBorders = CellBorders()
     ) {
         self.fontName = fontName
         self.fontSize = fontSize
@@ -121,6 +158,7 @@ public struct CellStyle: Hashable, Sendable, Codable {
         self.numberFormat = numberFormat
         self.pivotButton = pivotButton
         self.indent = indent
+        self.borders = borders
     }
 
     public static let `default` = CellStyle()
