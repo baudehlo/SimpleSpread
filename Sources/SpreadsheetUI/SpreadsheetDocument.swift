@@ -650,6 +650,7 @@ public final class SpreadsheetDocument: ObservableObject {
     public func addSheet() {
         registerWorkbookUndo(actionName: "Add Sheet")
         let sheet = workbook.addSheet()
+        engine.sheetsDidChange() // formulas that named it before it existed
         activeSheetID = sheet.id
         selection = SelectionState()
         markChanged()
