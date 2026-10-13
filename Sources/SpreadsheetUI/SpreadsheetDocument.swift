@@ -635,14 +635,59 @@ public final class SpreadsheetDocument: ObservableObject {
         markChanged()
     }
 
+    /// Resize a column (header drag, autofit). One undo step per drag.
     public func setColumnWidth(_ column: Int, width: CGFloat) {
-        activeSheet.columnWidths[column] = max(12, width)
-        markChanged()
+        resize(isRow: false, index: column, to: max(12, width), actionName: "Column Width")
     }
 
+    /// Resize a row (header drag). One undo step per drag.
     public func setRowHeight(_ row: Int, height: CGFloat) {
-        activeSheet.rowHeights[row] = max(12, height)
+        resize(isRow: true, index: row, to: max(12, height), actionName: "Row Height")
+    }
+
+    /// The resize the newest undo step records, and the revision it left the
+    /// document at. A drag calls setColumnWidth/setRowHeight for every mouse
+    /// move; while nothing else has changed since, those updates extend the
+    /// same undo step, which keeps the size from before the drag.
+    private struct ResizeStep: Equatable {
+        var sheetID: Int
+        var isRow: Bool
+        var index: Int
+        var revision: Int
+    }
+    private var lastResizeStep: ResizeStep?
+
+    private func resize(isRow: Bool, index: Int, to size: CGFloat, actionName: String) {
+        let sheet = activeSheet
+        let current = isRow ? sheet.rowHeight(index) : sheet.columnWidth(index)
+        guard current != size else { return }
+        let old = isRow ? sheet.rowHeights[index] : sheet.columnWidths[index]
+        let continuing = lastResizeStep == ResizeStep(sheetID: sheet.id, isRow: isRow, index: index,
+                                                      revision: revision)
+            && undoManager.undoActionName == actionName
+        if isRow { sheet.rowHeights[index] = size } else { sheet.columnWidths[index] = size }
+        if !continuing {
+            withUndoGroup {
+                registerSizeUndo(isRow: isRow, index: index, size: old, sheetID: sheet.id, actionName: actionName)
+            }
+        }
         markChanged()
+        lastResizeStep = ResizeStep(sheetID: sheet.id, isRow: isRow, index: index, revision: revision)
+    }
+
+    /// Undo sets one row's height (or column's width) back to `size`.
+    private func registerSizeUndo(isRow: Bool, index: Int, size: CGFloat?, sheetID: Int, actionName: String) {
+        undoManager.registerUndo(withTarget: self) { doc in
+            MainActor.assumeIsolated {
+                guard let sheet = doc.workbook.sheet(withID: sheetID) else { return }
+                let redo = isRow ? sheet.rowHeights[index] : sheet.columnWidths[index]
+                if isRow { sheet.rowHeights[index] = size } else { sheet.columnWidths[index] = size }
+                doc.registerSizeUndo(isRow: isRow, index: index, size: redo, sheetID: sheetID,
+                                     actionName: actionName)
+                doc.markChanged()
+            }
+        }
+        undoManager.setActionName(actionName)
     }
 
     // MARK: - Sheets

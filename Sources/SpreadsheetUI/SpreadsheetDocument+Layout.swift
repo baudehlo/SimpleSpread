@@ -6,16 +6,19 @@ import SpreadsheetCore
 extension SpreadsheetDocument {
     // MARK: - Layout undo
 
-    /// Record the active sheet's layout (merges, frozen panes, hidden rows,
-    /// filter, row heights) so one undo step restores it.
-    func registerLayoutUndo(_ old: SheetLayoutState, sheetID: Int, actionName: String) {
+    /// Register an undo step that reverts `change` (what a command did to a
+    /// sheet's merges, hidden rows, row heights, filter or panes) and
+    /// nothing else, so later changes without undo steps of their own
+    /// survive it.
+    func registerLayoutUndo(_ change: SheetLayoutChange, sheetID: Int, actionName: String) {
+        guard !change.isEmpty else { return }
         withUndoGroup {
             undoManager.registerUndo(withTarget: self) { doc in
                 MainActor.assumeIsolated {
                     guard let sheet = doc.workbook.sheet(withID: sheetID) else { return }
-                    let redo = sheet.layoutState
-                    sheet.layoutState = old
-                    doc.registerLayoutUndo(redo, sheetID: sheetID, actionName: actionName)
+                    let undo = change.inverse
+                    undo.apply(to: sheet)
+                    doc.registerLayoutUndo(undo, sheetID: sheetID, actionName: actionName)
                     doc.markChanged()
                 }
             }
@@ -33,9 +36,8 @@ extension SpreadsheetDocument {
         body()
         withUndoGroup {
             if !snaps.isEmpty { registerCellUndo(snaps, actionName: actionName) }
-            if sheet.layoutState != oldLayout {
-                registerLayoutUndo(oldLayout, sheetID: sheet.id, actionName: actionName)
-            }
+            registerLayoutUndo(SheetLayoutChange(from: oldLayout, to: sheet.layoutState),
+                               sheetID: sheet.id, actionName: actionName)
         }
         markChanged()
     }

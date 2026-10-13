@@ -11,6 +11,80 @@ public struct SheetLayoutState: Equatable, Sendable {
     public var rowHeights: [Int: CGFloat]
 }
 
+/// What one command changed in a sheet's layout, for undo. Applying it (or
+/// its inverse) touches only those parts: rows hidden or shown, heights
+/// set, merges added or removed, and the filter or panes if they changed.
+/// Restoring a whole `SheetLayoutState` instead would also revert changes
+/// made after the command that have no undo step of their own.
+public struct SheetLayoutChange: Sendable {
+    public var mergesAdded: [CellRange] = []
+    public var mergesRemoved: [CellRange] = []
+    public var hiddenAdded: Set<Int> = []
+    public var hiddenRemoved: Set<Int> = []
+    /// Row -> (old, new) explicit height.
+    public var rowHeights: [Int: (old: CGFloat?, new: CGFloat?)] = [:]
+    public var frozen: (old: (rows: Int, columns: Int), new: (rows: Int, columns: Int))?
+    public var autoFilter: (old: AutoFilter?, new: AutoFilter?)?
+
+    public init(from old: SheetLayoutState, to new: SheetLayoutState) {
+        mergesAdded = new.mergedRanges.filter { !old.mergedRanges.contains($0) }
+        mergesRemoved = old.mergedRanges.filter { !new.mergedRanges.contains($0) }
+        if old.hiddenRows != new.hiddenRows {
+            hiddenAdded = new.hiddenRows.subtracting(old.hiddenRows)
+            hiddenRemoved = old.hiddenRows.subtracting(new.hiddenRows)
+        }
+        if old.rowHeights != new.rowHeights {
+            for row in Set(old.rowHeights.keys).union(new.rowHeights.keys)
+            where old.rowHeights[row] != new.rowHeights[row] {
+                rowHeights[row] = (old.rowHeights[row], new.rowHeights[row])
+            }
+        }
+        if old.frozenRows != new.frozenRows || old.frozenColumns != new.frozenColumns {
+            frozen = ((old.frozenRows, old.frozenColumns), (new.frozenRows, new.frozenColumns))
+        }
+        if old.autoFilter != new.autoFilter {
+            autoFilter = (old.autoFilter, new.autoFilter)
+        }
+    }
+
+    public var isEmpty: Bool {
+        mergesAdded.isEmpty && mergesRemoved.isEmpty && hiddenAdded.isEmpty && hiddenRemoved.isEmpty
+            && rowHeights.isEmpty && frozen == nil && autoFilter == nil
+    }
+
+    /// The change that undoes this one.
+    public var inverse: SheetLayoutChange {
+        var result = self
+        result.mergesAdded = mergesRemoved
+        result.mergesRemoved = mergesAdded
+        result.hiddenAdded = hiddenRemoved
+        result.hiddenRemoved = hiddenAdded
+        result.rowHeights = rowHeights.mapValues { ($0.new, $0.old) }
+        result.frozen = frozen.map { ($0.new, $0.old) }
+        result.autoFilter = autoFilter.map { ($0.new, $0.old) }
+        return result
+    }
+
+    public func apply(to sheet: Sheet) {
+        if !mergesRemoved.isEmpty {
+            sheet.mergedRanges.removeAll { mergesRemoved.contains($0) }
+        }
+        sheet.mergedRanges.append(contentsOf: mergesAdded.filter { !sheet.mergedRanges.contains($0) })
+        sheet.hiddenRows.subtract(hiddenRemoved)
+        sheet.hiddenRows.formUnion(hiddenAdded)
+        for (row, height) in rowHeights {
+            sheet.rowHeights[row] = height.new
+        }
+        if let frozen {
+            sheet.frozenRows = frozen.new.rows
+            sheet.frozenColumns = frozen.new.columns
+        }
+        if let autoFilter {
+            sheet.autoFilter = autoFilter.new
+        }
+    }
+}
+
 extension Sheet {
     public var layoutState: SheetLayoutState {
         get {

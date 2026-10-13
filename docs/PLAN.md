@@ -330,9 +330,12 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
 - Sort and AutoFilter live in Core (`SortRows.swift`, `AutoFilter.swift`):
   Excel's sort order (numbers, text, booleans, errors; blanks last), whole-row
   moves with formulas translated like a copy, a header guess, value/condition
-  criteria with wildcards, and filter evaluation that hides rows. Merges,
-  hidden rows, frozen panes, the filter and row heights undo together as
-  `SheetLayoutState`. Unsupported criteria (top 10, dynamic, colour) are kept
+  criteria with wildcards, and filter evaluation that hides rows. A layout
+  command's undo step records only what it changed (`SheetLayoutChange`:
+  merges added/removed, rows hidden/shown, heights, the filter), so undoing
+  it leaves later changes alone. Row and column resizes are one undo step
+  per drag; frozen panes are a view setting and, as in Excel, not undoable.
+  Unsupported criteria (top 10, dynamic, colour) are kept
   as XML and written back, but hide nothing when re-applied.
 - Chrome: toolbar (undo/redo, format painter, clear formatting; $ / % /
   decimal places / number-format menu; font, size, B/I/U/S, colors, borders;
