@@ -269,11 +269,21 @@ extension Workbook {
     /// Create a pivot table over `source` on sheet `sourceSheetID`, with its
     /// body's top-left at `destination` on `destinationSheetID`. Returns the
     /// new table's index. Lay it out with computePivotTable/applyPivotLayout.
+    /// Where a new pivot table with its body at `destination` sits: Excel's
+    /// placeholder of 18 rows by 3 columns until fields are added, starting
+    /// no higher than row 3 (room for report filters above it).
+    public static func newPivotTableArea(at destination: CellAddress) -> CellRange {
+        let top = CellAddress(row: max(destination.row, 2), column: destination.column)
+        return CellRange(start: top, end: CellAddress(row: top.row + 17, column: top.column + 2))
+    }
+
+    /// `data`: the source already read (else it is read here).
     @discardableResult
     public func createPivotTable(sourceSheetID: Int, source: CellRange,
-                                 destinationSheetID: Int, at destination: CellAddress) throws -> Int {
+                                 destinationSheetID: Int, at destination: CellAddress,
+                                 data: PivotCacheData? = nil) throws -> Int {
         guard let sheet = sheet(withID: sourceSheetID) else { throw PivotEngineError("the source sheet is missing") }
-        let data = try PivotCacheBuilder.build(sheet: sheet, range: source, workbook: self)
+        let data = try data ?? PivotCacheBuilder.build(sheet: sheet, range: source, workbook: self)
         let cacheID = (pivotCaches.map(\.cacheID).max() ?? -1) + 1
         pivotCaches.append(PivotCache(cacheID: cacheID,
                                       sourceRanges: [PivotSourceRange(target: .sheet(id: sourceSheetID), ref: source.a1)],
@@ -281,9 +291,7 @@ extension Workbook {
         var n = 1
         while pivotTables.contains(where: { $0.name.caseInsensitiveCompare("PivotTable\(n)") == .orderedSame }) { n += 1 }
         let name = "PivotTable\(n)"
-        // Excel's placeholder body until fields are added: 18 rows x 3 columns.
-        let top = CellAddress(row: max(destination.row, 2), column: destination.column)
-        let location = CellRange(start: top, end: CellAddress(row: top.row + 17, column: top.column + 2))
+        let location = Self.newPivotTableArea(at: destination)
         pivotTables.append(PivotTable(sheetID: destinationSheetID, name: name, cacheID: cacheID, location: location,
                                       payload: NewPivotPayload(), definition: .new(name: name, cache: data),
                                       isModified: true))

@@ -32,16 +32,24 @@ extension Workbook {
     /// area: non-empty cells, and other pivot tables.
     public func pivotLayoutConflicts(for index: Int, result: PivotLayoutResult) -> (cells: [CellAddress], tables: [String]) {
         let table = pivotTables[index]
-        guard let sheet = sheet(withID: table.sheetID) else { return ([], []) }
+        guard sheet(withID: table.sheetID) != nil else { return ([], []) }
         let (location, occupied) = pivotPlacement(for: index, result: result)
         guard location.end.isValid else { return ([location.end], []) }
-        let current = table.occupiedRange
+        return pivotAreaConflicts(onSheet: table.sheetID, area: occupied, except: index, outside: table.occupiedRange)
+    }
+
+    /// What a pivot table drawn over `area` would overwrite: non-empty cells
+    /// (outside `current`, the area it already covers) and other pivot
+    /// tables (any but table `except`).
+    public func pivotAreaConflicts(onSheet sheetID: Int, area: CellRange, except index: Int? = nil,
+                                   outside current: CellRange? = nil) -> (cells: [CellAddress], tables: [String]) {
+        guard let sheet = sheet(withID: sheetID) else { return ([], []) }
         var cells: [CellAddress] = []
-        for (address, cell) in sheet.cells where occupied.contains(address) && !current.contains(address) {
+        for (address, cell) in sheet.cells where area.contains(address) && !(current?.contains(address) ?? false) {
             if !cell.value.isEmpty || cell.formula != nil { cells.append(address) }
         }
         let tables = pivotTables.enumerated().filter { i, other in
-            i != index && other.sheetID == table.sheetID && other.occupiedRange.intersects(occupied)
+            i != index && other.sheetID == sheetID && other.occupiedRange.intersects(area)
         }.map(\.element.name)
         return (cells.sorted(), tables)
     }

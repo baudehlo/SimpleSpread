@@ -44,6 +44,57 @@ struct PivotEditingDocumentTests {
         #expect(doc.workbook.sheets.count == 1)
     }
 
+    @Test func insertingOnThisSheetAsksBeforeReplacingCells() {
+        let doc = document()
+        let sheet = doc.activeSheetID
+        doc.commitInput("keep", at: a("E10"))
+        // The 18 x 3 placeholder from D1 covers D3:F20, E10 included.
+        var asked: [String] = []
+        doc.confirm = { message, detail, _ in asked.append(message + " " + detail); return false }
+        #expect(!doc.insertPivotTable(source: CellRange(a1: "A1:B5")!, destination: .existing(sheetID: sheet, at: a("D1"))))
+        #expect(asked.count == 1 && asked[0].contains("E10"))
+        #expect(text(doc, "E10") == "keep")
+        #expect(doc.workbook.pivotTables.isEmpty && doc.workbook.pivotCaches.isEmpty)
+        #expect(doc.undoManager.undoActionName != "Insert PivotTable")
+
+        doc.confirm = { _, _, _ in true }
+        #expect(doc.insertPivotTable(source: CellRange(a1: "A1:B5")!, destination: .existing(sheetID: sheet, at: a("D1"))))
+        #expect(text(doc, "E10") == "")
+        doc.undoManager.undo()
+        #expect(text(doc, "E10") == "keep")
+        #expect(doc.workbook.pivotTables.isEmpty)
+    }
+
+    @Test func insertingOverItsOwnDataIsRefused() {
+        let doc = document()
+        let sheet = doc.activeSheetID
+        doc.confirm = { _, _, _ in Issue.record("shouldn't ask"); return true }
+        #expect(!doc.insertPivotTable(source: CellRange(a1: "A1:B5")!, destination: .existing(sheetID: sheet, at: a("B2"))))
+        #expect(doc.notice?.message.contains("its own data") == true)
+        #expect(text(doc, "B3") == "5" && doc.workbook.pivotTables.isEmpty)
+    }
+
+    @Test func insertingOverAnotherPivotIsRefused() {
+        let doc = document()
+        let sheet = doc.activeSheetID
+        #expect(doc.insertPivotTable(source: CellRange(a1: "A1:B5")!, destination: .existing(sheetID: sheet, at: a("D1"))))
+        doc.selectSheet(withID: sheet)
+        #expect(!doc.insertPivotTable(source: CellRange(a1: "A1:B5")!, destination: .existing(sheetID: sheet, at: a("E5"))))
+        #expect(doc.notice?.message.contains("PivotTable1") == true)
+        #expect(doc.workbook.pivotTables.count == 1)
+    }
+
+    @Test func aFailedInsertLeavesTheUndoStackAlone() {
+        let doc = document()
+        doc.commitInput("typed", at: a("H1"))
+        let before = doc.undoManager.undoActionName
+        // A blank heading: the source can't be read.
+        #expect(!doc.insertPivotTable(source: CellRange(a1: "A1:C5")!))
+        #expect(doc.notice?.message == "Couldn’t create the pivot table.")
+        #expect(doc.workbook.sheets.count == 1)
+        #expect(text(doc, "H1") == "typed" && doc.undoManager.undoActionName == before)
+    }
+
     @Test func editingLaysOutAndUndoes() {
         let doc = document()
         doc.insertPivotTable(source: CellRange(a1: "A1:B5")!)
