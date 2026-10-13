@@ -267,6 +267,14 @@ extension SpreadsheetDocument {
 
     public var activeAutoFilter: AutoFilter? { activeSheet.autoFilter }
 
+    /// Rows of `range` the AutoFilter hides. Copy and Delete skip these, as
+    /// in Excel; rows hidden by hand are not filtered and still count.
+    func filteredOutRows(in range: CellRange) -> Set<Int> {
+        let sheet = activeSheet
+        guard let rows = sheet.autoFilter?.dataRows, !sheet.hiddenRows.isEmpty else { return [] }
+        return sheet.hiddenRows.filter { rows.contains($0) && range.start.row...range.end.row ~= $0 }
+    }
+
     /// Data ▸ Filter: add filter buttons over the selection (or the data
     /// around the cursor), or remove the filter and show its rows again.
     public func toggleAutoFilter() {

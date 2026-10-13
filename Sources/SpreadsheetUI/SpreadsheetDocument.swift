@@ -9,6 +9,10 @@ public struct ClipboardPayload: Codable, Sendable {
         public var columnOffset: Int
         public var cell: Cell
         public var style: CellStyle
+        /// The row offset in the source when it differs from `rowOffset`:
+        /// a copy of a filtered range closes up the hidden rows, but formulas
+        /// still translate from where each cell really was.
+        public var sourceRowOffset: Int? = nil
     }
     public var rows: Int
     public var columns: Int
@@ -309,7 +313,9 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     /// Delete contents (not formatting) of the selected range.
-    public func clearSelectionContents() {
+    /// Delete: clear contents, keeping formatting. Like Excel, rows the
+    /// filter hides are left alone (`skippingFiltered`); a cut clears all.
+    public func clearSelectionContents(skippingFiltered: Bool = true) {
         let touched = pivotTables(touching: selection.range)
         if !touched.isEmpty {
             // Deleting a whole pivot table removes it (as in Excel); clearing
@@ -321,7 +327,8 @@ public final class SpreadsheetDocument: ObservableObject {
             removePivotTablesAndClear(touched)
             return
         }
-        let addresses = selection.range.addresses
+        let skipped = skippingFiltered ? filteredOutRows(in: selection.range) : []
+        let addresses = selection.range.addresses.filter { !skipped.contains($0.row) }
         let snaps = snapshot(addresses)
         for address in addresses {
             let abs = AbsoluteAddress(sheetID: activeSheetID, address: address)
@@ -672,10 +679,13 @@ public final class SpreadsheetDocument: ObservableObject {
     // MARK: - Clipboard
 
     /// TSV of the selection's displayed values (external interchange).
-    public func selectionTSV() -> String {
+    /// The selection as tab-separated text. Like Excel, a copy leaves out
+    /// rows the filter hides (`skippingFiltered`); a cut keeps them all.
+    public func selectionTSV(skippingFiltered: Bool = true) -> String {
         let range = selection.range
+        let skipped = skippingFiltered ? filteredOutRows(in: range) : []
         var lines: [String] = []
-        for r in range.start.row...range.end.row {
+        for r in range.start.row...range.end.row where !skipped.contains(r) {
             var fields: [String] = []
             for c in range.start.column...range.end.column {
                 fields.append(displayString(at: CellAddress(row: r, column: c)))
@@ -685,23 +695,32 @@ public final class SpreadsheetDocument: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
-    /// Internal payload (formulas + styles) for lossless paste.
+    /// Internal payload (formulas + styles) for lossless paste. A copy of a
+    /// filtered range takes only the rows that show, closed up, as Excel
+    /// does; a cut moves every row, hidden or not (it clears them all).
     public func selectionPayload(isCut: Bool = false) -> ClipboardPayload {
         let range = selection.range
+        let skipped = isCut ? [] : filteredOutRows(in: range)
+        let rows = (range.start.row...range.end.row).filter { !skipped.contains($0) }
         var entries: [ClipboardPayload.Entry] = []
-        range.forEachAddress { addr in
-            let cell = activeSheet.cell(at: addr)
-            guard !cell.isDefault else { return }
-            // A pivot field button belongs to its pivot table, not the value.
-            var style = workbook.style(at: cell.styleIndex)
-            style.pivotButton = false
-            entries.append(ClipboardPayload.Entry(
-                rowOffset: addr.row - range.start.row,
-                columnOffset: addr.column - range.start.column,
-                cell: cell,
-                style: style))
+        for (packedRow, row) in rows.enumerated() {
+            for column in range.start.column...range.end.column {
+                let addr = CellAddress(row: row, column: column)
+                let cell = activeSheet.cell(at: addr)
+                guard !cell.isDefault else { continue }
+                // A pivot field button belongs to its pivot table, not the value.
+                var style = workbook.style(at: cell.styleIndex)
+                style.pivotButton = false
+                let sourceRow = row - range.start.row
+                entries.append(ClipboardPayload.Entry(
+                    rowOffset: packedRow,
+                    columnOffset: column - range.start.column,
+                    cell: cell,
+                    style: style,
+                    sourceRowOffset: sourceRow == packedRow ? nil : sourceRow))
+            }
         }
-        return ClipboardPayload(rows: range.rowCount, columns: range.columnCount,
+        return ClipboardPayload(rows: max(1, rows.count), columns: range.columnCount,
                                 entries: entries, isCut: isCut)
     }
 
@@ -742,7 +761,7 @@ public final class SpreadsheetDocument: ObservableObject {
                 var formula = entry.cell.formula
                 if let f = formula, !payload.isCut {
                     let origin = sourceOrigin ?? targetRange.start
-                    let dr = dest.row - (origin.row + entry.rowOffset)
+                    let dr = dest.row - (origin.row + (entry.sourceRowOffset ?? entry.rowOffset))
                     let dc = dest.column - (origin.column + entry.columnOffset)
                     formula = WorkbookOperations.translatedFormula(f, byRows: dr, columns: dc)
                 }
