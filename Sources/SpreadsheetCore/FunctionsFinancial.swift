@@ -166,28 +166,29 @@ enum FinancialFunctions {
         return -(pv * growth + fv) * rate / ((growth - 1) * (1 + rate * type))
     }
 
-    /// Interest and principal portions of the payment in `period`, by rolling
-    /// the balance forward. Payments-at-start (type 1) have zero interest in
-    /// period 1.
+    /// FV with the spreadsheet sign convention.
+    static func fv(rate: Double, nper: Double, pmt: Double, pv: Double, type: Double) -> Double {
+        if rate == 0 { return -(pv + pmt * nper) }
+        let growth = pow(1 + rate, nper)
+        return -(pv * growth + pmt * (1 + rate * type) * (growth - 1) / rate)
+    }
+
+    /// Interest and principal portions of the payment in `period`, in closed
+    /// form (the balance after period - 1 is an FV): no loop over periods.
+    /// Payments-at-start (type 1) have zero interest in period 1.
     static func splitPayment(rate: Double, period: Int, nper: Double, pv: Double,
-                             fv: Double, type: Double) throws -> (interest: Double, principal: Double) {
-        let payment = pmt(rate: rate, nper: nper, pv: pv, fv: fv, type: type)
-        var balance = pv
-        var interest = 0.0
-        var principal = 0.0
-        for p in 1...period {
-            if type == 1 && p == 1 {
-                interest = 0
-            } else {
-                interest = -balance * rate
-            }
-            principal = payment - interest
-            balance += principal
-            if type == 1 && p == 1 {
-                // beginning-of-period payment reduces balance before interest accrues
-            }
+                             fv fvalue: Double, type: Double) throws -> (interest: Double, principal: Double) {
+        let payment = pmt(rate: rate, nper: nper, pv: pv, fv: fvalue, type: type)
+        let interest: Double
+        if period == 1 {
+            interest = type == 1 ? 0 : -pv * rate
+        } else if type == 1 {
+            interest = (fv(rate: rate, nper: Double(period - 2), pmt: payment, pv: pv, type: 1) - payment) * rate
+        } else {
+            interest = fv(rate: rate, nper: Double(period - 1), pmt: payment, pv: pv, type: 0) * rate
         }
-        return (interest, principal)
+        guard interest.isFinite, payment.isFinite else { throw CellError.num }
+        return (interest, payment - interest)
     }
 
     /// Newton–Raphson with numeric derivative, falling back to bracket +

@@ -157,25 +157,56 @@ struct GridArg {
     }
 }
 
-/// Evaluate a multi-criteria (range, criterion) pairing: returns the set of
-/// row-major indices (over the first range's shape) matching ALL pairs.
-/// All ranges must share dimensions or #VALUE! is thrown.
-func matchingIndices(criteriaPairs: [(GridArg, Criterion)]) throws -> [Int] {
-    guard let first = criteriaPairs.first else { return [] }
+// MARK: - Criteria engine
+//
+// The one implementation behind SUMIF, SUMIFS, COUNTIF, COUNTIFS, AVERAGEIF,
+// AVERAGEIFS, MAXIFS and MINIFS (Excel semantics):
+// - every cell of a criteria range is tested against its criterion; an error
+//   cell is a value like any other (it matches "#N/A" or "<>5", not ">0") and
+//   is never thrown;
+// - an error in a cell that is aggregated (sum/average/max range) propagates;
+// - *IFS ranges must all have the criteria range's shape, else #VALUE!.
+
+/// (range, criterion) pairs from alternating arguments starting at `start`.
+func criteriaPairs(_ args: [EvalValue], from start: Int) throws -> [(GridArg, Criterion)] {
+    guard (args.count - start) % 2 == 0, args.count > start else { throw CellError.na }
+    var pairs: [(GridArg, Criterion)] = []
+    var i = start
+    while i + 1 < args.count {
+        pairs.append((GridArg(args[i]), Criterion.parse(try args[i + 1].toScalar())))
+        i += 2
+    }
+    return pairs
+}
+
+/// The cells, in row-major order over the first range's shape, where ALL
+/// criteria hold. Ranges of different shapes are #VALUE!.
+func matchingCells(_ pairs: [(GridArg, Criterion)]) throws -> [(row: Int, column: Int)] {
+    guard let first = pairs.first else { return [] }
     let rows = first.0.rows, cols = first.0.columns
-    for (grid, _) in criteriaPairs {
+    for (grid, _) in pairs {
         guard grid.rows == rows, grid.columns == cols else { throw CellError.value }
     }
-    var out: [Int] = []
-    for idx in 0..<(rows * cols) {
-        let r = idx / cols, c = idx % cols
-        var all = true
-        for (grid, criterion) in criteriaPairs {
-            let v = grid.value(atRow: r, column: c)
-            if case .error(let e) = v { throw e }
-            if !criterion.matches(v) { all = false; break }
+    var out: [(row: Int, column: Int)] = []
+    for r in 0..<rows {
+        for c in 0..<cols where pairs.allSatisfy({ $0.1.matches($0.0.value(atRow: r, column: c)) }) {
+            out.append((r, c))
         }
-        if all { out.append(idx) }
+    }
+    return out
+}
+
+/// The numbers at `cells` of `values` (text, booleans and blanks skipped; an
+/// error in a matched cell propagates). `values` is read by offset, so a
+/// SUMIF sum range of another size lines up from its top-left cell.
+func criteriaNumbers(_ values: GridArg, at cells: [(row: Int, column: Int)]) throws -> [Double] {
+    var out: [Double] = []
+    for (r, c) in cells {
+        switch values.value(atRow: r, column: c) {
+        case .number(let n): out.append(n)
+        case .error(let e): throw e
+        default: break
+        }
     }
     return out
 }

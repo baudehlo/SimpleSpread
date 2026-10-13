@@ -50,12 +50,13 @@ enum InfoFunctions {
 
     private static let valueInfo: [BuiltinFunction] = [
         .eager("ISEVEN", min: 1, max: 1) { args, _ in
-            let n = try numArg(args[0])
-            return .bool(Int(n.rounded(.towardZero)) % 2 == 0)
+            // Exact for every double: those >= 2^53 are all even integers.
+            let n = try numArg(args[0]).rounded(.towardZero)
+            return .bool(n.truncatingRemainder(dividingBy: 2) == 0)
         },
         .eager("ISODD", min: 1, max: 1) { args, _ in
-            let n = try numArg(args[0])
-            return .bool(Int(n.rounded(.towardZero)) % 2 != 0)
+            let n = try numArg(args[0]).rounded(.towardZero)
+            return .bool(n.truncatingRemainder(dividingBy: 2) != 0)
         },
         .eager("N", min: 1, max: 1) { args, _ in
             let v = try args[0].toScalar()

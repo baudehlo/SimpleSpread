@@ -5,6 +5,29 @@ brackets are optional; `...` is variadic. Semantics follow Google Sheets /
 Excel shared behavior (see docs/RESEARCH.md for the coercion and criteria
 rules that apply across all functions).
 
+Rules that apply across the library:
+
+- **Precision.** ROUND-family functions and number-format display round the
+  value's 15-significant-digit decimal form, as Excel does:
+  `ROUND(1.005,2)` = 1.01 and 0.145 in `0%` shows 15%, although both doubles
+  sit a hair below the halfway point.
+- **Dates.** A date serial must be in 0 … 2958465 (1899-12-30 … 9999-12-31);
+  outside that, date functions return #NUM! and date/time formats show
+  `#####` (TEXT returns #VALUE!).
+- **Criteria** (SUMIF, SUMIFS, COUNTIF, COUNTIFS, AVERAGEIF, AVERAGEIFS,
+  MAXIFS, MINIFS) share one engine. The operand after `>=`, `<>` … is read like
+  typed input, so `">=1/1/2024"`, `"50%"`, `"TRUE"` and `"#N/A"` mean a date,
+  a number, a boolean and an error. Error cells in a criteria range are tested
+  like any other value (`"#N/A"` and `"<>5"` match them, `">0"` does not); an
+  error in a cell being summed/averaged still propagates.
+- **Lookups** share one equality rule: same type only, text
+  case-insensitive, and a **blank lookup value matches nothing** (#N/A), not
+  the first blank key. Approximate matches (VLOOKUP/HLOOKUP TRUE, MATCH 1/−1,
+  LOOKUP) are a binary search like Excel's, so they need sorted data; on
+  unsorted data they give the binary-search answer, not "last value ≤ key".
+  Blanks and values of another type than the key are skipped
+  (`LOOKUP(9.99E+307,A:A)` is the last number in A).
+
 ## Math (33)
 
 | Function | Notes |
@@ -21,8 +44,8 @@ rules that apply across all functions).
 | PI() | |
 | INT(x) | Floor: INT(-1.5) = -2 |
 | TRUNC(x, [places=0]) | Toward zero: TRUNC(-1.5) = -1 |
-| ROUND(x, [places=0]) | Half away from zero; negative places round left of decimal |
-| ROUNDUP / ROUNDDOWN(x, [places=0]) | Away from / toward zero |
+| ROUND(x, [places=0]) | Half away from zero on the 15-digit value (ROUND(1.005,2) = 1.01); negative places round left of decimal |
+| ROUNDUP / ROUNDDOWN(x, [places=0]) | Away from / toward zero; fuzz below 15 digits is ignored, so ROUNDUP(0.1+0.2,1) = 0.3 but ROUNDUP(1.0000000001,0) = 2 |
 | MROUND(x, factor) | Nearest multiple; mixed signs → #NUM! |
 | CEILING(x, [factor=1]) | CEILING(-2.5,2) = -2; x>0 with factor<0 → #NUM! |
 | FLOOR(x, [factor=1]) | FLOOR(-2.5,2) = -4 |
@@ -31,8 +54,8 @@ rules that apply across all functions).
 | POWER(a, b) | 0^0 and non-finite results → #NUM! |
 | EVEN(x), ODD(x) | Round away from zero to even/odd |
 | FACT(n) | 0 ≤ n ≤ 170 |
-| COMBIN(n, k) | |
-| GCD(v1, ...), LCM(v1, ...) | Non-negative integers |
+| COMBIN(n, k) | Results beyond the double range → #NUM! |
+| GCD(v1, ...), LCM(v1, ...) | Non-negative integers below 2^53; an LCM of 2^53 or more → #NUM! |
 | RAND() | Volatile, [0, 1) |
 | RANDBETWEEN(lo, hi) | Volatile, inclusive integers; lo > hi → #NUM! |
 
@@ -89,7 +112,7 @@ rules that apply across all functions).
 | CLEAN(text) | Removes control characters |
 | REPT(text, n) | Result capped at 32,767 chars |
 | EXACT(a, b) | The case-sensitive comparison |
-| TEXT(value, format_code) | Full number-format renderer |
+| TEXT(value, format_code) | Full number-format renderer (conditional sections, scaling commas, elapsed/fractional-second times); out-of-range date → #VALUE! |
 | VALUE(text) | Numbers, %, $, dates, times → number |
 | CHAR(n), CODE(text) | Unicode scalars |
 | T(value) | Text passes through, else "" |
@@ -103,7 +126,7 @@ rules that apply across all functions).
 | TIME(h, m, s) | Wraps mod 24h |
 | DATEVALUE / TIMEVALUE(text) | en-US formats + ISO |
 | TODAY(), NOW() | Volatile |
-| YEAR / MONTH / DAY / HOUR / MINUTE / SECOND(serial) | Accept date strings |
+| YEAR / MONTH / DAY / HOUR / MINUTE / SECOND(serial) | Accept date strings; HOUR/MINUTE/SECOND round the time to the nearest second first (12:00:59.6 → 12:01:00) |
 | WEEKDAY(serial, [type=1]) | 1: Sun=1..7, 2: Mon=1..7, 3: Mon=0..6 |
 | WEEKNUM(serial, [type=1]) | Types 1, 2, 11–17, 21 (ISO) |
 | ISOWEEKNUM(serial) | |
@@ -111,20 +134,20 @@ rules that apply across all functions).
 | EOMONTH(serial, months) | |
 | DATEDIF(start, end, unit) | Y, M, D, MD, YM, YD; start > end → #NUM! |
 | DAYS(end, start) | |
-| NETWORKDAYS(start, end, [holidays]) | Mon–Fri inclusive |
-| WORKDAY(start, days, [holidays]) | Exclusive of start |
-| YEARFRAC(start, end, [basis=0]) | 0: 30/360 US, 1: act/act, 2: act/360, 3: act/365, 4: 30E/360 |
+| NETWORKDAYS(start, end, [holidays]) | Mon–Fri inclusive; closed-form week arithmetic (any span is instant) |
+| WORKDAY(start, days, [holidays]) | Exclusive of start; result past 9999-12-31 → #NUM! |
+| YEARFRAC(start, end, [basis=0]) | 0: 30/360 US (NASD: end of February counts as the 30th), 1: act/act (≤ 1 year: 365 or 366 if a Feb 29 is spanned; longer: average year length), 2: act/360, 3: act/365, 4: 30E/360 |
 
 ## Lookup & reference (14)
 
 | Function | Notes |
 |---|---|
-| VLOOKUP(key, range, index, [sorted=TRUE]) | Sorted default = largest ≤ key; FALSE = exact with wildcards |
+| VLOOKUP(key, range, index, [sorted=TRUE]) | Sorted default = binary search for the largest ≤ key; FALSE = exact with wildcards |
 | HLOOKUP(key, range, index, [sorted=TRUE]) | Row-wise mirror |
-| XLOOKUP(key, lookup, result, [missing], [match=0], [search=1]) | Match 0/1/−1/2; search ±1/±2 (−: last match wins) |
-| MATCH(key, range, [type=1]) | 1-D only; 1/0/−1 |
+| XLOOKUP(key, lookup, result, [missing], [match=0], [search=1]) | Match 0/1/−1/2; search ±1/±2 (−: last match wins; ±2 scan linearly, same answer on the sorted data they need). A 2-D result range gives the matching row (column for a horizontal lookup); without spilling the cell shows that row's first value |
+| MATCH(key, range, [type=1]) | 1-D only; 1/0/−1 (1 and −1 binary search ascending/descending data) |
 | INDEX(range, row, [col]) | 1-based; out of bounds → #REF!; 1-D single-arg convenience |
-| LOOKUP(key, lookup, [result]) | Largest ≤ key |
+| LOOKUP(key, lookup, [result]) | Binary search for the largest ≤ key; 2-D array form searches the first row (wider than tall) or column and returns from the last |
 | CHOOSE(n, v1, ...) | Lazy; out of range → #NUM! |
 | ADDRESS(row, col, [mode=1], [a1=TRUE], [sheet]) | Modes 1–4 |
 | ROW([ref]), COLUMN([ref]) | No-arg form = own cell |
@@ -155,7 +178,15 @@ errors thrown mid-evaluation (`ISERROR(1/0)` → TRUE).
 
 - No array results / spilling: functions that would return ranges into the
   grid (SPLIT, FILTER, UNIQUE, TRANSPOSE, ARRAYFORMULA) are absent; INDEX
-  with row/col 0 errors instead of returning a slice.
+  with row/col 0 errors instead of returning a slice. XLOOKUP with a 2-D
+  return range shows the first cell of the matching row/column.
+- **No array evaluation (scope cut).** Operators and functions work on single
+  values; a range is not broadcast element by element. So the pre-365
+  conditional-sum idiom `SUMPRODUCT((A1:A3>1)*B1:B3)` returns #VALUE!, and
+  array (CSE) formulas are not supported. Use SUMIFS/COUNTIFS instead.
+- Approximate lookups are binary searches like Excel's, but Excel's exact
+  probing order on unsorted data with mixed types is not documented; on
+  sorted data (what Excel requires) the results are the same.
 - INDIRECT and OFFSET are not implemented (dynamic references defeat static
   dependency analysis; see roadmap).
 - REGEX* use ICU syntax rather than RE2 (superset for common patterns).

@@ -83,12 +83,16 @@ public struct NumberFormat: Hashable, Sendable, Codable {
 /// Renders cell values using Excel-style number format codes.
 ///
 /// Supported: digit placeholders 0/#/?, decimal point, thousands grouping,
-/// trailing-comma scaling, percent, scientific E+/E-, quoted literals,
-/// backslash escapes, underscore-space and asterisk (treated as single space /
-/// ignored), @ text placeholder, multi-section pos;neg;zero;text, color codes
-/// (stripped), and date/time tokens (y/m/d/h/s, AM/PM, elapsed [h] [m] [s]).
-/// Unsupported (falls back to General): fraction formats (?/?), conditional
-/// sections ([>100]).
+/// trailing-comma scaling (also before a literal: `#,##0,"K"`), percent,
+/// scientific E+/E-, quoted literals, backslash escapes, underscore-space and
+/// asterisk (treated as single space / ignored), @ text placeholder,
+/// multi-section pos;neg;zero;text, conditional sections
+/// (`[>=1000]0,"K";0`), color codes (stripped), and date/time tokens
+/// (y/m/d/h/s, fractional seconds, AM/PM, elapsed [h] [m] [s]).
+/// Numbers are rounded for display on their 15-significant-digit decimal
+/// form, as Excel does (0.145 in `0%` is 15%), and never pass through a
+/// fixed-width integer, so any magnitude renders exactly.
+/// Unsupported (falls back to General): fraction formats (?/?).
 public enum NumberFormatEngine {
     // MARK: General
 
@@ -227,28 +231,32 @@ public enum NumberFormatEngine {
         }
     }
 
+    /// What a date/time format shows for a serial outside 0 ... 2958465
+    /// (Excel fills the cell with #).
+    public static let invalidDateDisplay = "#####"
+
     /// Format a number using a format code (General if empty).
     public static func formatNumber(_ n: Double, code: String) -> String {
+        render(n, code: code) ?? invalidDateDisplay
+    }
+
+    /// TEXT(): like `formatNumber`, but a date format given a serial it
+    /// cannot show is #VALUE!, as in Excel.
+    static func formatForTEXT(_ n: Double, code: String) throws -> String {
+        guard let text = render(n, code: code) else { throw CellError.value }
+        return text
+    }
+
+    /// nil = a date/time section with an out-of-range serial.
+    private static func render(_ n: Double, code: String) -> String? {
         guard n.isFinite else { return CellError.num.rawValue }
         let trimmedCode = code.trimmingCharacters(in: .whitespaces)
         if trimmedCode.isEmpty || trimmedCode.caseInsensitiveCompare("General") == .orderedSame {
             return generalString(for: n)
         }
         let secs = sections(of: code)
-        // Section selection: 1 = all; 2 = pos+zero / neg; 3 = pos / neg / zero.
-        var section: String
-        var useAbs = false
-        if secs.count == 1 {
-            section = secs[0]
-        } else if n > 0 || (n == 0 && secs.count < 3) {
-            section = secs[0]
-        } else if n < 0 {
-            section = secs[1]
-            useAbs = true
-        } else {
-            section = secs[2]
-        }
-        section = stripBracketModifiers(section)
+        let (index, useAbs) = sectionIndex(for: n, sections: secs)
+        var section = stripBracketModifiers(secs[index])
         if section.isEmpty { return "" }
         if sectionIsDateTime(section) {
             return formatDateTime(n, section: section)
@@ -256,17 +264,99 @@ public enum NumberFormatEngine {
         if isUnsupportedSection(section) {
             return generalString(for: n)
         }
+        let value = useAbs ? abs(n) : n
         if section.caseInsensitiveCompare("General") == .orderedSame {
-            return generalString(for: useAbs ? abs(n) : n)
+            return generalString(for: value)
         }
-        var rendered = renderNumericSection(section, value: useAbs ? abs(n) : n)
-        // One-section formats show negatives with a leading minus unless the
-        // pattern handles sign itself.
-        if secs.count == 1, n < 0, !rendered.hasPrefix("-") {
-            // renderNumericSection works on the signed value; nothing to add here.
+        section = renderNumericSection(section, value: value)
+        return section.isEmpty ? "0" : section
+    }
+
+    /// Which section shows `n`, and whether it shows |n| (the section itself
+    /// stands for "negative", so no minus sign).
+    ///
+    /// Without conditions: 1 section = all; 2 = (positive and zero) /
+    /// negative; 3+ = positive / negative / zero.
+    /// With conditions (`[>=1000]`) in the first two sections, Excel tests
+    /// the first section's condition, then the second's; a number neither
+    /// takes goes to the third section when both have conditions, else to the
+    /// second. It keeps its minus sign unless the chosen section's condition
+    /// is "negative" (`[<0]`, `[<=0]` in section 1; `[<0]` in section 2 or
+    /// an implied one after `[>=0]`).
+    static func sectionIndex(for n: Double, sections secs: [String]) -> (index: Int, useAbs: Bool) {
+        let c1 = secs.count > 0 ? sectionCondition(secs[0]) : nil
+        let c2 = secs.count > 1 ? sectionCondition(secs[1]) : nil
+        guard c1 != nil || c2 != nil else {
+            if secs.count == 1 || n > 0 || (n == 0 && secs.count < 3) { return (0, false) }
+            if n < 0 { return (1, true) }
+            return (2, false)
         }
-        if rendered.isEmpty { rendered = "0" }
-        return rendered
+        let index: Int
+        if let c1, c1.holds(for: n) {
+            index = 0
+        } else if let c2, c2.holds(for: n) {
+            index = 1
+        } else if c1 != nil && c2 != nil {
+            index = secs.count > 2 ? 2 : 0
+        } else if c1 != nil {
+            index = secs.count > 1 ? 1 : 0
+        } else {
+            index = 0
+        }
+        var useAbs = false
+        if n < 0 {
+            if index == 0, let c1 { useAbs = c1.isNegativeOnly }
+            if index == 1 {
+                useAbs = (c2?.isNegativeOnly ?? false)
+                    || (c2 == nil && c1?.op == ">=" && c1?.value == 0)
+            }
+        }
+        return (index, useAbs)
+    }
+
+    /// A section's `[op value]` condition.
+    struct SectionCondition: Equatable {
+        let op: String
+        let value: Double
+
+        func holds(for n: Double) -> Bool {
+            switch op {
+            case "<": return n < value
+            case "<=": return n <= value
+            case ">": return n > value
+            case ">=": return n >= value
+            case "<>": return n != value
+            default: return n == value
+            }
+        }
+
+        /// `[<0]` or `[<=0]`: the section is the negative-number section.
+        var isNegativeOnly: Bool { value == 0 && (op == "<" || op == "<=") }
+    }
+
+    /// The first `[op number]` bracket outside quotes, if any.
+    static func sectionCondition(_ section: String) -> SectionCondition? {
+        guard section.utf8.contains(UInt8(ascii: "[")) else { return nil }
+        var inQuotes = false
+        var i = section.startIndex
+        while i < section.endIndex {
+            let c = section[i]
+            if c == "\"" { inQuotes.toggle() }
+            if c == "\\" { i = section.index(after: i) }
+            else if c == "[", !inQuotes, let close = section[i...].firstIndex(of: "]") {
+                let inner = section[section.index(after: i)..<close].trimmingCharacters(in: .whitespaces)
+                for op in ["<=", ">=", "<>", "<", ">", "="] where inner.hasPrefix(op) {
+                    let operand = inner.dropFirst(op.count).trimmingCharacters(in: .whitespaces)
+                    if let value = Double(operand), value.isFinite {
+                        return SectionCondition(op: op, value: value)
+                    }
+                    break
+                }
+                i = close
+            }
+            if i < section.endIndex { i = section.index(after: i) }
+        }
+        return nil
     }
 
     // MARK: Sections
@@ -391,7 +481,10 @@ public enum NumberFormatEngine {
         var seenDigit = false
         var pendingCommas = 0
 
+        // Commas after a digit placeholder that are not followed by another
+        // placeholder scale by 1000 each, whatever comes next ("K", end).
         func flushCommasAsLiteral() {
+            scaleCommas += pendingCommas
             pendingCommas = 0
         }
 
@@ -467,16 +560,12 @@ public enum NumberFormatEngine {
             }
         }
         // trailing commas after the last digit placeholder scale by 1000 each
-        scaleCommas = pendingCommas
+        scaleCommas += pendingCommas
         return (tokens, grouping, scaleCommas, percentCount)
     }
 
     static func renderNumericSection(_ section: String, value: Double) -> String {
         let (tokens, grouping, scaleCommas, percentCount) = tokenizeNumeric(section)
-
-        var n = value
-        for _ in 0..<percentCount { n *= 100 }
-        for _ in 0..<scaleCommas { n /= 1000 }
 
         // Count placeholders in integer / fraction / exponent zones.
         var intPlaceholders = 0
@@ -495,41 +584,31 @@ public enum NumberFormatEngine {
             }
         }
 
+        // |value| as decimal digits at Excel's 15 significant digits; percent
+        // and comma scaling move the decimal point exactly.
+        var decimal = DecimalDigits(value)
+        decimal.shift(by: 2 * percentCount - 3 * scaleCommas)
+
         var exponentValue = 0
-        var mantissa = n
         let hasExponent = tokens.contains { if case .exponent = $0 { return true }; return false }
-        if hasExponent {
-            if mantissa != 0 {
-                // Normalize so the integer part has `intPlaceholders` digits.
-                let targetDigits = max(1, intPlaceholders)
-                let magnitude = Int(floor(log10(abs(mantissa))))
-                exponentValue = magnitude - (targetDigits - 1)
-                // Round exponent to a multiple of targetDigits for engineering-style ##0.0E+0
-                mantissa = mantissa / pow(10, Double(exponentValue))
+        if hasExponent, !decimal.isZero {
+            // Normalize so the integer part has `intPlaceholders` digits.
+            let targetDigits = max(1, intPlaceholders)
+            // value = 0.d1d2... × 10^exponent, so d1 is the 10^(exponent-1) digit.
+            exponentValue = decimal.exponent - targetDigits
+            decimal.shift(by: -exponentValue)
+            // Rounding can carry into a new digit: 9.999 -> 10.00E+00 is
+            // 1.00E+01.
+            if decimal.rounded(fractionDigits: fracPlaceholders).integerDigitCount > targetDigits {
+                exponentValue += 1
+                decimal.shift(by: -1)
             }
         }
 
-        let negative = mantissa < 0 || (mantissa == 0 && n < 0)
-        var absValue = abs(mantissa)
-
-        // Round to the fraction placeholder count.
-        let factor = pow(10.0, Double(fracPlaceholders))
-        absValue = (absValue * factor).rounded() / factor
-
-        var intDigits = String(Int64(min(absValue.rounded(.down), 9.2e18)))
-        let fracValue = absValue - absValue.rounded(.down)
-        var fracDigits = ""
-        if fracPlaceholders > 0 {
-            let scaled = (fracValue * factor).rounded()
-            fracDigits = String(Int64(scaled))
-            if fracDigits.count < fracPlaceholders {
-                fracDigits = String(repeating: "0", count: fracPlaceholders - fracDigits.count) + fracDigits
-            } else if fracDigits.count > fracPlaceholders {
-                // carry occurred (e.g. 0.999 -> "1000"); bump integer part
-                intDigits = String((Int64(intDigits) ?? 0) + 1)
-                fracDigits = String(repeating: "0", count: fracPlaceholders)
-            }
-        }
+        let negative = value < 0
+        let rounded = decimal.rounded(fractionDigits: fracPlaceholders)
+        var intDigits = rounded.integerString
+        let fracDigits = rounded.fractionString(count: fracPlaceholders)
         // '#'-only integer zones drop a bare zero (0.5 with "#.##" -> ".5").
         let intZonePlaceholderChars: [Character] = {
             var chars: [Character] = []
@@ -727,11 +806,32 @@ public enum NumberFormatEngine {
                              "July", "August", "September", "October", "November", "December"]
     static let dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
 
-    static func formatDateTime(_ serial: Double, section: String) -> String {
-        guard serial >= -694324, let comps = ExcelDate.components(fromSerial: serial) else {
-            // Excel shows ##### for negative date serials; we surface the raw number.
-            return generalString(for: serial)
-        }
+    /// Render a date/time section; nil when the serial is outside the date
+    /// range (Excel shows #####, TEXT returns #VALUE!).
+    ///
+    /// The time is rounded ONCE, to the precision the section shows (whole
+    /// seconds, or tenths/hundredths/thousandths with `ss.0`...), and every
+    /// part — date, h/m/s and elapsed [h]/[m]/[s] — comes from that rounded
+    /// value. So 12:00:59.6 shows 12:01:00 (not 12:00:60) and 7:12 - 0:12,
+    /// a hair under 7 hours in binary, shows [h]:mm 7:00.
+    static func formatDateTime(_ serial: Double, section: String) -> String? {
+        guard ExcelDate.isValidSerial(serial) else { return nil }
+        let subsecondDigits = subsecondPrecision(of: section)
+        let unitsPerSecond = pow(10.0, Double(subsecondDigits))
+        // Whole units (seconds or fractions of one) since serial 0; < 2^53.
+        let totalUnits = (serial * 86400 * unitsPerSecond).rounded()
+        let unitsPerDay = 86400 * unitsPerSecond
+        let wholeDays = (totalUnits / unitsPerDay).rounded(.down)
+        guard let dateComps = ExcelDate.components(fromSerial: wholeDays),
+              let unitOfDay = checkedInt(totalUnits - wholeDays * unitsPerDay),
+              let unitsPerSecondInt = checkedInt(unitsPerSecond) else { return nil }
+        let secondOfDay = unitOfDay / unitsPerSecondInt
+        let subsecondUnits = unitOfDay % unitsPerSecondInt
+        let hour24 = secondOfDay / 3600
+        let minuteOfHour = (secondOfDay % 3600) / 60
+        let secondOfMinute = secondOfDay % 60
+        let totalSeconds = (totalUnits / unitsPerSecond).rounded(.down)
+
         let hasAMPM: Bool = {
             let upper = section.uppercased()
             return upper.contains("AM/PM") || upper.contains("A/P")
@@ -769,6 +869,10 @@ public enum NumberFormatEngine {
             return " "
         }
 
+        func whole(_ x: Double) -> String {
+            checkedInt(x).map(String.init) ?? ""
+        }
+
         while i < section.endIndex {
             let c = section[i]
             let lower = Character(c.lowercased())
@@ -789,34 +893,39 @@ public enum NumberFormatEngine {
                     i = section.index(after: i); continue
                 }
                 let inner = section[section.index(after: i)..<close].lowercased()
-                let totalSeconds = serial * 86400
+                let digits: String
                 if inner.hasPrefix("h") {
-                    out += String(Int((totalSeconds / 3600).rounded(.down)))
+                    digits = whole((totalSeconds / 3600).rounded(.down))
                 } else if inner.hasPrefix("m") {
-                    out += String(Int((totalSeconds / 60).rounded(.down)))
+                    digits = whole((totalSeconds / 60).rounded(.down))
                 } else if inner.hasPrefix("s") {
-                    out += String(Int(totalSeconds.rounded(.down)))
+                    digits = whole(totalSeconds)
+                } else {
+                    digits = ""
                 }
+                // [hh], [mm]: at least that many digits.
+                out += String(repeating: "0", count: max(0, inner.count - digits.count)) + digits
                 lastDateToken = inner.first ?? " "
                 i = section.index(after: close)
             case "y":
                 let (count, next) = run(of: "y", from: i)
-                out += count <= 2 ? String(format: "%02d", comps.year % 100) : String(comps.year)
+                out += count <= 2 ? String(format: "%02d", dateComps.year % 100) : String(dateComps.year)
                 lastDateToken = "y"
                 i = next
             case "m":
                 let (count, next) = run(of: "m", from: i)
                 let isMinutes = lastDateToken == "h" || nextDateTokenAfter(next) == "s"
                 if isMinutes {
-                    out += count >= 2 ? String(format: "%02d", comps.minute) : String(comps.minute)
+                    out += count >= 2 ? String(format: "%02d", minuteOfHour) : String(minuteOfHour)
                     lastDateToken = "m"
                 } else {
+                    let name = monthNames[dateComps.month - 1]
                     switch count {
-                    case 1: out += String(comps.month)
-                    case 2: out += String(format: "%02d", comps.month)
-                    case 3: out += String(monthNames[comps.month - 1].prefix(3))
-                    case 5: out += String(monthNames[comps.month - 1].prefix(1))
-                    default: out += monthNames[comps.month - 1]
+                    case 1: out += String(dateComps.month)
+                    case 2: out += String(format: "%02d", dateComps.month)
+                    case 3: out += String(name.prefix(3))
+                    case 5: out += String(name.prefix(1))
+                    default: out += name
                     }
                     lastDateToken = "M"
                 }
@@ -824,16 +933,16 @@ public enum NumberFormatEngine {
             case "d":
                 let (count, next) = run(of: "d", from: i)
                 switch count {
-                case 1: out += String(comps.day)
-                case 2: out += String(format: "%02d", comps.day)
-                case 3: out += String(dayNames[comps.weekday - 1].prefix(3))
-                default: out += dayNames[comps.weekday - 1]
+                case 1: out += String(dateComps.day)
+                case 2: out += String(format: "%02d", dateComps.day)
+                case 3: out += String(dayNames[dateComps.weekday - 1].prefix(3))
+                default: out += dayNames[dateComps.weekday - 1]
                 }
                 lastDateToken = "d"
                 i = next
             case "h":
                 let (count, next) = run(of: "h", from: i)
-                var hour = comps.hour
+                var hour = hour24
                 if hasAMPM {
                     hour = hour % 12
                     if hour == 0 { hour = 12 }
@@ -843,18 +952,28 @@ public enum NumberFormatEngine {
                 i = next
             case "s":
                 let (count, next) = run(of: "s", from: i)
-                let sec = Int(comps.second.rounded())
-                out += count >= 2 ? String(format: "%02d", sec) : String(sec)
-                lastDateToken = "s"
+                out += count >= 2 ? String(format: "%02d", secondOfMinute) : String(secondOfMinute)
                 i = next
+                // Fractional seconds: "ss.0", "ss.00", "ss.000".
+                if i < section.endIndex, section[i] == "." {
+                    let zerosStart = section.index(after: i)
+                    let (zeros, afterZeros) = run(of: "0", from: zerosStart)
+                    if zeros > 0 {
+                        let digits = String(format: "%0\(subsecondDigits)ld", subsecondUnits)
+                        out += "." + String(digits.prefix(zeros))
+                            + String(repeating: "0", count: max(0, zeros - digits.count))
+                        i = afterZeros
+                    }
+                }
+                lastDateToken = "s"
             case "a":
                 let upper = section[i...].uppercased()
                 if upper.hasPrefix("AM/PM") {
-                    out += comps.hour < 12 ? "AM" : "PM"
+                    out += hour24 < 12 ? "AM" : "PM"
                     i = section.index(i, offsetBy: 5)
                 } else if upper.hasPrefix("A/P") {
                     let isUpper = section[i] == "A"
-                    out += (comps.hour < 12) ? (isUpper ? "A" : "a") : (isUpper ? "P" : "p")
+                    out += (hour24 < 12) ? (isUpper ? "A" : "a") : (isUpper ? "P" : "p")
                     i = section.index(i, offsetBy: 3)
                 } else {
                     out.append(c)
@@ -873,6 +992,26 @@ public enum NumberFormatEngine {
             }
         }
         return out
+    }
+
+    /// Fraction-of-a-second digits a section shows: the most 0s after an
+    /// `s.` (capped at 3, as in Excel), else 0.
+    static func subsecondPrecision(of section: String) -> Int {
+        let chars = Array(section.lowercased())
+        var best = 0
+        var inQuotes = false
+        var i = 0
+        while i < chars.count {
+            let c = chars[i]
+            if c == "\"" { inQuotes.toggle() }
+            if !inQuotes, c == "s", i + 1 < chars.count, chars[i + 1] == "." {
+                var j = i + 2
+                while j < chars.count, chars[j] == "0" { j += 1 }
+                best = max(best, min(3, j - i - 2))
+            }
+            i += 1
+        }
+        return best
     }
 }
 
