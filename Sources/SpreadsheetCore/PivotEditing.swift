@@ -45,11 +45,44 @@ extension PivotDefinition {
     /// an axis; Excel keeps them afterwards.
     mutating func ensureItems(_ f: Int, cache: PivotCacheData) {
         guard f >= 0, fields[f].items.isEmpty else { return }
-        let values = cache.fields[f].axisItems
-        var items = values.indices.sorted { PivotValue.ascending(values[$0], values[$1]) }
-            .map { PivotItem(kind: .data, index: $0) }
+        var items = cache.ascendingItemOrder(f).map { PivotItem(kind: .data, index: $0) }
         for kind in fields[f].subtotals { items.append(PivotItem(kind: kind)) }
         fields[f].items = items
+    }
+
+    /// Excel's "(previous)" and "(next)" base items for Show Values As.
+    public static let previousBaseItem = 1048828
+    public static let nextBaseItem = 1048829
+
+    /// Give field `f` a new item list. `moved` maps the positions of items
+    /// that are still there, old to new. Everything that names an item by
+    /// its position follows it: Show Values As base items on this field and
+    /// its report filter's selected item. (Hidden and collapsed state live on
+    /// the items themselves.) A base item that's gone falls back to the
+    /// first item; a selected filter item that's gone selects all.
+    public mutating func replaceItems(field f: Int, with items: [PivotItem], moved: [Int: Int]) {
+        fields[f].items = items
+        for d in dataFields.indices where dataFields[d].baseField == f {
+            let b = dataFields[d].baseItem
+            guard b != Self.previousBaseItem && b != Self.nextBaseItem else { continue }
+            dataFields[d].baseItem = moved[b] ?? 0
+        }
+        for p in pageFields.indices where pageFields[p].field == f {
+            if let s = pageFields[p].selectedItem { pageFields[p].selectedItem = moved[s] }
+        }
+    }
+
+    /// Old → new positions of the data items both lists hold (by item index).
+    static func positionMap(from old: [PivotItem], to new: [PivotItem]) -> [Int: Int] {
+        var newPosition: [Int: Int] = [:]
+        for (p, item) in new.enumerated() where item.kind == .data {
+            if let x = item.index, newPosition[x] == nil { newPosition[x] = p }
+        }
+        var moved: [Int: Int] = [:]
+        for (p, item) in old.enumerated() where item.kind == .data {
+            if let x = item.index, let q = newPosition[x] { moved[p] = q }
+        }
+        return moved
     }
 
     /// Put a field on an axis area (taking it off any other axis). Adding to
@@ -59,7 +92,10 @@ extension PivotDefinition {
             addDataField(field: f, cache: cache, at: position)
             return
         }
-        removeFromAxes(f)
+        detachFromAxes(f)
+        // Report filters choose items; label, date and top-N filters don't
+        // apply there (Excel clears them).
+        if area == .filters { filters.removeAll { $0.field == f } }
         if f != pivotValuesFieldIndex {
             ensureItems(f, cache: cache)
         }
@@ -86,8 +122,15 @@ extension PivotDefinition {
         }
     }
 
-    /// Take a field off the row, column and filter areas.
+    /// Take a field off the row, column and filter areas, with any label,
+    /// date or top-N filter on it (nothing on screen would show it).
     public mutating func removeFromAxes(_ f: Int) {
+        detachFromAxes(f)
+        filters.removeAll { $0.field == f }
+    }
+
+    /// Take a field off the axes, keeping its filters (it's being moved).
+    private mutating func detachFromAxes(_ f: Int) {
         rowFields.removeAll { $0 == f }
         columnFields.removeAll { $0 == f }
         pageFields.removeAll { $0.field == f }
@@ -115,13 +158,24 @@ extension PivotDefinition {
         guard dataFields.indices.contains(index) else { return }
         let f = dataFields.remove(at: index).field
         fields[f].isDataField = dataFields.contains { $0.field == f }
+        // Top-N filters rank by a value field (by position): drop the ones
+        // ranking by this one and renumber the rest.
+        filters.removeAll { $0.type == "count" && $0.measureField == index }
+        for i in filters.indices where filters[i].measureField > index { filters[i].measureField -= 1 }
         syncValuesField()
     }
 
     public mutating func moveDataField(from: Int, to: Int) {
         guard dataFields.indices.contains(from) else { return }
         let d = dataFields.remove(at: from)
-        dataFields.insert(d, at: min(max(0, to), dataFields.count))
+        let target = min(max(0, to), dataFields.count)
+        dataFields.insert(d, at: target)
+        // Top-N filters name their value field by position: follow the move.
+        var order = Array(0..<dataFields.count) // order[new position] = old position
+        order.insert(order.remove(at: from), at: target)
+        var newIndex: [Int: Int] = [:]
+        for (new, old) in order.enumerated() { newIndex[old] = new }
+        for i in filters.indices { filters[i].measureField = newIndex[filters[i].measureField] ?? filters[i].measureField }
     }
 
     /// Change a value field's summary function; a default name follows it.
@@ -182,15 +236,18 @@ extension PivotDefinition {
     public mutating func setSort(_ sort: PivotFieldSettings.Sort, field f: Int, cache: PivotCacheData) {
         fields[f].sort = sort
         guard sort != .manual else { return }
-        let values = cache.fields[f].axisItems
-        let data = fields[f].items.filter { $0.kind == .data }
-        let rest = fields[f].items.filter { $0.kind != .data }
+        // Grouped fields keep their groups' order (Jan…Dec, 0-9, 10-19…).
+        var rank: [Int: Int] = [:]
+        for (r, x) in cache.ascendingItemOrder(f).enumerated() { rank[x] = r }
+        let old = fields[f].items
+        let data = old.filter { $0.kind == .data }
+        let rest = old.filter { $0.kind != .data }
         var sorted = data.sorted { a, b in
-            guard let x = a.index, let y = b.index, x < values.count, y < values.count else { return false }
-            return PivotValue.ascending(values[x], values[y])
+            (a.index.flatMap { rank[$0] } ?? Int.max) < (b.index.flatMap { rank[$0] } ?? Int.max)
         }
         if sort == .descending { sorted.reverse() }
-        fields[f].items = sorted + rest
+        let items = sorted + rest
+        replaceItems(field: f, with: items, moved: Self.positionMap(from: old, to: items))
     }
 
     /// Expand or collapse an item.

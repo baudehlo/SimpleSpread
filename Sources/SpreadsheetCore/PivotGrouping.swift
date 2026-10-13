@@ -91,9 +91,12 @@ extension Workbook {
         guard data.fields[f].isDatabaseField, data.fields[f].group == nil else {
             throw PivotEngineError("“\(data.fields[f].name)” is already grouped")
         }
+        try Self.requireNoBlanks(data, field: f)
         let values = numericValues(data, field: f)
         guard let lo = values.min(), let hi = values.max(),
-              data.fields[f].sharedItems.allSatisfy({ if case .string = $0 { return false } else { return true } })
+              data.fields[f].sharedItems.allSatisfy({
+                  switch $0 { case .date, .number: return true; default: return false }
+              })
         else { throw PivotEngineError("only fields of dates can be grouped by date") }
         let ordered = PivotDateGrouping.allCases.reversed().filter(levels.contains) // finest first
         guard let finest = ordered.first else { return }
@@ -131,9 +134,10 @@ extension Workbook {
         guard data.fields[f].isDatabaseField, data.fields[f].group == nil else {
             throw PivotEngineError("“\(data.fields[f].name)” is already grouped")
         }
+        try Self.requireNoBlanks(data, field: f)
         let values = numericValues(data, field: f)
         guard let lo = values.min(), let hi = values.max(), interval > 0,
-              data.fields[f].sharedItems.allSatisfy({ if case .number = $0 { return true }; if case .missing = $0 { return true }; return false })
+              data.fields[f].sharedItems.allSatisfy({ if case .number = $0 { return true }; return false })
         else { throw PivotEngineError("only fields of numbers can be grouped into ranges") }
         let s = start ?? lo, e = end ?? hi
         data.fields[f].group = PivotFieldGroup(
@@ -169,13 +173,25 @@ extension Workbook {
             d.columnFields = d.columnFields.map { $0 < 0 ? $0 : remap[$0]! }
             d.pageFields = d.pageFields.map { var p = $0; p.field = remap[p.field]!; return p }
             d.dataFields = d.dataFields.map { var x = $0; x.field = remap[x.field]!; x.baseField = remap[x.baseField] ?? 0; return x }
-            d.fields[f].items = []
-            if d.fields[f].axis != nil { d.ensureItems(f, cache: data) }
+            d.filters = d.filters.compactMap { var x = $0; guard let g = remap[x.field] else { return nil }; x.field = g; return x }
+            let fieldIndex = remap[f] ?? f
+            // The grouped items give way to the field's own values.
+            d.replaceItems(field: fieldIndex, with: [], moved: [:])
+            if d.fields[fieldIndex].axis != nil { d.ensureItems(fieldIndex, cache: data) }
             pivotTables[t].definition = d
             pivotTables[t].isModified = true
         }
         pivotCaches[c].data = data
         pivotCaches[c].isModified = true
+    }
+
+    /// Excel won't group a field with blank cells into dates or ranges
+    /// ("Cannot group that selection"): a blank fits no group, so it would
+    /// drop out of the rows while still counting in the totals.
+    static func requireNoBlanks(_ data: PivotCacheData, field f: Int) throws {
+        if data.fields[f].sharedItems.contains(.missing) {
+            throw PivotEngineError("“\(data.fields[f].name)” has blank cells, and a field with blanks can’t be grouped")
+        }
     }
 
     private func uniqueFieldName(_ base: String, in data: PivotCacheData) -> String {
@@ -194,14 +210,11 @@ extension Workbook {
             for _ in newFields { d.fields.append(PivotFieldSettings(showAll: false)) }
             let axis = d.axisArea(of: f)
             let hadItems = !d.fields[f].items.isEmpty
-            d.fields[f].items = []
-            if hadItems || axis != nil { d.ensureItems(f, cache: data) }
+            // The field's values give way to its groups; whatever named one
+            // of its items by position falls back.
+            d.replaceItems(field: f, with: [], moved: [:])
             // Group items keep their own order (<start, parts, >end).
-            if !d.fields[f].items.isEmpty {
-                let groupCount = data.fields[f].axisItems.count
-                d.fields[f].items = (0..<groupCount).map { PivotItem(kind: .data, index: $0) }
-                    + d.fields[f].subtotals.map { PivotItem(kind: $0) }
-            }
+            if hadItems || axis != nil { d.ensureItems(f, cache: data) }
             if let axis {
                 let position = d.fields(in: axis).firstIndex(of: f) ?? 0
                 // Inserting finest-first at the same spot leaves coarsest first.

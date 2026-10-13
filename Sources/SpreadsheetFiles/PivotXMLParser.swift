@@ -248,7 +248,7 @@ enum PivotXMLParser {
                 if path.count == 3 && element.localName == "filter", let field = Int(a["fld"] ?? "") {
                     definition.filters.append(PivotFilter(
                         field: field, type: a["type"] ?? "", measureField: Int(a["iMeasureFld"] ?? "") ?? 0,
-                        evalOrder: Int(a["evalOrder"] ?? "") ?? -1))
+                        evalOrder: Int(a["evalOrder"] ?? "") ?? -1, id: Int(a["id"] ?? "")))
                 } else if !definition.filters.isEmpty {
                     let last = definition.filters.count - 1
                     switch element.localName {

@@ -69,6 +69,11 @@ extension PivotCacheData {
                 guard fields[g.base ?? f].isDatabaseField else {
                     return "the grouping of “\(field.name)” isn't based on a source column"
                 }
+                // A blank or text value fits no range: it would drop out of
+                // the rows but still count in the totals.
+                if fields[g.base ?? f].sharedItems.contains(where: { !$0.isNumeric }) {
+                    return "its grouped field “\(fields[g.base ?? f].name)” has blank or text cells"
+                }
                 let bounds = [r.startNumber, r.endNumber, r.startDate, r.endDate].compactMap { $0 }
                 guard r.interval.isFinite, r.interval > 0, bounds.allSatisfy(\.isFinite) else {
                     return "the grouping of “\(field.name)” has an invalid interval or bounds"

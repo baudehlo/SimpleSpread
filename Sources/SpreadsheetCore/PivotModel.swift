@@ -406,10 +406,13 @@ public struct PivotFilter: Equatable, Sendable {
     public var top10Value: Double?
     public var top10Top: Bool
     public var top10Percent: Bool
+    /// The filter's id in the file (unique within the table), if read from one.
+    public var id: Int?
 
     public init(field: Int, type: String, measureField: Int = 0, evalOrder: Int = -1,
                 conditions: [Condition] = [], conditionsAreAnd: Bool = false,
-                top10Value: Double? = nil, top10Top: Bool = true, top10Percent: Bool = false) {
+                top10Value: Double? = nil, top10Top: Bool = true, top10Percent: Bool = false, id: Int? = nil) {
+        self.id = id
         self.field = field
         self.type = type
         self.measureField = measureField
