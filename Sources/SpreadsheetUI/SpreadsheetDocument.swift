@@ -85,8 +85,6 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Asks the user to confirm (message, detail, button title); nil
     /// refuses. The app installs an alert; tests install a closure.
     public var confirm: ((String, String, String) -> Bool)?
-    /// Pivot cell roles of one sheet at one revision (for drawing).
-    var pivotRoleCache: (revision: Int, sheetID: Int, roles: [CellAddress: PivotCellRole])?
     /// The editor holding typing not yet written to its cell (the grid's
     /// in-cell editor or the formula bar), if any. See `commitPendingEdit`.
     weak var pendingEditor: PendingEditor?

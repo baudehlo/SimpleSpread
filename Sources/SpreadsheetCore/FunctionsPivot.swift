@@ -62,7 +62,7 @@ extension PivotTable {
         guard let definition, definition.fields.count == cache.fields.count else { return nil }
         let dataFields = definition.dataFields
         guard let d = dataFields.firstIndex(where: { Self.sameText($0.name, dataField) })
-            ?? dataFields.firstIndex(where: { $0.field < cache.fields.count && Self.sameText(cache.fields[$0.field].name, dataField) })
+            ?? dataFields.firstIndex(where: { $0.field >= 0 && $0.field < cache.fields.count && Self.sameText(cache.fields[$0.field].name, dataField) })
         else { return nil }
 
         // Item positions each constrained field may take.
@@ -137,7 +137,7 @@ extension PivotTable {
                 previous = []
                 continue
             }
-            let tuple = Array(previous.prefix(line.repeated)) + line.members
+            let tuple = Array(previous.prefix(max(0, line.repeated))) + line.members
             tuples.append(tuple)
             previous = tuple
         }

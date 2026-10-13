@@ -113,6 +113,11 @@ public struct PivotTable: Sendable {
     public var definition: PivotDefinition?
     /// True once `definition` differs from `payload` (see PivotCache.isModified).
     public var isModified: Bool
+    /// What each drawn cell is (for styling), relative to `location.start`:
+    /// stored when a layout is applied, so drawing never recomputes the
+    /// pivot. Nil until known (a pivot read from a file); empty when the
+    /// pivot can't be computed.
+    public var cellRoles: [PivotOffset: PivotCellRole]?
 
     public init(sheetID: Int, name: String, cacheID: Int, location: CellRange,
                 pageFieldRows: Int = 0, pageFieldColumns: Int = 0,

@@ -27,7 +27,9 @@ Every column needs a heading. Blank cells are fine.
 4. Click **Create**.
 
 The pivot table starts empty and the **PivotTable Fields** panel opens
-beside the grid.
+beside the grid. An empty pivot table takes up 18 rows by 3 columns. If
+there's already data there, SimpleSpread asks before replacing it. It
+won't put a pivot table on top of its own data or on another pivot table.
 
 ## The PivotTable Fields panel
 
@@ -74,6 +76,9 @@ options.
 
 - **Filter Items…**: choose which items to show.
 - **Sort**: Ascending, Descending, or Manual (keep the current order).
+  Grouped fields sort in their groups' order: months run Jan to Dec, and
+  ranges run from the lowest to the highest. A **Show Values As** base item
+  and a report filter's choice stay on the same item when you sort.
 - **Group**: see below.
 - **Show Items With No Data**: list every item even where a combination
   has no records.
@@ -103,9 +108,15 @@ Grouping turns many items into a few.
 - **Numbers**: choose **Group into Ranges…** and set where the ranges start
   and end and how wide each one is (for example 0 to 100 by 10, giving
   0-9, 10-19 and so on). Values outside the range are gathered into a
-  group at each end, such as "<0".
+  group at each end, such as "<0". The end value itself goes in the last
+  range. A field can have at most 1,048,576 groups, so a very small step
+  over a wide range is refused.
 - **Ungroup** removes the grouping, including any Years or Quarters fields
   it added.
+
+As in Excel, a field with blank cells can't be grouped by dates or into
+ranges, because a blank fits no group. Fill in the blanks first, or use a
+range that leaves them out.
 
 Grouping applies to every pivot table that reads the same data.
 
@@ -116,6 +127,12 @@ choose **Data ▸ Refresh** (**⌥F5**) with the active cell in the pivot table,
 or **Data ▸ Refresh All** (**⌃⌥F5**) for every pivot table in the workbook.
 New items are added in sorted order, and your filters, sorting and grouping
 are kept.
+
+Editing the source doesn't change the pivot table until you refresh it,
+as in Excel. A refresh stops and explains why when it can't keep a
+grouping. This happens when a grouped field now has blank or text cells,
+or when a new value is so far out that the ranges would need too many
+groups.
 
 ## Working around a pivot table
 
@@ -141,7 +158,17 @@ features can't be recalculated in SimpleSpread:
 - label and value filters (such as "begins with" or "greater than")
 - the newer Show Values As options, such as Rank and % of Parent
 - totals that include filtered-out items
+- items sorted by their values (such as **Sort Largest to Smallest** on a
+  sum)
+- a grouped field with blank or text cells
+- damaged pivot tables, for example ones that refer to a field that
+  isn't there
 
 A pivot table that uses any of these still shows its values and is saved
 back unchanged, so it keeps working in Excel. The panel explains why it
 can't be edited. Slicers and timelines aren't supported.
+
+A pivot table you don't change is saved back exactly as it was read, with
+one exception: conditional formatting inside it is removed, because
+SimpleSpread doesn't keep the sheet's conditional formatting it belongs
+to.

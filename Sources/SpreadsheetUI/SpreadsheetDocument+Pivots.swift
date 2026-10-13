@@ -56,26 +56,56 @@ extension SpreadsheetDocument {
     @discardableResult
     public func insertPivotTable(source: CellRange, destination: PivotDestination = .newSheet) -> Bool {
         let sourceSheetID = activeSheetID
+        // Everything that can fail or be refused happens before the workbook
+        // changes, so a refusal leaves nothing to undo.
+        let data: PivotCacheData
+        do {
+            data = try PivotCacheBuilder.build(sheet: activeSheet, range: source, workbook: workbook)
+        } catch {
+            notice = DocumentNotice(message: "Couldn’t create the pivot table.", detail: Self.reason(error))
+            return false
+        }
+        if case .existing(let sheetID, let at) = destination {
+            let area = Workbook.newPivotTableArea(at: at)
+            guard area.end.isValid else {
+                notice = DocumentNotice(message: "There isn’t room for a pivot table there.",
+                                        detail: "Choose a cell further up or to the left, or a new sheet.")
+                return false
+            }
+            if sheetID == sourceSheetID && area.intersects(source) {
+                notice = DocumentNotice(message: "A pivot table can’t go on top of its own data.",
+                                        detail: "Choose a place outside \(source.a1), or a new sheet.")
+                return false
+            }
+            let conflicts = workbook.pivotAreaConflicts(onSheet: sheetID, area: area)
+            if let other = conflicts.tables.first {
+                notice = DocumentNotice(message: "The pivot table would overlap “\(other)”.",
+                                        detail: "Choose an empty area or a new sheet.")
+                return false
+            }
+            if !conflicts.cells.isEmpty {
+                guard confirm?("There’s already data where the pivot table needs to go. Replace it?",
+                               Self.overwriteDetail(conflicts.cells), "Replace") == true else { return false }
+            }
+        }
+
+        let savedCaches = workbook.pivotCaches, savedTables = workbook.pivotTables
+        let savedStyles = workbook.preservedStyles
         registerWorkbookUndo(actionName: "Insert PivotTable")
+        var addedSheet: Int?
         let target: (sheetID: Int, at: CellAddress)
         switch destination {
         case .newSheet:
             let sheet = workbook.addSheet()
+            addedSheet = sheet.id
             target = (sheet.id, CellAddress(row: 2, column: 0))
         case .existing(let sheetID, let at):
             target = (sheetID, at)
         }
         do {
             let index = try workbook.createPivotTable(sourceSheetID: sourceSheetID, source: source,
-                                                      destinationSheetID: target.sheetID, at: target.at)
+                                                      destinationSheetID: target.sheetID, at: target.at, data: data)
             let result = try workbook.computePivotTable(at: index)
-            let conflicts = workbook.pivotLayoutConflicts(for: index, result: result)
-            guard conflicts.cells.isEmpty && conflicts.tables.isEmpty else {
-                undoManager.undo()
-                notice = DocumentNotice(message: "There isn’t room for a pivot table there.",
-                                        detail: "Choose an empty area or a new sheet.")
-                return false
-            }
             workbook.applyPivotLayout(at: index, result: result)
             activeSheetID = target.sheetID
             selection = SelectionState()
@@ -84,10 +114,19 @@ extension SpreadsheetDocument {
             markChanged()
             return true
         } catch {
-            undoManager.undo()
+            // Put back what changed by hand: undoing here could undo the
+            // user's previous action if the snapshot above wasn't taken.
+            workbook.pivotCaches = savedCaches
+            workbook.pivotTables = savedTables
+            workbook.preservedStyles = savedStyles
+            if let addedSheet { _ = workbook.removeSheet(withID: addedSheet) }
             notice = DocumentNotice(message: "Couldn’t create the pivot table.", detail: Self.reason(error))
             return false
         }
+    }
+
+    static func overwriteDetail(_ cells: [CellAddress]) -> String {
+        "Cells \(cells.prefix(3).map(\.a1).joined(separator: ", "))\(cells.count > 3 ? "…" : "") would be overwritten."
     }
 
     // MARK: Editing and refreshing
@@ -220,8 +259,8 @@ extension SpreadsheetDocument {
             return false
         }
         if !cells.isEmpty {
-            let detail = "Cells \(cells.prefix(3).map(\.a1).joined(separator: ", "))\(cells.count > 3 ? "…" : "") would be overwritten."
-            guard confirm?("There’s already data where the pivot table needs to go. Replace it?", detail, "Replace") == true else {
+            guard confirm?("There’s already data where the pivot table needs to go. Replace it?",
+                           Self.overwriteDetail(cells), "Replace") == true else {
                 rollBack()
                 return false
             }
@@ -246,18 +285,18 @@ extension SpreadsheetDocument {
     // MARK: Drawing support
 
     /// The role of a pivot cell on the active sheet (computable pivots only).
+    /// Roles are stored when a pivot is laid out; a pivot read from a file is
+    /// computed once, on first draw, never again per edit.
     public func pivotRole(at address: CellAddress) -> PivotCellRole? {
-        if pivotRoleCache?.revision != revision || pivotRoleCache?.sheetID != activeSheetID {
-            var roles: [CellAddress: PivotCellRole] = [:]
-            for (i, table) in workbook.pivotTables.enumerated() where table.sheetID == activeSheetID {
-                guard let result = try? workbook.computePivotTable(at: i) else { continue }
-                for (offset, cell) in result.cells {
-                    roles[CellAddress(row: table.location.start.row + offset.row,
-                                      column: table.location.start.column + offset.column)] = cell.role
-                }
-            }
-            pivotRoleCache = (revision, activeSheetID, roles)
-        }
-        return pivotRoleCache?.roles[address]
+        guard let i = pivotIndex(at: address) else { return nil }
+        let start = workbook.pivotTables[i].location.start
+        return pivotCellRoles(i)[PivotOffset(row: address.row - start.row, column: address.column - start.column)]
+    }
+
+    private func pivotCellRoles(_ i: Int) -> [PivotOffset: PivotCellRole] {
+        if let roles = workbook.pivotTables[i].cellRoles { return roles }
+        let roles = (try? workbook.computePivotTable(at: i))?.cells.mapValues(\.role) ?? [:]
+        workbook.pivotTables[i].cellRoles = roles
+        return roles
     }
 }
