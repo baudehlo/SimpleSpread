@@ -67,6 +67,7 @@ extension Workbook {
             pivotTables[index].definition = definition
         }
         pivotTables[index].isModified = true
+        pivotTables[index].cellRoles = result.cells.mapValues(\.role)
         for (offset, rendered) in result.cells {
             let address = CellAddress(row: location.start.row + offset.row, column: location.start.column + offset.column)
             guard address.isValid else { continue }

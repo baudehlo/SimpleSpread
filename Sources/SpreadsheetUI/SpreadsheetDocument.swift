@@ -64,8 +64,6 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Asks the user to confirm (message, detail, button title); nil
     /// refuses. The app installs an alert; tests install a closure.
     public var confirm: ((String, String, String) -> Bool)?
-    /// Pivot cell roles of one sheet at one revision (for drawing).
-    var pivotRoleCache: (revision: Int, sheetID: Int, roles: [CellAddress: PivotCellRole])?
 
     public static let zoomRange: ClosedRange<CGFloat> = 0.25...4.0
     public static let zoomPresets: [CGFloat] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]

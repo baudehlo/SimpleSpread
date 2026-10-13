@@ -246,18 +246,18 @@ extension SpreadsheetDocument {
     // MARK: Drawing support
 
     /// The role of a pivot cell on the active sheet (computable pivots only).
+    /// Roles are stored when a pivot is laid out; a pivot read from a file is
+    /// computed once, on first draw, never again per edit.
     public func pivotRole(at address: CellAddress) -> PivotCellRole? {
-        if pivotRoleCache?.revision != revision || pivotRoleCache?.sheetID != activeSheetID {
-            var roles: [CellAddress: PivotCellRole] = [:]
-            for (i, table) in workbook.pivotTables.enumerated() where table.sheetID == activeSheetID {
-                guard let result = try? workbook.computePivotTable(at: i) else { continue }
-                for (offset, cell) in result.cells {
-                    roles[CellAddress(row: table.location.start.row + offset.row,
-                                      column: table.location.start.column + offset.column)] = cell.role
-                }
-            }
-            pivotRoleCache = (revision, activeSheetID, roles)
-        }
-        return pivotRoleCache?.roles[address]
+        guard let i = pivotIndex(at: address) else { return nil }
+        let start = workbook.pivotTables[i].location.start
+        return pivotCellRoles(i)[PivotOffset(row: address.row - start.row, column: address.column - start.column)]
+    }
+
+    private func pivotCellRoles(_ i: Int) -> [PivotOffset: PivotCellRole] {
+        if let roles = workbook.pivotTables[i].cellRoles { return roles }
+        let roles = (try? workbook.computePivotTable(at: i))?.cells.mapValues(\.role) ?? [:]
+        workbook.pivotTables[i].cellRoles = roles
+        return roles
     }
 }

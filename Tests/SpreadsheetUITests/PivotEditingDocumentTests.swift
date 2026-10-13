@@ -155,6 +155,43 @@ struct PivotEditingDocumentTests {
         #expect(doc.pivotRole(at: a("D1")) == nil)
     }
 
+    @Test func drawingReadsRolesStoredAtLayoutAndNeverRecomputes() throws {
+        let doc = document()
+        doc.insertPivotTable(source: CellRange(a1: "A1:B5")!)
+        doc.editPivot(0, actionName: "Add Field") { d, c in
+            d.place(field: 0, in: .rows, cache: c); d.place(field: 1, in: .values, cache: c)
+        }
+        #expect(doc.workbook.pivotTables[0].cellRoles?.isEmpty == false)
+        // Make the pivot impossible to compute: drawing must not notice,
+        // since it reads the roles stored when the layout was applied.
+        let c = doc.workbook.pivotCaches.indices.first!
+        doc.workbook.pivotCaches[c].data?.hasRecords = false
+        doc.commitInput("unrelated", at: a("H20"))
+        #expect(doc.pivotRole(at: a("B4")) == .value)
+        #expect(doc.pivotRole(at: a("A7")) == .grandTotalLabel)
+        // Moving the table (rows inserted above) keeps roles relative to it.
+        doc.workbook.pivotCaches[c].data?.hasRecords = true
+        doc.selection.select(a("A1"))
+        doc.insertRows(at: 0, count: 2)
+        #expect(doc.pivotRole(at: a("B6")) == .value)
+    }
+
+    @Test func pivotsFromAFileGetRolesOnFirstDraw() throws {
+        let doc = document()
+        doc.insertPivotTable(source: CellRange(a1: "A1:B5")!)
+        doc.editPivot(0, actionName: "Add Field") { d, c in
+            d.place(field: 0, in: .rows, cache: c); d.place(field: 1, in: .values, cache: c)
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pivot-\(UUID().uuidString).xlsx")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try doc.save(to: url)
+        let reopened = try SpreadsheetDocument.open(url: url)
+        reopened.selectSheet(withID: reopened.workbook.pivotTables[0].sheetID)
+        #expect(reopened.workbook.pivotTables[0].cellRoles == nil)
+        #expect(reopened.pivotRole(at: a("B4")) == .value)
+        #expect(reopened.workbook.pivotTables[0].cellRoles != nil)
+    }
+
     @Test func savedAndReopenedPivotsStayEditable() throws {
         let doc = document()
         doc.insertPivotTable(source: CellRange(a1: "A1:B5")!)
