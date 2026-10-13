@@ -648,6 +648,7 @@ public final class SpreadsheetDocument: ObservableObject {
     // MARK: - Structure
 
     public func insertRows(at index: Int, count: Int = 1) {
+        commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: count) else { return }
         registerWorkbookUndo(actionName: "Insert Rows")
         WorkbookOperations.insertRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
@@ -656,6 +657,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func deleteRows(at index: Int, count: Int = 1) {
+        commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: -count) else { return }
         registerWorkbookUndo(actionName: "Delete Rows")
         WorkbookOperations.deleteRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
@@ -666,6 +668,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func insertColumns(at index: Int, count: Int = 1) {
+        commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: count) else { return }
         registerWorkbookUndo(actionName: "Insert Columns")
         WorkbookOperations.insertColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
@@ -674,6 +677,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func deleteColumns(at index: Int, count: Int = 1) {
+        commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: -count) else { return }
         registerWorkbookUndo(actionName: "Delete Columns")
         WorkbookOperations.deleteColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
@@ -695,6 +699,7 @@ public final class SpreadsheetDocument: ObservableObject {
     // MARK: - Sheets
 
     public func addSheet() {
+        commitPendingEdit()
         registerWorkbookUndo(actionName: "Add Sheet")
         let sheet = workbook.addSheet()
         activeSheetID = sheet.id
@@ -703,6 +708,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func deleteActiveSheet() {
+        commitPendingEdit()
         guard workbook.sheets.count > 1 else { return }
         registerWorkbookUndo(actionName: "Delete Sheet")
         let deletedIndex = workbook.indexOfSheet(withID: activeSheetID) ?? 0
@@ -715,6 +721,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func renameActiveSheet(to name: String) {
+        commitPendingEdit()
         registerWorkbookUndo(actionName: "Rename Sheet")
         WorkbookOperations.renameSheet(in: workbook, sheetID: activeSheetID, to: name)
         engine.rebuildAll()
@@ -722,6 +729,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func selectSheet(withID id: Int) {
+        commitPendingEdit()
         guard workbook.sheet(withID: id) != nil, id != activeSheetID else { return }
         activeSheetID = id
         selection = SelectionState()
@@ -729,6 +737,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func moveSheet(withID id: Int, to index: Int) {
+        commitPendingEdit()
         registerWorkbookUndo(actionName: "Reorder Sheets")
         workbook.moveSheet(withID: id, to: index)
         markChanged()
@@ -1177,6 +1186,7 @@ public final class SpreadsheetDocument: ObservableObject {
     // MARK: - File I/O
 
     public func save(to url: URL) throws {
+        commitPendingEdit()
         let data = try XLSXWriter.data(for: workbook)
         try data.write(to: url, options: .atomic)
         fileURL = url
