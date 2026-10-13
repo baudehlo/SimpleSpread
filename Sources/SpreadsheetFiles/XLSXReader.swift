@@ -278,11 +278,16 @@ public enum XLSXReader {
                 case "sheet":
                     guard let sheetName = attributes["name"] else { return }
                     let relID = attributes["r:id"] ?? attributes.first { $0.key.hasSuffix(":id") }?.value ?? ""
-                    let sheetID = Int(attributes["sheetId"] ?? "") ?? (info.sheets.count + 1)
+                    // CT_Sheet@sheetId is an unsignedInt; anything else gets a fresh id.
+                    let given = Int(attributes["sheetId"] ?? "").flatMap { (1...Int(UInt32.max)).contains($0) ? $0 : nil }
+                    let sheetID = given ?? (info.sheets.count + 1)
                     info.sheets.append(.init(name: sheetName, sheetID: sheetID, relID: relID,
                                              state: attributes["state"] ?? "visible"))
                 case "workbookProtection" where depth == 2:
-                    info.unsupported.insert(.workbookProtection)
+                    let locks = ["lockStructure", "lockWindows", "lockRevision"]
+                    if locks.contains(where: { boolAttr(attributes[$0], default: false) }) {
+                        info.unsupported.insert(.workbookProtection)
+                    }
                 case "customWorkbookViews" where depth == 2:
                     info.unsupported.insert(.customViews)
                 default:
@@ -409,7 +414,7 @@ public enum XLSXReader {
             style.verticalAlignment = vertical
             style.wrapText = wrapText
             style.pivotButton = pivotButton
-            style.indent = max(0, indent)
+            style.indent = min(max(0, indent), 250) // Excel's limit
             style.borders = borders
             if numFmtID != 0 {
                 if let custom = customFormats[numFmtID] {
@@ -477,7 +482,11 @@ public enum XLSXReader {
                         if v != "none" { currentFont?.underline = true }
                     }
                 case "strike": if currentFont != nil, boolAttr(attributes["val"], default: true) { currentFont?.strike = true }
-                case "sz": if currentFont != nil { currentFont?.size = Double(attributes["val"] ?? "") }
+                case "sz":
+                    // Excel's sizes run 1-409 points.
+                    if currentFont != nil, let size = Double(attributes["val"] ?? ""), size.isFinite {
+                        currentFont?.size = min(max(size, 1), 409)
+                    }
                 case "name": if inFonts { currentFont?.name = attributes["val"] }
                 case "color":
                     if currentFont != nil, let rgb = attributes["rgb"] { currentFont?.colorARGB = rgb }
@@ -867,14 +876,17 @@ public enum XLSXReader {
                     case "conditionalFormatting": found.insert(.conditionalFormatting)
                     case "dataValidations": found.insert(.dataValidation)
                     case "hyperlinks": found.insert(.hyperlinks)
-                    case "sheetProtection", "protectedRanges": found.insert(.sheetProtection)
+                    case "sheetProtection":
+                        // Present but off (LibreOffice writes sheet="false").
+                        if boolAttr(attributes["sheet"], default: false) { found.insert(.sheetProtection) }
                     case "scenarios": found.insert(.scenarios)
                     case "customSheetViews": found.insert(.customViews)
                     case "oleObjects": found.insert(.embeddedObjects)
                     case "controls": found.insert(.formControls)
                     case "rowBreaks", "colBreaks", "legacyDrawingHF": found.insert(.printSettings)
                     case "printOptions":
-                        if attributes.values.contains(where: { boolAttr($0, default: false) }) {
+                        // gridLinesSet defaults to true and means nothing alone.
+                        if attributes.contains(where: { $0.key != "gridLinesSet" && boolAttr($0.value, default: false) }) {
                             found.insert(.printSettings)
                         }
                     case "pageSetup":
@@ -883,7 +895,6 @@ public enum XLSXReader {
                     }
                 } else if depth == 3 {
                     switch (path[1], local) {
-                    case ("headerFooter", _): found.insert(.printSettings)
                     case ("sheetPr", "pageSetUpPr"):
                         if boolAttr(attributes["fitToPage"], default: false) { found.insert(.printSettings) }
                     case ("cols", "col"):
@@ -916,7 +927,7 @@ public enum XLSXReader {
                     case "orientation" where value == "portrait" || value == "default": continue
                     case "scale" where value == "100": continue
                     case "fitToWidth", "fitToHeight": continue // only with sheetPr/pageSetUpPr@fitToPage
-                    case "firstPageNumber" where value == "1": continue
+                    case "firstPageNumber": continue // only with useFirstPageNumber
                     case "pageOrder" where value == "downThenOver": continue
                     case "cellComments" where value == "none": continue
                     case "errors" where value == "displayed": continue
@@ -934,6 +945,10 @@ public enum XLSXReader {
                 if inV { valueText += string }
                 else if inF { formulaText = (formulaText ?? "") + string }
                 else if inIST { inlineText += string }
+                else if depth >= 3, path[1] == "headerFooter",
+                        string.contains(where: { !$0.isWhitespace }) {
+                    found.insert(.printSettings) // a header or footer with text
+                }
             }
 
             func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?,

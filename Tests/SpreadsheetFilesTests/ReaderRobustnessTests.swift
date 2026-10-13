@@ -97,6 +97,28 @@ struct ReaderRobustnessTests {
         #expect(sheet.map { $0.frozenColumns >= 0 && $0.frozenColumns <= CellAddress.maxColumns } == true)
     }
 
+    @Test func hostileWorkbookAndStyleValuesAreBounded() throws {
+        let workbook = """
+        <workbook xmlns="\(Self.main)" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>\
+        <sheet name="A" sheetId="9223372036854775807" r:id="rId1"/><sheet name="B" sheetId="-4" r:id="rId2"/></sheets></workbook>
+        """
+        let info = try XLSXReader.parseWorkbook(Data(workbook.utf8))
+        #expect(info.sheets.map(\.sheetID) == [1, 2])
+        // A workbook built from them can still add sheets (nextSheetID + 1 would overflow).
+        let wb = Workbook()
+        for meta in info.sheets { wb.insertSheet(Sheet(id: meta.sheetID, name: meta.name), at: wb.sheets.count) }
+        #expect(wb.addSheet().id == 3)
+
+        let styles = """
+        <styleSheet xmlns="\(Self.main)"><fonts count="1"><font><sz val="1e308"/></font></fonts><fills count="0"/><borders count="0"/>\
+        <cellXfs count="1"><xf numFmtId="99999999999" fontId="0" fillId="0" borderId="0"><alignment indent="9223372036854775807"/></xf></cellXfs></styleSheet>
+        """
+        let (xfs, _) = try XLSXReader.parseStyles(Data(styles.utf8))
+        let style = xfs[0].toCellStyle(customFormats: [:])
+        #expect(style.fontSize == 409)
+        #expect(style.indent == 250)
+    }
+
     // MARK: XML rules the scanner must follow (#27)
 
     @Test func lineEndsAreNormalisedInText() {

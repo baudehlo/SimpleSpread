@@ -132,6 +132,16 @@ struct UnsupportedContentTests {
         let sheet = Self.plainSheet + "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>"
             + "<pageSetup paperSize=\"9\" orientation=\"portrait\" horizontalDpi=\"300\" verticalDpi=\"300\" r:id=\"rId1\"/>"
         #expect(try Self.unsupported(Self.package(sheets: [("S", nil, sheet)])) == [])
+        // What LibreOffice writes for a sheet nobody set up for printing.
+        let libre = "<sheetPr><pageSetUpPr fitToPage=\"false\"/></sheetPr>" + Self.plainSheet
+            + "<printOptions headings=\"false\" gridLines=\"false\" gridLinesSet=\"true\"/>"
+            + "<pageSetup paperSize=\"9\" scale=\"100\" fitToWidth=\"1\" fitToHeight=\"1\" pageOrder=\"downThenOver\" orientation=\"portrait\" blackAndWhite=\"false\" draft=\"false\" cellComments=\"none\" firstPageNumber=\"0\" copies=\"1\"/>"
+            + "<headerFooter differentFirst=\"false\"><oddHeader></oddHeader><oddFooter> </oddFooter></headerFooter>"
+        #expect(try Self.unsupported(Self.package(sheets: [("S", nil, libre)])) == [])
+        let footer = Self.plainSheet + "<headerFooter><oddFooter>&amp;CPage &amp;P</oddFooter></headerFooter>"
+        #expect(try Self.unsupported(Self.package(sheets: [("S", nil, footer)])) == ["print settings"])
+        let gridlines = Self.plainSheet + "<printOptions gridLines=\"1\"/>"
+        #expect(try Self.unsupported(Self.package(sheets: [("S", nil, gridlines)])) == ["print settings"])
     }
 
     @Test func rowFormattingIsSeenByBothReaders() throws {
@@ -188,6 +198,10 @@ struct UnsupportedContentTests {
         let data = try Self.package(sheets: [("S", nil, Self.plainSheet)],
                                     workbookExtra: "<workbookProtection lockStructure=\"1\"/>")
         #expect(try Self.unsupported(data) == ["workbook protection"])
+        // Protection elements that protect nothing.
+        let off = try Self.package(sheets: [("S", nil, Self.plainSheet + "<sheetProtection sheet=\"false\"/>")],
+                                   workbookExtra: "<workbookProtection/>")
+        #expect(try Self.unsupported(off) == [])
     }
 
     @Test func realFilesReportTheirCharts() throws {

@@ -66,7 +66,7 @@ struct UnsupportedContent: Equatable {
             case .customViews: return "custom views"
             case .scenarios: return "scenarios"
             case .changeHistory: return "change history"
-            case .customProperties: return "custom document properties"
+            case .customProperties: return "custom properties"
             case .addIns: return "add-in data"
             case .signatures: return "digital signatures"
             case .other: return "other content"
@@ -108,9 +108,14 @@ struct UnsupportedContent: Equatable {
               let types = try? ContentTypes.parse(typesData) else { return found }
         for entry in zip.entries where !entry.name.hasSuffix("/") && entry.name != "[Content_Types].xml" {
             guard let type = types.contentType(ofPart: entry.name) else { continue }
-            if let kind = kind(forContentType: type, partName: entry.name) {
-                found.add(kind)
+            guard let kind = kind(forContentType: type, partName: entry.name) else { continue }
+            // Some writers (LibreOffice) always add an empty custom properties part.
+            if kind == .customProperties, entry.uncompressedSize < 1 << 20,
+               let data = try? zip.contents(of: entry),
+               !String(decoding: data, as: UTF8.self).contains("property ") {
+                continue
             }
+            found.add(kind)
         }
         return found
     }
@@ -161,6 +166,7 @@ struct UnsupportedContent: Equatable {
             ("spreadsheetml.revisionheaders+xml", .changeHistory), ("spreadsheetml.revisionlog+xml", .changeHistory),
             ("spreadsheetml.usernames+xml", .changeHistory),
             ("officedocument.custom-properties+xml", .customProperties),
+            ("spreadsheetml.customproperty", .customProperties),
             ("ms-office.webextension", .addIns), ("ms-office.webextensiontaskpanes", .addIns),
             ("digital-signature", .signatures),
         ]
