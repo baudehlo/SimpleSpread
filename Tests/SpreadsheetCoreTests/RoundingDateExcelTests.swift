@@ -63,9 +63,10 @@ struct DateTimeExcelTests {
     }
 
     @Test func yearfracBasis0FollowsNASD() {
-        // Last day of February counts as the 30th, and then 31 -> 30.
-        #expect(approx(evalNumber("YEARFRAC(DATE(2023,2,28),DATE(2023,3,31),0)"), 30.0 / 360))
-        #expect(approx(evalNumber("YEARFRAC(DATE(2024,2,29),DATE(2024,3,31),0)"), 30.0 / 360))
+        // Last day of February counts as the 30th, but a 31st end stays 31
+        // (the start wasn't really the 30th): Excel for the web gives 31/360.
+        #expect(approx(evalNumber("YEARFRAC(DATE(2023,2,28),DATE(2023,3,31),0)"), 31.0 / 360))
+        #expect(approx(evalNumber("YEARFRAC(DATE(2024,2,29),DATE(2024,3,31),0)"), 31.0 / 360))
         // Both on the last day of February.
         #expect(approx(evalNumber("YEARFRAC(DATE(2023,2,28),DATE(2024,2,29),0)"), 1))
         // Start before the 30th: a 31st end stays 31.

@@ -280,9 +280,10 @@ public enum NumberFormatEngine {
     /// With conditions (`[>=1000]`) in the first two sections, Excel tests
     /// the first section's condition, then the second's; a number neither
     /// takes goes to the third section when both have conditions, else to the
-    /// second. It keeps its minus sign unless the chosen section's condition
-    /// is "negative" (`[<0]`, `[<=0]` in section 1; `[<0]` in section 2 or
-    /// an implied one after `[>=0]`).
+    /// second. It keeps its minus sign unless the chosen section can only
+    /// hold negative numbers: its own condition (`[<0]`, `[<=-1000]`,
+    /// `[=-5]`), or for an unconditioned second section, the opposite of the
+    /// first's (`[>=0]`, `[>-10]`). Checked against Excel for the web.
     static func sectionIndex(for n: Double, sections secs: [String]) -> (index: Int, useAbs: Bool) {
         let c1 = secs.count > 0 ? sectionCondition(secs[0]) : nil
         let c2 = secs.count > 1 ? sectionCondition(secs[1]) : nil
@@ -308,7 +309,7 @@ public enum NumberFormatEngine {
             if index == 0, let c1 { useAbs = c1.isNegativeOnly }
             if index == 1 {
                 useAbs = (c2?.isNegativeOnly ?? false)
-                    || (c2 == nil && c1?.op == ">=" && c1?.value == 0)
+                    || (c2 == nil && (c1?.complementIsNegativeOnly ?? false))
             }
         }
         return (index, useAbs)
@@ -330,8 +331,24 @@ public enum NumberFormatEngine {
             }
         }
 
-        /// `[<0]` or `[<=0]`: the section is the negative-number section.
-        var isNegativeOnly: Bool { value == 0 && (op == "<" || op == "<=") }
+        /// True when only negative numbers (or zero, which has no sign)
+        /// meet the condition: `[<0]`, `[<=0]`, `[<=-1000]`, `[=-5]`.
+        var isNegativeOnly: Bool {
+            switch op {
+            case "<", "<=": return value <= 0
+            case "=": return value < 0
+            default: return false
+            }
+        }
+
+        /// True when only negative numbers (or zero) fail the condition
+        /// (`[>=0]`, `[>-10]`), so the section after it holds only negatives.
+        var complementIsNegativeOnly: Bool {
+            switch op {
+            case ">=", ">": return value <= 0
+            default: return false
+            }
+        }
     }
 
     /// The first `[op number]` bracket outside quotes, if any.

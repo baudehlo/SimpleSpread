@@ -186,7 +186,10 @@ enum DateTimeFunctions {
             let endIsEndOfFeb = e.month == 2 && e.day == ExcelDate.daysInMonth(year: e.year, month: 2)
             if startIsEndOfFeb && endIsEndOfFeb { d2 = 30 }
             if d1 == 31 || startIsEndOfFeb { d1 = 30 }
-            if d1 == 30 && d2 == 31 { d2 = 30 }
+            // Only a start that was really the 30th or 31st pulls a 31st end
+            // to the 30th: Feb 28 → Mar 31 is 31/360 in Excel (checked in
+            // Excel for the web), not 30/360.
+            if s.day >= 30 && d2 == 31 { d2 = 30 }
             let days = Double((e.year - s.year) * 360 + (e.month - s.month) * 30 + (d2 - d1))
             return days / 360
         case 1: // actual/actual

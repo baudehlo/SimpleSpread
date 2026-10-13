@@ -104,3 +104,33 @@ struct NumberFormatExcelTests {
         #expect(fmt(1.5, "# ?/?") == "1.5")
     }
 }
+
+/// Results read from Excel for the web (13 October 2026) for the cases the
+/// first pass of these fixes got wrong.
+@Suite("Checked in Excel for the web")
+struct ExcelWebCheckedTests {
+    @Test func conditionalSectionsDropTheSignOnlyForNegativeOnlySections() {
+        func text(_ n: Double, _ code: String) -> String {
+            NumberFormatEngine.formatNumber(n, code: code)
+        }
+        #expect(text(-500, "[>=1000]0.0,\"K\";0") == "-500")
+        #expect(text(-5, "[<0]0.0;0") == "5.0")
+        #expect(text(-5, "[>=0]0.0;0.00") == "5.00")
+        #expect(text(-1500, "[<=-1000]0,\"K\";0") == "2K")
+        #expect(text(1_500_000, "[>=1000000]0.0,,\"M\";[>=1000]0.0,\"K\";0") == "1.5M")
+        #expect(text(-2500, "[>=1000]0,\"K\";[<=-1000]-0,\"K\";0") == "-3K")
+    }
+
+    @Test func yearfracBasisZeroAtTheEndOfFebruary() throws {
+        func yf(_ a: (Int, Int, Int), _ b: (Int, Int, Int), _ basis: Int) throws -> Double {
+            try DateTimeFunctions.yearfracValue(start: ExcelDate.serial(year: a.0, month: a.1, day: a.2),
+                                                end: ExcelDate.serial(year: b.0, month: b.1, day: b.2), basis: basis)
+        }
+        #expect(abs(try yf((2023, 2, 28), (2023, 3, 31), 0) - 31.0 / 360) < 1e-12)
+        #expect(abs(try yf((2024, 2, 29), (2024, 3, 31), 0) - 31.0 / 360) < 1e-12)
+        #expect(try yf((2023, 2, 28), (2024, 2, 29), 0) == 1)
+        #expect(abs(try yf((2023, 1, 31), (2023, 2, 28), 0) - 28.0 / 360) < 1e-12)
+        #expect(try yf((2023, 1, 1), (2024, 1, 1), 1) == 1)
+        #expect(abs(try yf((2023, 6, 1), (2024, 3, 1), 1) - 274.0 / 366) < 1e-12)
+    }
+}

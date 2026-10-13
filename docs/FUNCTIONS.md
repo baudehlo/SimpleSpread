@@ -136,7 +136,7 @@ Rules that apply across the library:
 | DAYS(end, start) | |
 | NETWORKDAYS(start, end, [holidays]) | Mon–Fri inclusive; closed-form week arithmetic (any span is instant) |
 | WORKDAY(start, days, [holidays]) | Exclusive of start; result past 9999-12-31 → #NUM! |
-| YEARFRAC(start, end, [basis=0]) | 0: 30/360 US (NASD: end of February counts as the 30th), 1: act/act (≤ 1 year: 365 or 366 if a Feb 29 is spanned; longer: average year length), 2: act/360, 3: act/365, 4: 30E/360 |
+| YEARFRAC(start, end, [basis=0]) | 0: 30/360 US as Excel does it (a start on the last day of February counts as the 30th; a 31st end becomes the 30th only when the start day was the 30th or 31st), 1: act/act (≤ 1 year: 365 or 366 if a Feb 29 is spanned; longer: average year length), 2: act/360, 3: act/365, 4: 30E/360 |
 
 ## Lookup & reference (14)
 
