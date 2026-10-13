@@ -145,13 +145,51 @@ struct CSVFastImportTests {
 
 extension CSVFastImportTests {
     @Test func invalidUTF8FarIntoTheFileFallsBackToCP1252() {
-        // A megabyte of ASCII, then a CP1252 "é" (0xE9): found only once the
-        // scan gets there, and the import starts over transcoded.
+        // A megabyte of ASCII, then a CP1252 "é" (0xE9): read as CP1252
+        // where the scan meets it, with no second pass over the file.
         var data = Data(String(repeating: "word,1\n", count: 150_000).utf8)
         data.append(contentsOf: [0x63, 0x61, 0x66, 0xE9, 0x2C, 0x32, 0x0A]) // "café,2\n"
         let sheet = CSV.importWorkbook(data: data).sheets[0]
         #expect(sheet.value(at: CellAddress(row: 150_000, column: 0)) == .string("café"))
         #expect(sheet.value(at: CellAddress(row: 0, column: 0)) == .string("word"))
+    }
+
+    @Test func oneStrayCP1252ByteLeavesTheUTF8Alone() {
+        // UTF-8 "café" and "€5", then a CP1252 "é" (0xE9) on its own: only
+        // that byte is read as CP1252 (#30).
+        var data = Data("name,price\ncafé,€5\nZürich,1\n".utf8)
+        data.append(contentsOf: [0x63, 0x61, 0x66, 0xE9, 0x2C, 0x80, 0x0A]) // "caf\xE9,\x80\n"
+        for workbook in [CSV.importWorkbook(data: data), CSV.referenceImportWorkbook(data: data)] {
+            let sheet = workbook.sheets[0]
+            #expect(sheet.value(at: CellAddress(row: 1, column: 0)) == .string("café"))
+            #expect(sheet.value(at: CellAddress(row: 1, column: 1)) == .string("€5"))
+            #expect(sheet.value(at: CellAddress(row: 2, column: 0)) == .string("Zürich"))
+            #expect(sheet.value(at: CellAddress(row: 3, column: 0)) == .string("café"))
+            #expect(sheet.value(at: CellAddress(row: 3, column: 1)) == .string("€"))
+        }
+        #expect(CSV.decode(data: data) == "name,price\ncafé,€5\nZürich,1\ncafé,€\n")
+    }
+
+    @Test func mixedEncodingStillStopsAtTheRowLimit() {
+        // The bad byte is in the first row: the import does not start over,
+        // so it still stops at the limit without reading the rest.
+        var data = Data([0xE9, 0x2C, 0x31, 0x0A])
+        data.append(Data(String(repeating: "x,1\n", count: 50).utf8))
+        var report = CSVImportReport()
+        let sheet = CSV.importWorkbook(data: data, maxRows: 5, report: &report).sheets[0]
+        #expect(report.truncated && report.rows == 5)
+        #expect(sheet.value(at: CellAddress(row: 0, column: 0)) == .string("é"))
+    }
+
+    @Test func invalidSequencesMapByteByByte() {
+        // A truncated 3-byte sequence, a lone continuation byte, an overlong
+        // form, then valid text; numbers next to them still parse.
+        let bytes: [UInt8] = [0xE2, 0x82, 0x2C, 0x9C, 0x2C, 0xC0, 0xAF, 0x2C, 0x31, 0x32, 0x0A]
+        let sheet = CSV.importWorkbook(data: Data(bytes)).sheets[0]
+        #expect(sheet.value(at: CellAddress(row: 0, column: 0)) == .string("â‚"))
+        #expect(sheet.value(at: CellAddress(row: 0, column: 1)) == .string("œ"))
+        #expect(sheet.value(at: CellAddress(row: 0, column: 2)) == .string("À¯"))
+        #expect(sheet.value(at: CellAddress(row: 0, column: 3)) == .number(12))
     }
 
     @Test func multibyteCharactersAcrossValidationChunks() {

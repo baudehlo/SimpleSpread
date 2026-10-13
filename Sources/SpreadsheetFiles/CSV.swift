@@ -9,8 +9,10 @@ import SpreadsheetCore
 public enum CSV {
     // MARK: Decoding
 
-    /// Decode CSV bytes: honor BOMs, validate UTF-8, fall back to CP1252
-    /// (real-world "Latin-1" uses 0x80-0x9F for €/curly quotes).
+    /// Decode CSV bytes: honor BOMs, then UTF-8, with any bytes that are not
+    /// valid UTF-8 read as CP1252 (real-world "Latin-1" uses 0x80-0x9F for
+    /// €/curly quotes). Only the bad bytes are: one stray CP1252 byte must
+    /// not turn every correct "é" in the file into "Ã©".
     public static func decode(data: Data) -> String {
         if data.count >= 3, data[data.startIndex] == 0xEF, data[data.startIndex + 1] == 0xBB,
            data[data.startIndex + 2] == 0xBF {
@@ -36,10 +38,63 @@ public enum CSV {
     }
 
     private static func fallbackDecode(_ data: Data) -> String {
-        String(data: data, encoding: .windowsCP1252)
-            ?? String(data: data, encoding: .isoLatin1)
-            ?? String(decoding: data, as: UTF8.self)
+        let bytes = [UInt8](data)
+        let repaired = bytes.withUnsafeBufferPointer { repairingUTF8($0) }
+        return String(decoding: repaired, as: UTF8.self)
     }
+
+    /// The bytes as valid UTF-8: well-formed UTF-8 sequences are kept, and
+    /// every other byte is read as CP1252 (bytes CP1252 leaves undefined as
+    /// Latin-1).
+    static func repairingUTF8(_ bytes: UnsafeBufferPointer<UInt8>) -> [UInt8] {
+        var out: [UInt8] = []
+        out.reserveCapacity(bytes.count + bytes.count / 2)
+        var i = 0
+        let n = bytes.count
+        while i < n {
+            let b = bytes[i]
+            if b < 0x80 { out.append(b); i += 1; continue }
+            let length = utf8SequenceLength(bytes, at: i)
+            if length > 0 {
+                out.append(contentsOf: bytes[i..<(i + length)])
+                i += length
+            } else {
+                let scalar = Unicode.Scalar(cp1252HighHalf[Int(b - 0x80)])!
+                out.append(contentsOf: String(scalar).utf8)
+                i += 1
+            }
+        }
+        return out
+    }
+
+    /// Length of the well-formed UTF-8 sequence starting at `i` (a non-ASCII
+    /// lead byte), or 0 when there is none.
+    static func utf8SequenceLength(_ bytes: UnsafeBufferPointer<UInt8>, at i: Int) -> Int {
+        let length: Int
+        var low: UInt8 = 0x80, high: UInt8 = 0xBF
+        switch bytes[i] {
+        case 0xC2...0xDF: length = 2
+        case 0xE0: length = 3; low = 0xA0
+        case 0xE1...0xEC, 0xEE...0xEF: length = 3
+        case 0xED: length = 3; high = 0x9F
+        case 0xF0: length = 4; low = 0x90
+        case 0xF1...0xF3: length = 4
+        case 0xF4: length = 4; high = 0x8F
+        default: return 0
+        }
+        guard i + length <= bytes.count, bytes[i + 1] >= low, bytes[i + 1] <= high else { return 0 }
+        for k in 2..<max(2, length) where bytes[i + k] & 0xC0 != 0x80 { return 0 }
+        return length
+    }
+
+    /// CP1252 for 0x80...0xFF (the five bytes it leaves undefined map to
+    /// the same C1 code points, as Latin-1 does).
+    private static let cp1252HighHalf: [UInt32] = [
+        0x20AC, 0x0081, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+        0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x008D, 0x017D, 0x008F,
+        0x0090, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+        0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x009D, 0x017E, 0x0178,
+    ] + (0xA0...0xFF).map { UInt32($0) }
 
     // MARK: Parsing
 
