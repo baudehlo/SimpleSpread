@@ -65,7 +65,7 @@ enum FileLoader {
 
     static var isIdle: Bool { inFlight.isEmpty }
 
-    static func open(_ url: URL, completion: @escaping @MainActor (SpreadsheetDocument) -> Void) {
+    static func open(_ url: URL, completion: @escaping @MainActor @Sendable (SpreadsheetDocument) -> Void) {
         let key = url.standardizedFileURL
         guard !inFlight.contains(key) else { return }
         inFlight.insert(key)
@@ -91,12 +91,16 @@ enum FileLoader {
         }
 
         // Progress arrives often; pass it on when the whole percent changes.
+        // Everything the loading thread touches is Sendable: the main-actor
+        // objects (progress, session) only ever on the main queue.
         let throttle = ProgressThrottle()
-        let report: (Double?, LoadPhase) -> Void = { fraction, phase in
+        let report: @Sendable (Double?, LoadPhase) -> Void = { fraction, phase in
             guard throttle.shouldReport(fraction, phase) else { return }
             DispatchQueue.main.async {
-                progress.fraction = fraction
-                progress.phase = phase
+                MainActor.assumeIsolated {
+                    progress.fraction = fraction
+                    progress.phase = phase
+                }
             }
         }
 
@@ -106,20 +110,29 @@ enum FileLoader {
                                              shouldContinue: { !cancellation.isCancelled })
             }
             DispatchQueue.main.async {
-                guard !cancellation.isCancelled else { return }
-                session.finish()
-                inFlight.remove(key)
-                switch result {
-                case .success(let loaded):
-                    completion(SpreadsheetDocument.make(from: loaded, url: url))
-                case .failure(let error):
-                    if error is CancellationError { return }
-                    let alert = NSAlert()
-                    alert.messageText = "Could not open \(url.lastPathComponent)"
-                    alert.informativeText = error.localizedDescription
-                    alert.runModal()
+                MainActor.assumeIsolated {
+                    finish(result, url: url, key: key, session: session,
+                           cancellation: cancellation, completion: completion)
                 }
             }
+        }
+    }
+
+    private static func finish(_ result: Result<LoadedFile, any Error>, url: URL, key: URL,
+                               session: LoadSession, cancellation: LoadCancellation,
+                               completion: @MainActor (SpreadsheetDocument) -> Void) {
+        guard !cancellation.isCancelled else { return }
+        session.finish()
+        inFlight.remove(key)
+        switch result {
+        case .success(let loaded):
+            completion(SpreadsheetDocument.make(from: loaded, url: url))
+        case .failure(let error):
+            if error is CancellationError { return }
+            let alert = NSAlert()
+            alert.messageText = "Could not open \(url.lastPathComponent)"
+            alert.informativeText = error.localizedDescription
+            alert.runModal()
         }
     }
 
@@ -135,7 +148,7 @@ enum FileLoader {
 
 /// One open in progress: its panel, once shown, and whether it is over.
 @MainActor
-private final class LoadSession {
+final class LoadSession {
     var panel: NSPanel?
     private(set) var finished = false
 

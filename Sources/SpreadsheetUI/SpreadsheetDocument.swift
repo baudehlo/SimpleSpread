@@ -1109,8 +1109,8 @@ public final class SpreadsheetDocument: ObservableObject {
     /// reports along the way (nil fraction: no estimate); `shouldContinue`
     /// is polled, and a false answer throws `CancellationError`.
     nonisolated static func load(url: URL,
-                                 progress: @escaping (Double?, LoadPhase) -> Void = { _, _ in },
-                                 shouldContinue: @escaping () -> Bool = { true }) throws -> LoadedFile {
+                                 progress: @escaping @Sendable (Double?, LoadPhase) -> Void = { _, _ in },
+                                 shouldContinue: @escaping @Sendable () -> Bool = { true }) throws -> LoadedFile {
         // Mapped: a 2 GB CSV is read only as far as the row limit.
         let data = try Data(contentsOf: url, options: .alwaysMapped)
         let ext = url.pathExtension.lowercased()
