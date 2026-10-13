@@ -149,3 +149,47 @@ struct NumberFormatTests {
         #expect(NumberFormatEngine.formatNumber(0.996, code: "0.00") == "1.00")
     }
 }
+
+@Suite("Decimal place adjustment")
+struct DecimalAdjustmentTests {
+    private func adjust(_ code: String, _ delta: Int) -> String? {
+        NumberFormat(code: code).adjustingDecimals(by: delta)?.code
+    }
+
+    @Test func increase() {
+        #expect(adjust("0", 1) == "0.0")
+        #expect(adjust("0.00", 1) == "0.000")
+        #expect(adjust("#,##0", 1) == "#,##0.0")
+        #expect(adjust("$#,##0.00", 1) == "$#,##0.000")
+        #expect(adjust("0%", 1) == "0.0%")
+        #expect(adjust("0.00E+00", 1) == "0.000E+00")
+        #expect(adjust("#,##0,", 1) == "#,##0.0,")
+        #expect(adjust("#,##0.00;[Red](#,##0.00)", 1) == "#,##0.000;[Red](#,##0.000)")
+        #expect(adjust("\"Qty: \"0", 1) == "\"Qty: \"0.0")
+        #expect(adjust("[$€-407]#,##0", 1) == "[$€-407]#,##0.0")
+        #expect(adjust("_(0_)", 1) == "_(0.0_)")
+    }
+
+    @Test func decrease() {
+        #expect(adjust("0.00", -1) == "0.0")
+        #expect(adjust("0.0", -1) == "0")
+        #expect(adjust("$#,##0.00", -1) == "$#,##0.0")
+        #expect(adjust("0.0%", -1) == "0%")
+        #expect(adjust("0.00E+00", -1) == "0.0E+00")
+        #expect(adjust("0", -1) == nil)
+    }
+
+    @Test func leavesNonNumericFormatsAlone() {
+        #expect(adjust("", 1) == nil)
+        #expect(adjust("@", 1) == nil)
+        #expect(adjust("m/d/yyyy", 1) == nil)
+        #expect(adjust("h:mm:ss AM/PM", -1) == nil)
+        // A literal dot in quotes is not the decimal point.
+        #expect(adjust("\"v.\"0", 1) == "\"v.\"0.0")
+    }
+
+    @Test func formattedOutput() {
+        let code = adjust("$#,##0.00", 1)!
+        #expect(NumberFormatEngine.formatNumber(1234.5, code: code) == "$1,234.500")
+    }
+}

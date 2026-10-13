@@ -283,8 +283,12 @@ rejects CFB (encrypted/legacy .xls) containers with a clear error.
   variants, Esc cancels; Cmd+arrow data-edge jumps; header click/drag
   selection; boundary drag resize + double-click autofit; fill handle with
   formula translation; NSTextField overlay editor.
-- Chrome: format bar (B/I/U, alignment, number-format menu, colors),
-  name box + formula bar, sheet tabs (add/rename/delete/switch), status bar
+- Chrome: toolbar (undo/redo, format painter, clear formatting; $ / % /
+  decimal places / number-format menu; font, size, B/I/U/S, colors; horizontal
+  and vertical alignment, wrap, indent; AutoSum split button). Larger font
+  sizes grow short rows (never shrink) in the same undo step. Not yet on it:
+  borders (not in CellStyle), merge and freeze (rendering pending), sort/filter.
+  Name box + formula bar, sheet tabs (add/rename/delete/switch), status bar
   (Sum/Avg/Count), standard menus with shortcuts.
 - Windows: `WindowGroup(for: Int)` + DocumentStore registry; File→New/Open
   spawn windows; documents own their UndoManager.

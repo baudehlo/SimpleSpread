@@ -799,3 +799,80 @@ public enum NumberFormatEngine {
         return out
     }
 }
+
+// MARK: - Decimal places
+
+extension NumberFormat {
+    /// The toolbar's Increase/Decrease Decimal: add (`delta > 0`) or remove
+    /// (`delta < 0`) one decimal place in every numeric section, as Excel
+    /// does. Returns nil when nothing changes (General, text, date/time, or
+    /// no decimals left to remove).
+    public func adjustingDecimals(by delta: Int) -> NumberFormat? {
+        guard delta != 0, !isGeneral, !isTextFormat else { return nil }
+        var changed = false
+        let sections = NumberFormatEngine.sections(of: code).map { section -> String in
+            guard !NumberFormatEngine.sectionIsDateTime(section),
+                  let adjusted = Self.adjustDecimals(in: section, increase: delta > 0)
+            else { return section }
+            changed = true
+            return adjusted
+        }
+        return changed ? NumberFormat(code: sections.joined(separator: ";")) : nil
+    }
+
+    /// Adjust the first number in one section, skipping quoted literals,
+    /// escapes, [modifiers] and the `_x` / `*x` padding pairs.
+    private static func adjustDecimals(in section: String, increase: Bool) -> String? {
+        var chars = Array(section)
+        let placeholders: Set<Character> = ["0", "#", "?"]
+        var intEnd: Int?      // index just past the integer digits
+        var dot: Int?
+        var fracEnd: Int?     // index just past the fraction digits
+        var inInteger = false
+        var i = 0
+        scan: while i < chars.count {
+            let c = chars[i]
+            let isLiteral = c == "\"" || c == "\\" || c == "[" || c == "_" || c == "*"
+            if dot != nil {
+                if !placeholders.contains(c) { fracEnd = i; break scan }
+            } else if inInteger {
+                if c == "." { dot = i }
+                else if isLiteral || !(placeholders.contains(c) || c == ",") { intEnd = i; break scan }
+            } else if placeholders.contains(c) {
+                inInteger = true
+            } else if c == ".", i + 1 < chars.count, placeholders.contains(chars[i + 1]) {
+                dot = i
+            } else if isLiteral {
+                switch c {
+                case "\"":
+                    i += 1
+                    while i < chars.count, chars[i] != "\"" { i += 1 }
+                case "[":
+                    while i < chars.count, chars[i] != "]" { i += 1 }
+                default:
+                    i += 1 // the escaped / padding character
+                }
+            }
+            i += 1
+        }
+        if dot != nil, fracEnd == nil { fracEnd = chars.count }
+        if inInteger, dot == nil, intEnd == nil { intEnd = chars.count }
+
+        if let dot, let fracEnd {
+            let digits = fracEnd - dot - 1
+            if increase {
+                chars.insert("0", at: fracEnd)
+            } else if digits <= 1 {
+                chars.removeSubrange(dot..<fracEnd)
+            } else {
+                chars.remove(at: fracEnd - 1)
+            }
+            return String(chars)
+        }
+        guard increase, var intEnd else { return nil }
+        // Trailing commas scale by thousands; the decimals go before them.
+        while intEnd > 0, chars[intEnd - 1] == "," { intEnd -= 1 }
+        chars.insert(contentsOf: ".0", at: intEnd)
+        return String(chars)
+    }
+}
