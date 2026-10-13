@@ -10,7 +10,7 @@ struct ZipTests {
         let big = Data(String(repeating: "hello world ", count: 1000).utf8) // compresses
         writer.addEntry(name: "small.txt", data: small)
         writer.addEntry(name: "dir/big.txt", data: big)
-        let archive = writer.finalize()
+        let archive = try writer.finalize()
 
         let reader = try ZipArchiveReader(data: archive)
         #expect(reader.entries.count == 2)
@@ -25,7 +25,7 @@ struct ZipTests {
     @Test func emptyFileEntry() throws {
         var writer = ZipArchiveWriter()
         writer.addEntry(name: "empty.txt", data: Data())
-        let archive = writer.finalize()
+        let archive = try writer.finalize()
         let reader = try ZipArchiveReader(data: archive)
         #expect(try reader.contents(named: "empty.txt") == Data())
     }
@@ -37,14 +37,14 @@ struct ZipTests {
         }
         var writer = ZipArchiveWriter()
         writer.addEntry(name: "bin.dat", data: bytes)
-        let reader = try ZipArchiveReader(data: writer.finalize())
+        let reader = try ZipArchiveReader(data: try writer.finalize())
         #expect(try reader.contents(named: "bin.dat") == bytes)
     }
 
     @Test func missingEntryThrows() throws {
         var writer = ZipArchiveWriter()
         writer.addEntry(name: "a.txt", data: Data("x".utf8))
-        let reader = try ZipArchiveReader(data: writer.finalize())
+        let reader = try ZipArchiveReader(data: try writer.finalize())
         #expect(throws: ZipError.self) {
             try reader.contents(named: "nope.txt")
         }
@@ -72,7 +72,7 @@ struct ZipTests {
         var writer = ZipArchiveWriter()
         let payload = Data("important data".utf8)
         writer.addEntry(name: "f.txt", data: payload)
-        var archive = writer.finalize()
+        var archive = try writer.finalize()
         // Corrupt one payload byte (stored entry: payload directly after the
         // 30-byte local header + 5-byte name).
         archive[35] = archive[35] &+ 1
@@ -93,7 +93,7 @@ struct ZipTests {
         for i in 0..<200 {
             writer.addEntry(name: "file\(i).txt", data: Data("content \(i)".utf8))
         }
-        let reader = try ZipArchiveReader(data: writer.finalize())
+        let reader = try ZipArchiveReader(data: try writer.finalize())
         #expect(reader.entries.count == 200)
         #expect(try reader.contents(named: "file123.txt") == Data("content 123".utf8))
     }
@@ -141,7 +141,99 @@ struct ParallelDeflateTests {
         let text = String(repeating: "<row r=\"1\"><c r=\"A1\"><v>12345</v></c></row>", count: 120_000)
         var writer = ZipArchiveWriter()
         writer.addEntry(name: "big.xml", data: Data(text.utf8))
-        let reader = try ZipArchiveReader(data: writer.finalize())
+        let reader = try ZipArchiveReader(data: try writer.finalize())
         #expect(try reader.contents(named: "big.xml") == Data(text.utf8))
+    }
+}
+
+@Suite("ZIP limits")
+struct ZipLimitTests {
+    /// Patch a little-endian UInt32 into the archive.
+    func put32(_ value: UInt32, at offset: Int, in data: inout Data) {
+        for k in 0..<4 { data[offset + k] = UInt8((value >> (8 * UInt32(k))) & 0xFF) }
+    }
+
+    /// Offset of the (last) central directory header.
+    func centralDirectory(_ data: Data) -> Int {
+        let bytes = [UInt8](data)
+        return (0..<(bytes.count - 4)).last {
+            bytes[$0] == 0x50 && bytes[$0 + 1] == 0x4B && bytes[$0 + 2] == 0x01 && bytes[$0 + 3] == 0x02
+        }!
+    }
+
+    func isTooLarge(_ body: () throws -> Void) -> Bool {
+        do {
+            try body()
+            return false
+        } catch ZipError.tooLarge {
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    @Test func aLyingSizeIsRefusedBeforeInflating() throws {
+        var writer = ZipArchiveWriter()
+        writer.addEntry(name: "x.xml", data: Data(String(repeating: "abc", count: 2000).utf8))
+        var archive = try writer.finalize()
+        // Claim 3.9 GB uncompressed from a few hundred bytes.
+        put32(3_900_000_000, at: centralDirectory(archive) + 24, in: &archive)
+        let reader = try ZipArchiveReader(data: archive)
+        #expect(isTooLarge { _ = try reader.contents(named: "x.xml") })
+    }
+
+    @Test func aBombIsRefused() throws {
+        // Two MB of zeros deflates past 1000:1.
+        var writer = ZipArchiveWriter()
+        writer.addEntry(name: "zeros", data: Data(count: 2 << 20))
+        let archive = try writer.finalize()
+        let strict = ZipArchiveReader.Limits(maxEntrySize: 1 << 30, maxTotalSize: 1 << 30,
+                                             maxCompressionRatio: 1000, ratioCheckSize: 1 << 20)
+        #expect(isTooLarge { _ = try ZipArchiveReader(data: archive, limits: strict).contents(named: "zeros") })
+        // Under the standard limits it is below the size the ratio is checked at.
+        #expect(try ZipArchiveReader(data: archive).contents(named: "zeros").count == 2 << 20)
+    }
+
+    @Test func entryAndTotalCaps() throws {
+        var writer = ZipArchiveWriter()
+        writer.addEntry(name: "a", data: Data(repeating: 7, count: 5000))
+        writer.addEntry(name: "b", data: Data(repeating: 8, count: 5000))
+        let archive = try writer.finalize()
+        let small = ZipArchiveReader.Limits(maxEntrySize: 4000, maxTotalSize: 1 << 20,
+                                            maxCompressionRatio: 1000, ratioCheckSize: 1 << 20)
+        #expect(isTooLarge { _ = try ZipArchiveReader(data: archive, limits: small).contents(named: "a") })
+        let total = ZipArchiveReader.Limits(maxEntrySize: 1 << 20, maxTotalSize: 8000,
+                                            maxCompressionRatio: 1000, ratioCheckSize: 1 << 20)
+        #expect(isTooLarge { _ = try ZipArchiveReader(data: archive, limits: total) })
+    }
+
+    @Test func aSliceReads() throws {
+        var writer = ZipArchiveWriter()
+        writer.addEntry(name: "a.txt", data: Data("hello".utf8))
+        var padded = Data([1, 2, 3])
+        padded.append(try writer.finalize())
+        #expect(try ZipArchiveReader(data: padded[3...]).contents(named: "a.txt") == Data("hello".utf8))
+    }
+
+    @Test func oversizedArchivesThrowInsteadOfTrapping() throws {
+        var writer = ZipArchiveWriter()
+        writer.addEntry(name: "big.bin", data: Data((0..<5000).map { UInt8(truncatingIfNeeded: $0 &* 7919) }))
+        #expect(isTooLarge { _ = try writer.finalize(maxSize: 4000, maxEntries: 10) })
+        var many = ZipArchiveWriter()
+        for i in 0..<5 { many.addEntry(name: "f\(i)", data: Data("x".utf8)) }
+        #expect(isTooLarge { _ = try many.finalize(maxSize: 1 << 20, maxEntries: 4) })
+        // Small entries adding up past the limit.
+        var total = ZipArchiveWriter()
+        var state: UInt64 = 42 // xorshift: incompressible bytes
+        for i in 0..<10 {
+            total.addEntry(name: "p\(i)", data: Data((0..<500).map { _ in
+                state ^= state << 13; state ^= state >> 7; state ^= state << 17
+                return UInt8(truncatingIfNeeded: state)
+            }))
+        }
+        #expect(isTooLarge { _ = try total.finalize(maxSize: 4000, maxEntries: 100) })
+        #expect(try total.finalize(maxSize: 1 << 20, maxEntries: 100).count > 4000)
+        // The message says what to do.
+        #expect(ZipError.tooLarge("x").localizedDescription == "x")
     }
 }

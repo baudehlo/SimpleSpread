@@ -213,7 +213,7 @@ struct XLSXBordersFilterTests {
             + " xmlns:xr=\"http://schemas.microsoft.com/office/spreadsheetml/2014/revision\""
             + " xr:uid=\"{00000000-0001-0000-0000-000000000000}\">"
             + sheetXML + "</worksheet>").utf8))
-        return zip.finalize()
+        return try! zip.finalize() // a few KB: never over the ZIP limits
     }
 
     @Test func readsExcelBorders() throws {

@@ -51,7 +51,7 @@ public enum XLSXWriter {
         for entry in pivots.entries {
             zip.addEntry(name: entry.path, data: entry.data)
         }
-        return zip.finalize()
+        return try zip.finalize()
     }
 
     // MARK: Package parts
