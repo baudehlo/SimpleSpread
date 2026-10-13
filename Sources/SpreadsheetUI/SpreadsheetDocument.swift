@@ -1032,24 +1032,140 @@ public final class SpreadsheetDocument: ObservableObject {
     /// "3 of 12" / "No results" / "" — for the find bar.
     public var findStatus: String {
         if findQuery.isEmpty { return "" }
+        if isFindSearching { return "Searching…" }
         if findMatches.isEmpty { return "No results" }
         return "\(findCurrentIndex + 1) of \(findMatches.count)"
     }
 
+    /// Sheets with up to this many cells to check are searched at once, on
+    /// the main thread (a few milliseconds). Bigger searches run in the
+    /// background once typing pauses.
+    static let findSynchronousLimit = 20_000
+    /// How long typing must pause before a background search starts.
+    static let findDebounce: Duration = .milliseconds(150)
+
+    /// True while a background search for `findQuery` is pending.
+    @Published public private(set) var isFindSearching = false
+    private var findTask: Task<Void, Never>?
+    /// The last finished search, so a query that extends it (typing one
+    /// more letter) only rechecks its matches.
+    private var lastFind: FindResult?
+
+    /// What one search found, and on what.
+    struct FindResult: Sendable {
+        var sheetID: Int
+        var revision: Int
+        var query: String
+        var matches: [CellAddress]
+    }
+
+    /// A copy of what a search reads. The cells and the style table are
+    /// values, so the copy costs nothing and is safe to read off the main
+    /// thread while the document goes on changing.
+    struct FindInput: Sendable {
+        var sheetID: Int
+        var revision: Int
+        var query: String
+        var cells: [CellAddress: Cell]
+        var styles: StyleTable
+        /// Only these addresses can match (the previous query's matches,
+        /// when this query contains it); nil searches every cell.
+        var candidates: [CellAddress]?
+    }
+
     /// Recompute matches in the active sheet. Searches both the displayed value
-    /// and the formula text, case-insensitively.
+    /// and the formula text, case-insensitively. Big sheets are searched in
+    /// the background after a short pause (see `findSynchronousLimit`).
     public func recomputeFind(preferringSelection: Bool) {
-        let query = findQuery.lowercased()
-        guard !query.isEmpty else {
+        findTask?.cancel()
+        findTask = nil
+        let input = findInput()
+        guard !input.query.isEmpty else {
+            isFindSearching = false
             findMatches = []
             findCurrentIndex = 0
             return
         }
+        let workload = input.candidates?.count ?? input.cells.count
+        if workload <= Self.findSynchronousLimit {
+            isFindSearching = false
+            finishFind(Self.search(input), preferringSelection: preferringSelection)
+            return
+        }
+        isFindSearching = true
+        findTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.findDebounce)
+            guard !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .userInitiated) { SpreadsheetDocument.search(input) }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, let self, let result else { return }
+            self.findTask = nil
+            self.isFindSearching = false
+            self.finishFind(result, preferringSelection: preferringSelection)
+        }
+    }
+
+    /// Finish a pending background search now (Return in the find bar
+    /// before it has finished).
+    private func completePendingFind() {
+        guard isFindSearching else { return }
+        findTask?.cancel()
+        findTask = nil
+        isFindSearching = false
+        finishFind(Self.search(findInput()), preferringSelection: true)
+    }
+
+    private func findInput() -> FindInput {
+        let sheet = activeSheet
+        let query = findQuery.lowercased()
+        var candidates: [CellAddress]?
+        if let last = lastFind, last.sheetID == sheet.id, last.revision == revision,
+           !last.query.isEmpty, query.contains(last.query) {
+            // Every cell whose text contains the new query contains the old.
+            candidates = last.matches
+        }
+        return FindInput(sheetID: sheet.id, revision: revision, query: query, cells: sheet.cells,
+                         styles: workbook.styles, candidates: candidates)
+    }
+
+    /// The matches for `input`, row-major; nil if the task was cancelled.
+    nonisolated static func search(_ input: FindInput) -> FindResult? {
         var results: [CellAddress] = []
-        for (addr, cell) in activeSheet.cells where cellMatchesFind(cell, query: query) {
-            results.append(addr)
+        var checked = 0
+        func check(_ address: CellAddress, _ cell: Cell) -> Bool {
+            checked += 1
+            if checked % 4096 == 0, Task.isCancelled { return false }
+            if cellMatchesFind(cell, query: input.query, styles: input.styles) { results.append(address) }
+            return true
+        }
+        if let candidates = input.candidates {
+            for address in candidates {
+                guard let cell = input.cells[address] else { continue }
+                if !check(address, cell) { return nil }
+            }
+        } else {
+            for (address, cell) in input.cells {
+                if !check(address, cell) { return nil }
+            }
         }
         results.sort() // CellAddress is Comparable (row-major)
+        return FindResult(sheetID: input.sheetID, revision: input.revision, query: input.query,
+                          matches: results)
+    }
+
+    private func finishFind(_ result: FindResult?, preferringSelection: Bool) {
+        guard let result else { return }
+        // The user switched sheets while it ran: search the new one.
+        guard result.sheetID == activeSheetID else {
+            recomputeFind(preferringSelection: preferringSelection)
+            return
+        }
+        lastFind = result
+        let results = result.matches
         findMatches = results
         guard !results.isEmpty else {
             findCurrentIndex = 0
@@ -1065,8 +1181,8 @@ public final class SpreadsheetDocument: ObservableObject {
         selectCurrentMatch()
     }
 
-    private func cellMatchesFind(_ cell: Cell, query: String) -> Bool {
-        let format = workbook.style(at: cell.styleIndex).numberFormat
+    nonisolated private static func cellMatchesFind(_ cell: Cell, query: String, styles: StyleTable) -> Bool {
+        let format = styles[cell.styleIndex].numberFormat
         if NumberFormatEngine.displayString(for: cell.value, format: format)
             .lowercased().contains(query) {
             return true
@@ -1078,12 +1194,14 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func findNext() {
+        completePendingFind()
         guard !findMatches.isEmpty else { return }
         findCurrentIndex = (findCurrentIndex + 1) % findMatches.count
         selectCurrentMatch()
     }
 
     public func findPrevious() {
+        completePendingFind()
         guard !findMatches.isEmpty else { return }
         findCurrentIndex = (findCurrentIndex - 1 + findMatches.count) % findMatches.count
         selectCurrentMatch()
