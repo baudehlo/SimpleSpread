@@ -123,7 +123,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     /// What the formula bar / in-place editor shows: the formula with '=',
-    /// or a re-parseable value representation.
+    /// or text that commits back to exactly the same value.
     public func editString(at address: CellAddress) -> String {
         let cell = activeSheet.cell(at: address)
         if let formula = cell.formula {
@@ -133,14 +133,10 @@ public final class SpreadsheetDocument: ObservableObject {
         switch cell.value {
         case .empty:
             return ""
-        case .number:
-            // Dates/times/percents edit in their formatted form so the commit
-            // round-trips through the same parser.
-            let code = style.numberFormat
-            if code.isDateTime || code.code.contains("%") {
-                return NumberFormatEngine.displayString(for: cell.value, format: code)
-            }
-            return cell.value.rawDisplayString
+        case .number(let n):
+            // Exact: dates, times and percents edit in their own form only
+            // when that loses nothing (see ValueParser.editText).
+            return ValueParser.editText(for: n, format: style.numberFormat)
         case .string(let s):
             // Escape strings that would re-parse as something else.
             let reparsed = ValueParser.parse(s)
@@ -301,6 +297,9 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Commit raw typed input into a cell (the shared parsing pipeline).
     public func commitInput(_ text: String, at address: CellAddress) {
+        // Committing the editor's text unchanged is not an edit: no write,
+        // no undo step, no "modified" (and nothing to re-parse lossily).
+        guard text != editString(at: address) else { return }
         guard !refuseIfPivot(CellRange(address)) else { return }
         let currentStyle = style(at: address)
         let parsed = ValueParser.parse(text, textFormat: currentStyle.numberFormat.isTextFormat)

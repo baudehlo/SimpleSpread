@@ -78,11 +78,13 @@ public enum CellValue: Equatable, Hashable, Sendable, Codable {
         return nil
     }
 
-    /// Raw textual form with no number-format applied (General rendering for numbers).
+    /// Raw textual form with no number format applied: the text a value
+    /// becomes in a formula (numbers to Excel's 15 significant digits, not
+    /// the grid's shorter General form).
     public var rawDisplayString: String {
         switch self {
         case .empty: return ""
-        case .number(let n): return NumberFormatEngine.generalString(for: n)
+        case .number(let n): return NumberFormatEngine.textCoercionString(for: n)
         case .string(let s): return s
         case .bool(let b): return b ? "TRUE" : "FALSE"
         case .error(let e): return e.rawValue

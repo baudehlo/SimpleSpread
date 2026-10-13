@@ -46,10 +46,12 @@ public enum Coerce {
         }
     }
 
-    /// Text form used by '&' and text functions: numbers in General form,
-    /// booleans as TRUE/FALSE, blank as "".
+    /// Text form used by '&' and text functions: numbers to Excel's 15
+    /// significant digits (not the grid's General form), booleans as
+    /// TRUE/FALSE, blank as "".
     public static func displayText(_ v: CellValue) -> String {
-        v.rawDisplayString
+        if case .number(let n) = v { return NumberFormatEngine.textCoercionString(for: n) }
+        return v.rawDisplayString
     }
 
     /// Parse text as a number the way operators do: plain/scientific numbers,
