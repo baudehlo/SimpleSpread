@@ -112,6 +112,13 @@ public final class Workbook {
     public var pivotTables: [PivotTable] = []
     /// Stylesheet entries the preserved pivot parts refer to; nil without pivots.
     public var preservedStyles: PreservedStyles?
+    /// Defined names (XLSX `<definedNames>`), including Excel's built-in
+    /// `_xlnm.*` ones (print areas and titles), kept in file order.
+    public var definedNames: [DefinedName] = [] {
+        didSet { definedNameCache = nil }
+    }
+    /// Lookup table and parsed formulas for `definedNames` (DefinedNames.swift).
+    var definedNameCache: DefinedNameCache?
     private var nextSheetID = 1
 
     public init() {}
@@ -168,6 +175,7 @@ public final class Workbook {
         pivotCaches = other.pivotCaches
         pivotTables = other.pivotTables
         preservedStyles = other.preservedStyles
+        definedNames = other.definedNames
     }
 
     public func moveSheet(withID id: Int, to newIndex: Int) {

@@ -121,6 +121,19 @@ public enum XLSXWriter {
                                            + absoluteA1(filter.range))
             definedNames += "</definedName>"
         }
+        for defined in workbook.definedNames
+        where defined.name.caseInsensitiveCompare("_xlnm._FilterDatabase") != .orderedSame {
+            var scope = ""
+            if let sheetID = defined.scopeSheetID {
+                // A name scoped to a sheet that's gone goes with it.
+                guard let index = workbook.indexOfSheet(withID: sheetID) else { continue }
+                scope = " localSheetId=\"\(index)\""
+            }
+            definedNames += "<definedName name=\"\(XML.escapeAttribute(defined.name))\"\(scope)"
+                + (defined.hidden ? " hidden=\"1\"" : "") + ">"
+            definedNames += XML.escapeText(FormulaFunctionPrefixes.adding(defined.formula))
+            definedNames += "</definedName>"
+        }
         if !definedNames.isEmpty {
             s += "<definedNames>" + definedNames + "</definedNames>"
         }
@@ -315,7 +328,7 @@ public enum XLSXWriter {
         }
 
         if let formula = cell.formula {
-            let f = "<f>\(XML.escapeText(formula))</f>"
+            let f = "<f>\(XML.escapeText(FormulaFunctionPrefixes.adding(formula)))</f>"
             var valuePart = ""
             let saved = body
             _ = saved

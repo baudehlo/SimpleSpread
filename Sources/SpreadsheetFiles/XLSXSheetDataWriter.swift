@@ -92,7 +92,7 @@ extension XLSXWriter {
         out.append(0x3E)
         if let formula = cell.formula {
             out.append(contentsOf: "<f>".utf8)
-            out.append(contentsOf: XML.escapeText(formula).utf8)
+            out.append(contentsOf: XML.escapeText(FormulaFunctionPrefixes.adding(formula)).utf8)
             out.append(contentsOf: "</f>".utf8)
         }
         switch body {

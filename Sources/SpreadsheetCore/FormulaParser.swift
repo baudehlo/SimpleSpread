@@ -26,6 +26,18 @@ public enum FormulaParser {
         return expr
     }
 
+    /// Excel writes functions added after 2007 with a prefix in files
+    /// (`_xlfn.IFNA`, `_xlfn._xlws.SORT`, `_xlws.FILTER`); the function is
+    /// the same with or without it.
+    public static func strippingFunctionPrefix(_ name: String) -> String {
+        var body = Substring(name)
+        for prefix in ["_xlfn.", "_xlws."] where body.count > prefix.count
+            && body.prefix(prefix.count).lowercased() == prefix {
+            body = body.dropFirst(prefix.count)
+        }
+        return String(body)
+    }
+
     private struct Parser {
         let tokens: [FormulaToken]
         var pos = 0
@@ -176,13 +188,18 @@ public enum FormulaParser {
                         pos += 1
                     } else {
                         while true {
-                            args.append(try parseExpression())
+                            // An empty argument: F(,x) / F(x,,y) / F(x,).
+                            if peek() == .comma || peek() == .rightParen {
+                                args.append(.missing)
+                            } else {
+                                args.append(try parseExpression())
+                            }
                             if peek() == .comma { pos += 1; continue }
                             try expect(.rightParen, "')' or ','")
                             break
                         }
                     }
-                    return .function(s.uppercased(), args)
+                    return .function(FormulaParser.strippingFunctionPrefix(s).uppercased(), args)
                 }
                 // Sheet-qualified reference: Name!A1
                 if peek(1) == .bang {

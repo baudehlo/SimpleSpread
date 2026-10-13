@@ -207,8 +207,23 @@ diagonals are not modelled. Reader resolves parts via relationships
 (never hard-coded paths), infers missing `r` attributes, concatenates
 rich-text runs, expands shared formulas by reference translation, maps
 builtin/custom numFmts, and normalizes 1904-system dates (+1462 on
-date-formatted numerics). Cells with formulas we can't evaluate surface
-#NAME? after recalc — deliberate honesty over stale cached values.
+date-formatted numerics). Defined names (`<definedNames>`, including
+`_xlnm.*` print areas/titles) are read into `Workbook.definedNames`, resolved
+by the evaluator, adjusted by structural edits like any reference, and
+written back. Function prefixes Excel writes for post-2007 functions
+(`_xlfn.`, `_xlws.`) are stripped on read and added back on write. On open, a
+formula that can only give #NAME? here (a function we don't have, an
+undefined name) or that doesn't parse keeps the cached value from the file;
+once its inputs change it recalculates (to the error).
+
+Reference adjustment (insert/delete rows and columns, sheet rename/delete,
+copy, fill, sort) works on formula *tokens*, not on a parse:
+`FormulaTextRewriter` rewrites A1 references and copies every other token
+verbatim, so formulas the parser rejects (array constants, table references,
+3-D references, intersections) move too and constants keep every digit.
+Number→text has three contracts: `generalString` (grid only, ~10 digits),
+`roundTripString` (formula text, the cell editor: exact), and
+`textCoercionString` (`&`, text functions: Excel's 15 digits).
 
 **Pivot tables** are preserved *and* modelled. The reader keeps each pivot
 table, cache definition and records part verbatim, and also parses them into

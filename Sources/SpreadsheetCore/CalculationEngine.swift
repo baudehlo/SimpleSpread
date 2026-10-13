@@ -17,6 +17,11 @@ public final class CalculationEngine {
     private var precedentsIndex: [AbsoluteAddress: (cells: [AbsoluteAddress], ranges: [(Int, CellRange)])] = [:]
     /// Cells containing volatile functions (NOW/TODAY/RAND/...).
     private var volatiles: Set<AbsoluteAddress> = []
+    /// During `rebuildAll`: formulas that can only give #NAME? here (a
+    /// function we don't have, an undefined name) keep the value the file
+    /// stored instead of being recalculated into an error.
+    private var keepingStoredValues = false
+    private var keepStoredValue: Set<AbsoluteAddress> = []
 
     /// Ranges larger than this register as range-dependencies instead of
     /// per-cell edges.
@@ -101,6 +106,7 @@ public final class CalculationEngine {
         asts.reserveCapacity(formulaCount)
         precedentsIndex.reserveCapacity(formulaCount)
         dependents.reserveCapacity(formulaCount * 2)
+        keepingStoredValues = true
         for sheet in workbook.sheets {
             for (address, cell) in sheet.cells {
                 if let formula = cell.formula {
@@ -110,7 +116,15 @@ public final class CalculationEngine {
                 }
             }
         }
+        keepingStoredValues = false
         recalculateAll()
+        keepStoredValue.removeAll()
+    }
+
+    /// True when a formula being installed by `rebuildAll` has a stored
+    /// (cached) value worth keeping over an error we would compute.
+    private func hasStoredValue(at addr: AbsoluteAddress) -> Bool {
+        keepingStoredValues && !(workbook.sheet(withID: addr.sheetID)?.value(at: addr.address).isEmpty ?? true)
     }
 
     /// Recalculate every formula cell.
@@ -128,10 +142,12 @@ public final class CalculationEngine {
 
     private func installFormula(_ text: String, at addr: AbsoluteAddress, replacing: Bool = true) {
         if replacing { removeFormula(at: addr) }
-        let expr: FormulaExpr
+        var expr: FormulaExpr
         do {
             expr = try FormulaParser.parse(text)
         } catch {
+            // A file's formula we can't read keeps the value the file stored.
+            if hasStoredValue(at: addr) { return }
             // Sheets-style: commit the formula, value is #ERROR!.
             if let sheet = workbook.sheet(withID: addr.sheetID) {
                 var cell = sheet.cell(at: addr.address)
@@ -140,6 +156,9 @@ public final class CalculationEngine {
             }
             return
         }
+        // Defined names are substituted, so their references are tracked.
+        expr = workbook.expandingDefinedNames(in: expr, sheetID: addr.sheetID)
+        if expr.hasUnsupportedNames && hasStoredValue(at: addr) { keepStoredValue.insert(addr) }
         asts[addr] = expr
         if expr.isVolatile {
             volatiles.insert(addr)
@@ -268,7 +287,7 @@ public final class CalculationEngine {
             // Self-reference is immediately circular.
             if dirtyPrecedents(of: addr).contains(addr) {
                 store(.error(.circular), at: addr)
-            } else if !evaluated.contains(addr), let expr = asts[addr] {
+            } else if !evaluated.contains(addr), !keepStoredValue.contains(addr), let expr = asts[addr] {
                 let context = EvalContext(workbook: workbook, sheetID: addr.sheetID,
                                           address: addr.address, clock: clock)
                 store(FormulaEvaluator.evaluate(expr, context: context), at: addr)
