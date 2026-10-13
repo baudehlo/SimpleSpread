@@ -413,12 +413,12 @@ public final class SpreadsheetDocument: ObservableObject {
 
     // MARK: - Formatting
 
+    /// Restyle the selection (see `forEachFormattingTarget` for which cells
+    /// a big selection covers). One undo step.
     public func applyStyleToSelection(_ actionName: String, _ mutate: (inout CellStyle) -> Void) {
-        let addresses = selection.range.addresses
-        let snaps = snapshot(addresses)
-        workbook.modifyStyle(in: selection.range, ofSheetID: activeSheetID, mutate)
-        registerCellUndo(snaps, actionName: actionName)
-        markChanged()
+        applyStyle(to: selection.range, actionName: actionName, addressDependent: false) { _, style in
+            mutate(&style)
+        }
     }
 
     public func toggleBold() {
@@ -686,14 +686,59 @@ public final class SpreadsheetDocument: ObservableObject {
         markChanged()
     }
 
+    /// Resize a column (header drag, autofit). One undo step per drag.
     public func setColumnWidth(_ column: Int, width: CGFloat) {
-        activeSheet.columnWidths[column] = max(12, width)
-        markChanged()
+        resize(isRow: false, index: column, to: max(12, width), actionName: "Column Width")
     }
 
+    /// Resize a row (header drag). One undo step per drag.
     public func setRowHeight(_ row: Int, height: CGFloat) {
-        activeSheet.rowHeights[row] = max(12, height)
+        resize(isRow: true, index: row, to: max(12, height), actionName: "Row Height")
+    }
+
+    /// The resize the newest undo step records, and the revision it left the
+    /// document at. A drag calls setColumnWidth/setRowHeight for every mouse
+    /// move; while nothing else has changed since, those updates extend the
+    /// same undo step, which keeps the size from before the drag.
+    private struct ResizeStep: Equatable {
+        var sheetID: Int
+        var isRow: Bool
+        var index: Int
+        var revision: Int
+    }
+    private var lastResizeStep: ResizeStep?
+
+    private func resize(isRow: Bool, index: Int, to size: CGFloat, actionName: String) {
+        let sheet = activeSheet
+        let current = isRow ? sheet.rowHeight(index) : sheet.columnWidth(index)
+        guard current != size else { return }
+        let old = isRow ? sheet.rowHeights[index] : sheet.columnWidths[index]
+        let continuing = lastResizeStep == ResizeStep(sheetID: sheet.id, isRow: isRow, index: index,
+                                                      revision: revision)
+            && undoManager.undoActionName == actionName
+        if isRow { sheet.rowHeights[index] = size } else { sheet.columnWidths[index] = size }
+        if !continuing {
+            withUndoGroup {
+                registerSizeUndo(isRow: isRow, index: index, size: old, sheetID: sheet.id, actionName: actionName)
+            }
+        }
         markChanged()
+        lastResizeStep = ResizeStep(sheetID: sheet.id, isRow: isRow, index: index, revision: revision)
+    }
+
+    /// Undo sets one row's height (or column's width) back to `size`.
+    private func registerSizeUndo(isRow: Bool, index: Int, size: CGFloat?, sheetID: Int, actionName: String) {
+        undoManager.registerUndo(withTarget: self) { doc in
+            MainActor.assumeIsolated {
+                guard let sheet = doc.workbook.sheet(withID: sheetID) else { return }
+                let redo = isRow ? sheet.rowHeights[index] : sheet.columnWidths[index]
+                if isRow { sheet.rowHeights[index] = size } else { sheet.columnWidths[index] = size }
+                doc.registerSizeUndo(isRow: isRow, index: index, size: redo, sheetID: sheetID,
+                                     actionName: actionName)
+                doc.markChanged()
+            }
+        }
+        undoManager.setActionName(actionName)
     }
 
     // MARK: - Sheets
@@ -1010,22 +1055,22 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Clear Formatting (⌘\): reset every selected cell to the default style,
     /// leaving values and formulas intact.
     public func clearFormattingInSelection() {
-        let addresses = selection.range.addresses
-        let snaps = snapshot(addresses)
-        var changed = false
-        for addr in addresses {
-            var cell = activeSheet.cell(at: addr)
+        // Only stored cells can carry formatting.
+        let sheet = activeSheet
+        var snaps: [StyleSnapshot] = []
+        for addr in storedAddresses(in: selection.range, sheet: sheet) {
+            var cell = sheet.cell(at: addr)
             // A pivot's field buttons belong to the pivot, not the formatting.
             let target = workbook.style(at: cell.styleIndex).pivotButton
                 ? workbook.styleIndex(for: CellStyle(pivotButton: true)) : 0
             if cell.styleIndex != target {
+                snaps.append(StyleSnapshot(address: addr, styleIndex: cell.styleIndex))
                 cell.styleIndex = target
-                activeSheet.setCell(cell, at: addr)
-                changed = true
+                sheet.setCell(cell, at: addr)
             }
         }
-        guard changed else { return }
-        registerCellUndo(snaps, actionName: "Clear Formatting")
+        guard !snaps.isEmpty else { return }
+        registerStyleUndo(snaps, sheetID: sheet.id, actionName: "Clear Formatting")
         markChanged()
     }
 
@@ -1081,24 +1126,140 @@ public final class SpreadsheetDocument: ObservableObject {
     /// "3 of 12" / "No results" / "" — for the find bar.
     public var findStatus: String {
         if findQuery.isEmpty { return "" }
+        if isFindSearching { return "Searching…" }
         if findMatches.isEmpty { return "No results" }
         return "\(findCurrentIndex + 1) of \(findMatches.count)"
     }
 
+    /// Sheets with up to this many cells to check are searched at once, on
+    /// the main thread (a few milliseconds). Bigger searches run in the
+    /// background once typing pauses.
+    static let findSynchronousLimit = 20_000
+    /// How long typing must pause before a background search starts.
+    static let findDebounce: Duration = .milliseconds(150)
+
+    /// True while a background search for `findQuery` is pending.
+    @Published public private(set) var isFindSearching = false
+    private var findTask: Task<Void, Never>?
+    /// The last finished search, so a query that extends it (typing one
+    /// more letter) only rechecks its matches.
+    private var lastFind: FindResult?
+
+    /// What one search found, and on what.
+    struct FindResult: Sendable {
+        var sheetID: Int
+        var revision: Int
+        var query: String
+        var matches: [CellAddress]
+    }
+
+    /// A copy of what a search reads. The cells and the style table are
+    /// values, so the copy costs nothing and is safe to read off the main
+    /// thread while the document goes on changing.
+    struct FindInput: Sendable {
+        var sheetID: Int
+        var revision: Int
+        var query: String
+        var cells: [CellAddress: Cell]
+        var styles: StyleTable
+        /// Only these addresses can match (the previous query's matches,
+        /// when this query contains it); nil searches every cell.
+        var candidates: [CellAddress]?
+    }
+
     /// Recompute matches in the active sheet. Searches both the displayed value
-    /// and the formula text, case-insensitively.
+    /// and the formula text, case-insensitively. Big sheets are searched in
+    /// the background after a short pause (see `findSynchronousLimit`).
     public func recomputeFind(preferringSelection: Bool) {
-        let query = findQuery.lowercased()
-        guard !query.isEmpty else {
+        findTask?.cancel()
+        findTask = nil
+        let input = findInput()
+        guard !input.query.isEmpty else {
+            isFindSearching = false
             findMatches = []
             findCurrentIndex = 0
             return
         }
+        let workload = input.candidates?.count ?? input.cells.count
+        if workload <= Self.findSynchronousLimit {
+            isFindSearching = false
+            finishFind(Self.search(input), preferringSelection: preferringSelection)
+            return
+        }
+        isFindSearching = true
+        findTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.findDebounce)
+            guard !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .userInitiated) { SpreadsheetDocument.search(input) }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, let self, let result else { return }
+            self.findTask = nil
+            self.isFindSearching = false
+            self.finishFind(result, preferringSelection: preferringSelection)
+        }
+    }
+
+    /// Finish a pending background search now (Return in the find bar
+    /// before it has finished).
+    private func completePendingFind() {
+        guard isFindSearching else { return }
+        findTask?.cancel()
+        findTask = nil
+        isFindSearching = false
+        finishFind(Self.search(findInput()), preferringSelection: true)
+    }
+
+    private func findInput() -> FindInput {
+        let sheet = activeSheet
+        let query = findQuery.lowercased()
+        var candidates: [CellAddress]?
+        if let last = lastFind, last.sheetID == sheet.id, last.revision == revision,
+           !last.query.isEmpty, query.contains(last.query) {
+            // Every cell whose text contains the new query contains the old.
+            candidates = last.matches
+        }
+        return FindInput(sheetID: sheet.id, revision: revision, query: query, cells: sheet.cells,
+                         styles: workbook.styles, candidates: candidates)
+    }
+
+    /// The matches for `input`, row-major; nil if the task was cancelled.
+    nonisolated static func search(_ input: FindInput) -> FindResult? {
         var results: [CellAddress] = []
-        for (addr, cell) in activeSheet.cells where cellMatchesFind(cell, query: query) {
-            results.append(addr)
+        var checked = 0
+        func check(_ address: CellAddress, _ cell: Cell) -> Bool {
+            checked += 1
+            if checked % 4096 == 0, Task.isCancelled { return false }
+            if cellMatchesFind(cell, query: input.query, styles: input.styles) { results.append(address) }
+            return true
+        }
+        if let candidates = input.candidates {
+            for address in candidates {
+                guard let cell = input.cells[address] else { continue }
+                if !check(address, cell) { return nil }
+            }
+        } else {
+            for (address, cell) in input.cells {
+                if !check(address, cell) { return nil }
+            }
         }
         results.sort() // CellAddress is Comparable (row-major)
+        return FindResult(sheetID: input.sheetID, revision: input.revision, query: input.query,
+                          matches: results)
+    }
+
+    private func finishFind(_ result: FindResult?, preferringSelection: Bool) {
+        guard let result else { return }
+        // The user switched sheets while it ran: search the new one.
+        guard result.sheetID == activeSheetID else {
+            recomputeFind(preferringSelection: preferringSelection)
+            return
+        }
+        lastFind = result
+        let results = result.matches
         findMatches = results
         guard !results.isEmpty else {
             findCurrentIndex = 0
@@ -1114,8 +1275,8 @@ public final class SpreadsheetDocument: ObservableObject {
         selectCurrentMatch()
     }
 
-    private func cellMatchesFind(_ cell: Cell, query: String) -> Bool {
-        let format = workbook.style(at: cell.styleIndex).numberFormat
+    nonisolated private static func cellMatchesFind(_ cell: Cell, query: String, styles: StyleTable) -> Bool {
+        let format = styles[cell.styleIndex].numberFormat
         if NumberFormatEngine.displayString(for: cell.value, format: format)
             .lowercased().contains(query) {
             return true
@@ -1127,12 +1288,14 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func findNext() {
+        completePendingFind()
         guard !findMatches.isEmpty else { return }
         findCurrentIndex = (findCurrentIndex + 1) % findMatches.count
         selectCurrentMatch()
     }
 
     public func findPrevious() {
+        completePendingFind()
         guard !findMatches.isEmpty else { return }
         findCurrentIndex = (findCurrentIndex - 1 + findMatches.count) % findMatches.count
         selectCurrentMatch()
@@ -1154,12 +1317,33 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func selectionStatistics() -> SelectionStats {
-        var stats = SelectionStats(count: 0, numericCount: 0, sum: 0)
-        // Cap the scan for enormous selections.
-        let range = selection.range
-        guard range.cellCount <= 1_000_000 else { return stats }
-        // Like Excel's status bar, rows a filter hides are left out.
         let sheet = activeSheet
+        let key = StatsKey(revision: revision, sheetID: sheet.id, range: selection.range)
+        if let cached = statsCache, cached.key == key { return cached.stats }
+        let stats = computeSelectionStatistics(sheet: sheet)
+        statsCache = (key, stats)
+        return stats
+    }
+
+    /// The status bar asks on every redraw; the answer only changes with
+    /// the selection or an edit.
+    private struct StatsKey: Equatable {
+        var revision: Int
+        var sheetID: Int
+        var range: CellRange
+    }
+    private var statsCache: (key: StatsKey, stats: SelectionStats)?
+
+    private func computeSelectionStatistics(sheet: Sheet) -> SelectionStats {
+        var stats = SelectionStats(count: 0, numericCount: 0, sum: 0)
+        // Only the used part of the selection can hold values (a whole
+        // column is a million addresses, mostly past the data).
+        guard let used = sheet.usedRange, let range = Self.intersection(selection.range, used) else {
+            return stats
+        }
+        // Cap the work (lookups or stored cells scanned) for enormous sheets.
+        guard min(range.cellCount, sheet.cells.count) <= 4_000_000 else { return stats }
+        // Like Excel's status bar, rows a filter hides are left out.
         let hidden = sheet.hiddenRows
         func add(_ cell: Cell) {
             if cell.value.isEmpty { return }

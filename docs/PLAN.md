@@ -351,9 +351,12 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
 - Sort and AutoFilter live in Core (`SortRows.swift`, `AutoFilter.swift`):
   Excel's sort order (numbers, text, booleans, errors; blanks last), whole-row
   moves with formulas translated like a copy, a header guess, value/condition
-  criteria with wildcards, and filter evaluation that hides rows. Merges,
-  hidden rows, frozen panes, the filter and row heights undo together as
-  `SheetLayoutState`. Unsupported criteria (top 10, dynamic, colour) are kept
+  criteria with wildcards, and filter evaluation that hides rows. A layout
+  command's undo step records only what it changed (`SheetLayoutChange`:
+  merges added/removed, rows hidden/shown, heights, the filter), so undoing
+  it leaves later changes alone. Row and column resizes are one undo step
+  per drag; frozen panes are a view setting and, as in Excel, not undoable.
+  Unsupported criteria (top 10, dynamic, colour) are kept
   as XML and written back, but hide nothing when re-applied.
 - Chrome: toolbar (undo/redo, format painter, clear formatting; $ / % /
   decimal places / number-format menu; font, size, B/I/U/S, colors, borders;
@@ -361,6 +364,12 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   split button). Larger font sizes grow short rows (never shrink) in the same
   undo step. Name box + formula bar, sheet tabs (add/rename/delete/switch), status bar
   (Sum/Avg/Count), standard menus with shortcuts.
+- Formatting a selection of up to 100,000 cells formats every cell in it.
+  A bigger one (whole columns, ⌘A on a big sheet) formats the cells inside
+  the used range — the stored ones and the blanks among them — and never
+  creates formatted blanks past the data (there are no whole-column
+  formats). Formatting undo restores styles only. Clear Formatting, Merge
+  and Sort walk the stored cells, not every address in the rectangle.
 - Windows: `WindowGroup(for: Int)` + DocumentStore registry; File→New/Open
   spawn windows; documents own their UndoManager.
 - Headless hooks: `SIMPLESPREAD_SCREENSHOT` renders the real window to PNG
