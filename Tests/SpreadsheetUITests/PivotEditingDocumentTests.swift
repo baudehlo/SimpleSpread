@@ -110,12 +110,12 @@ struct PivotEditingDocumentTests {
         doc.editPivot(0, actionName: "Add Field") { d, c in d.place(field: 1, in: .values, cache: c) }
         doc.commitInput("keep", at: a("A6"))
         var asked = 0
-        doc.confirm = { _, _ in asked += 1; return false }
+        doc.confirm = { _, _, _ in asked += 1; return false }
         #expect(!doc.editPivot(0, actionName: "Add Field") { d, c in d.place(field: 0, in: .rows, cache: c) })
         #expect(asked == 1)
         #expect(text(doc, "A6") == "keep")
         #expect(doc.workbook.pivotTables[0].definition?.rowFields.isEmpty == true)
-        doc.confirm = { _, _ in true }
+        doc.confirm = { _, _, _ in true }
         #expect(doc.editPivot(0, actionName: "Add Field") { d, c in d.place(field: 0, in: .rows, cache: c) })
         #expect(text(doc, "A6") != "keep")
     }

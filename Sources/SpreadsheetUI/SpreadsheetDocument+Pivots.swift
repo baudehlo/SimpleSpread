@@ -221,7 +221,7 @@ extension SpreadsheetDocument {
         }
         if !cells.isEmpty {
             let detail = "Cells \(cells.prefix(3).map(\.a1).joined(separator: ", "))\(cells.count > 3 ? "…" : "") would be overwritten."
-            guard confirm?("There’s already data where the pivot table needs to go. Replace it?", detail) == true else {
+            guard confirm?("There’s already data where the pivot table needs to go. Replace it?", detail, "Replace") == true else {
                 rollBack()
                 return false
             }

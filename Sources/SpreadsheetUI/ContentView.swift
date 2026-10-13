@@ -30,16 +30,19 @@ public struct DocumentWindowView: View {
         .sheet(isPresented: $document.isInsertPivotPresented) {
             InsertPivotSheet(document: document)
         }
+        .sheet(isPresented: $document.isSortPresented) {
+            SortSheet(document: document)
+        }
         .onAppear { installConfirmation() }
     }
 
     /// Confirmations (e.g. a pivot growing over data) as window alerts.
     private func installConfirmation() {
-        document.confirm = { message, detail in
+        document.confirm = { message, detail, button in
             let alert = NSAlert()
             alert.messageText = message
             alert.informativeText = detail
-            alert.addButton(withTitle: "Replace")
+            alert.addButton(withTitle: button)
             alert.addButton(withTitle: "Cancel")
             return alert.runModal() == .alertFirstButtonReturn
         }
@@ -192,7 +195,7 @@ public struct DocumentWindowView: View {
     /// Scrolls sideways when the window is too narrow to show it all.
     private var formatBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+            HStack(spacing: 6) {
                 historyGroup
                 toolbarDivider
                 numberGroup
@@ -203,7 +206,7 @@ public struct DocumentWindowView: View {
                 toolbarDivider
                 alignmentGroup
                 toolbarDivider
-                autoSumMenu
+                dataGroup
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
@@ -285,26 +288,53 @@ public struct DocumentWindowView: View {
     private var colorGroup: some View {
         // NSColorWell has a fixed intrinsic size — never clamp its frame
         // (a narrower frame clips and the well overflows onto neighbors).
-        HStack(spacing: 10) {
-            HStack(spacing: 4) {
+        HStack(spacing: 6) {
+            HStack(spacing: 3) {
                 Image(systemName: "character")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 ColorPicker("", selection: textColorBinding, supportsOpacity: false)
                     .labelsHidden()
+                    .controlSize(.small)
                     .fixedSize()
             }
             .help("Text color")
-            HStack(spacing: 4) {
+            HStack(spacing: 3) {
                 Image(systemName: "drop.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 ColorPicker("", selection: fillColorBinding, supportsOpacity: false)
                     .labelsHidden()
+                    .controlSize(.small)
                     .fixedSize()
             }
             .help("Fill color")
+            bordersMenu
         }
+    }
+
+    static let borderChoices: [(String, SpreadsheetDocument.BorderPreset)] = [
+        ("Bottom Border", .bottom), ("Top Border", .top), ("Left Border", .left), ("Right Border", .right),
+        ("No Border", .none), ("All Borders", .all), ("Outside Borders", .outside),
+        ("Thick Outside Borders", .thickOutside), ("Inside Borders", .inside),
+        ("Top and Bottom Border", .topAndBottom), ("Thick Bottom Border", .thickBottom),
+        ("Double Bottom Border", .doubleBottom),
+    ]
+
+    private var bordersMenu: some View {
+        Menu {
+            ForEach(DocumentWindowView.borderChoices, id: \.0) { name, preset in
+                Button(name) { document.applyBorders(preset) }
+                if preset == .right || preset == .inside { Divider() }
+            }
+        } label: {
+            Image(systemName: "square.grid.2x2")
+        } primaryAction: {
+            document.applyBorders(.bottom)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Borders: click for a bottom border, or choose from the menu")
     }
 
     private var alignmentGroup: some View {
@@ -312,16 +342,82 @@ public struct DocumentWindowView: View {
             alignButton(.left, icon: "text.alignleft", help: "Align left")
             alignButton(.center, icon: "text.aligncenter", help: "Align center")
             alignButton(.right, icon: "text.alignright", help: "Align right")
-            Spacer().frame(width: 6)
-            verticalAlignButton(.top, icon: "align.vertical.top", help: "Align top")
-            verticalAlignButton(.middle, icon: "align.vertical.center", help: "Align middle")
-            verticalAlignButton(.bottom, icon: "align.vertical.bottom", help: "Align bottom")
-            Spacer().frame(width: 6)
+            verticalAlignMenu
             styleToggle("arrow.turn.down.left", active: activeStyle.wrapText) { document.toggleWrapText() }
                 .help("Wrap text")
-            toolButton("decrease.indent", help: "Decrease indent") { document.adjustIndent(by: -1) }
-                .disabled(activeStyle.indent == 0)
-            toolButton("increase.indent", help: "Increase indent") { document.adjustIndent(by: 1) }
+            mergeMenu
+        }
+    }
+
+    static let verticalChoices: [(String, TextAlignmentV, String)] = [
+        ("Top", .top, "align.vertical.top"),
+        ("Middle", .middle, "align.vertical.center"),
+        ("Bottom", .bottom, "align.vertical.bottom"),
+    ]
+
+    /// Vertical alignment as one menu showing the current choice (as in
+    /// Google Sheets), to keep the toolbar to one row.
+    private var verticalAlignMenu: some View {
+        let current = activeStyle.verticalAlignment
+        let icon = DocumentWindowView.verticalChoices.first { $0.1 == current }?.2 ?? "align.vertical.bottom"
+        return Menu {
+            ForEach(DocumentWindowView.verticalChoices, id: \.0) { name, alignment, symbol in
+                Button {
+                    document.setVerticalAlignment(alignment)
+                } label: {
+                    Label(name, systemImage: alignment == current ? "checkmark" : symbol)
+                }
+            }
+        } label: {
+            Image(systemName: icon)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Vertical alignment")
+    }
+
+    private var mergeMenu: some View {
+        Menu {
+            Button("Merge & Center") { document.mergeSelection(.mergeAndCenter) }
+            Button("Merge Across") { document.mergeSelection(.mergeAcross) }
+            Button("Merge Cells") { document.mergeSelection(.merge) }
+            Button("Unmerge Cells") { document.unmergeSelection() }
+                .disabled(!document.selectionHasMerge)
+        } label: {
+            Image(systemName: "arrow.right.and.line.vertical.and.arrow.left")
+        } primaryAction: {
+            document.toggleMergeAndCenter()
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Merge & Center (click again to unmerge)")
+    }
+
+    /// Excel's Home-tab "Sort & Filter" button: one menu, its icon filled
+    /// while the sheet has a filter.
+    private var dataGroup: some View {
+        HStack(spacing: 6) {
+            Menu {
+                Button("Sort A to Z") { document.quickSort(ascending: true) }
+                Button("Sort Z to A") { document.quickSort(ascending: false) }
+                Button("Custom Sort…") { document.isSortPresented = true }
+                Divider()
+                Button(document.activeAutoFilter == nil ? "Filter" : "Remove Filter") {
+                    document.toggleAutoFilter()
+                }
+                Button("Clear Filters") { document.clearAllFilters() }
+                    .disabled(document.activeAutoFilter?.columns.isEmpty ?? true)
+                Button("Reapply Filter") { document.reapplyAutoFilter() }
+                    .disabled(document.activeAutoFilter == nil)
+            } label: {
+                // Menu labels drop backgrounds, so a filled icon marks a filter.
+                Image(systemName: document.activeAutoFilter != nil
+                      ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Sort & Filter")
+            autoSumMenu
         }
     }
 
@@ -384,13 +480,6 @@ public struct DocumentWindowView: View {
         .help(help)
     }
 
-    private func verticalAlignButton(_ alignment: TextAlignmentV, icon: String, help: String) -> some View {
-        styleToggle(icon, active: activeStyle.verticalAlignment == alignment) {
-            document.setVerticalAlignment(alignment)
-        }
-        .help(help)
-    }
-
     /// Common Mac fonts plus the usual Office ones, keeping only those
     /// installed (Office fonts appear once Microsoft Office is installed).
     static let fontChoices: [String] = [
@@ -418,7 +507,7 @@ public struct DocumentWindowView: View {
         } label: {
             Text(current)
                 .lineLimit(1)
-                .frame(width: 104, alignment: .leading)
+                .frame(width: 90, alignment: .leading)
         }
         .menuStyle(.borderlessButton)
         .fixedSize()

@@ -55,9 +55,11 @@ public final class SpreadsheetDocument: ObservableObject {
     @Published public var isPivotPanelVisible = true
     /// Insert ▸ PivotTable… sheet.
     @Published public var isInsertPivotPresented = false
-    /// Asks the user to confirm (message, detail); nil refuses. The app
-    /// installs an alert; tests install a closure.
-    public var confirm: ((String, String) -> Bool)?
+    /// Data ▸ Custom Sort… sheet.
+    @Published public var isSortPresented = false
+    /// Asks the user to confirm (message, detail, button title); nil
+    /// refuses. The app installs an alert; tests install a closure.
+    public var confirm: ((String, String, String) -> Bool)?
     /// Pivot cell roles of one sheet at one revision (for drawing).
     var pivotRoleCache: (revision: Int, sheetID: Int, roles: [CellAddress: PivotCellRole])?
 
@@ -147,13 +149,13 @@ public final class SpreadsheetDocument: ObservableObject {
         revision += 1
     }
 
-    private struct CellSnapshot {
+    struct CellSnapshot {
         let sheetID: Int
         let address: CellAddress
         let cell: Cell
     }
 
-    private func snapshot(_ addresses: [CellAddress], sheetID: Int? = nil) -> [CellSnapshot] {
+    func snapshot(_ addresses: [CellAddress], sheetID: Int? = nil) -> [CellSnapshot] {
         let id = sheetID ?? activeSheetID
         guard let sheet = workbook.sheet(withID: id) else { return [] }
         return addresses.map { CellSnapshot(sheetID: id, address: $0, cell: sheet.cell(at: $0)) }
@@ -161,14 +163,14 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Wrap a registration in its own undo group so each operation is one
     /// undo step even when several happen in one run-loop turn (tests, macros).
-    private func withUndoGroup(_ body: () -> Void) {
+    func withUndoGroup(_ body: () -> Void) {
         let grouping = !undoManager.isUndoing && !undoManager.isRedoing
         if grouping { undoManager.beginUndoGrouping() }
         body()
         if grouping { undoManager.endUndoGrouping() }
     }
 
-    private func registerCellUndo(_ snapshots: [CellSnapshot], actionName: String) {
+    func registerCellUndo(_ snapshots: [CellSnapshot], actionName: String) {
         withUndoGroup {
             undoManager.registerUndo(withTarget: self) { doc in
                 MainActor.assumeIsolated {
@@ -184,7 +186,7 @@ public final class SpreadsheetDocument: ObservableObject {
         }
     }
 
-    private func restore(_ snapshots: [CellSnapshot]) {
+    func restore(_ snapshots: [CellSnapshot]) {
         var entries: [(AbsoluteAddress, CellValue, String?)] = []
         for snap in snapshots {
             guard let sheet = workbook.sheet(withID: snap.sheetID) else { continue }
@@ -1032,7 +1034,9 @@ public final class SpreadsheetDocument: ObservableObject {
         // Cap the scan for enormous selections.
         let range = selection.range
         guard range.cellCount <= 1_000_000 else { return stats }
-        for (addr, cell) in activeSheet.cells where range.contains(addr) {
+        // Like Excel's status bar, rows a filter hides are left out.
+        let hidden = activeSheet.hiddenRows
+        for (addr, cell) in activeSheet.cells where range.contains(addr) && !hidden.contains(addr.row) {
             if cell.value.isEmpty { continue }
             stats.count += 1
             if case .number(let n) = cell.value {

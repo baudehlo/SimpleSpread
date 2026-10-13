@@ -134,9 +134,16 @@ public struct GridLayout {
         sheet.columnWidth(column)
     }
 
+    /// Hidden rows (by hand or by the AutoFilter) take no space.
     public func rowHeight(_ row: Int) -> CGFloat {
-        sheet.rowHeight(row)
+        sheet.hiddenRows.contains(row) ? 0 : sheet.rowHeight(row)
     }
+
+    /// Frozen rows/columns, clamped to the grid.
+    public var frozenRows: Int { min(max(0, sheet.frozenRows), rowCount - 1) }
+    public var frozenColumns: Int { min(max(0, sheet.frozenColumns), columnCount - 1) }
+    public var frozenHeight: CGFloat { yOffset(ofRow: frozenRows) }
+    public var frozenWidth: CGFloat { xOffset(ofColumn: frozenColumns) }
 
     /// X origin of a column (grid content coordinates; excludes the header).
     public func xOffset(ofColumn column: Int) -> CGFloat {

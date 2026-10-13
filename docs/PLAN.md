@@ -42,13 +42,11 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
   range-returning functions.
 - INDIRECT/OFFSET (they break static dependency analysis; roadmap item with
   dynamic dependency tracking).
-- Charts, images, comments, conditional formatting, data validation,
-  merged-cell *rendering* (model + file round-trip supported).
+- Charts, images, comments, conditional formatting, data validation.
 - Pivot tables: OLAP/Data Model sources, calculated items, label/value
   filters, slicers and timelines, and Excel 2010+ show-values-as modes
   (rank, % of parent). Pivots that use them are kept intact for Excel but
   can't be recomputed or edited (§7); everything else is supported.
-- Frozen-pane *rendering* (model + file round-trip supported).
 - Localization: en-US only (decimal point, M/D dates, comma argument
   separator). The file format layer is locale-invariant per OOXML rules.
 - Iterative calculation for circular references.
@@ -194,7 +192,15 @@ fills[1]=gray125, cellXfs aligned to StyleTable, Normal cell style); shared
 strings with `xml:space` and `_xHHHH_`; formulas without `=` plus cached
 `<v>` and correct result types (`str`/`b`/`e`); dimension, sheetViews with
 frozen panes, cols with the character-width formula (px = 7·w + 5), row
-heights, mergeCells; docProps. Reader resolves parts via relationships
+heights and `hidden` rows (hidden-only rows still get a `<row>`),
+`<autoFilter>` (after sheetData, before mergeCells) plus the hidden
+sheet-scoped `_xlnm._FilterDatabase` defined name Excel expects, mergeCells;
+a deduplicated `<borders>` table (index 0 empty; `borderId` + `applyBorder`);
+docProps. Filter criteria we can't evaluate (top10, dynamic, color, icon,
+`dateGroupItem` filters) are kept as the filterColumn child's XML and written
+back verbatim (attribute order normalized, unused namespace declarations
+dropped). Border colors other than `rgb` (theme, indexed) read as automatic;
+diagonals are not modelled. Reader resolves parts via relationships
 (never hard-coded paths), infers missing `r` attributes, concatenates
 rich-text runs, expands shared formulas by reference translation, maps
 builtin/custom numFmts, and normalizes 1904-system dates (+1462 on
@@ -283,12 +289,27 @@ rejects CFB (encrypted/legacy .xls) containers with a clear error.
   variants, Esc cancels; Cmd+arrow data-edge jumps; header click/drag
   selection; boundary drag resize + double-click autofit; fill handle with
   formula translation; NSTextField overlay editor.
+- Frozen panes: the grid draws up to four panes (corner, frozen rows,
+  frozen columns, scrolling body), each clipped and shifted by the scroll
+  offset like the pinned headers; hit testing and scroll-into-view are
+  pane-aware. Merged ranges draw as one cell (no inner grid lines or
+  borders, no text overflow into or out of them); selections grow to whole
+  merges and arrow keys step over them. Hidden rows are zero-height in
+  GridLayout and skipped by navigation.
+- Borders: `CellStyle.borders` (four edges, OOXML line styles, optional
+  colour). Each cell draws its own edges after the grid lines.
+- Sort and AutoFilter live in Core (`SortRows.swift`, `AutoFilter.swift`):
+  Excel's sort order (numbers, text, booleans, errors; blanks last), whole-row
+  moves with formulas translated like a copy, a header guess, value/condition
+  criteria with wildcards, and filter evaluation that hides rows. Merges,
+  hidden rows, frozen panes, the filter and row heights undo together as
+  `SheetLayoutState`. Unsupported criteria (top 10, dynamic, colour) are kept
+  as XML and written back, but hide nothing when re-applied.
 - Chrome: toolbar (undo/redo, format painter, clear formatting; $ / % /
-  decimal places / number-format menu; font, size, B/I/U/S, colors; horizontal
-  and vertical alignment, wrap, indent; AutoSum split button). Larger font
-  sizes grow short rows (never shrink) in the same undo step. Not yet on it:
-  borders (not in CellStyle), merge and freeze (rendering pending), sort/filter.
-  Name box + formula bar, sheet tabs (add/rename/delete/switch), status bar
+  decimal places / number-format menu; font, size, B/I/U/S, colors, borders;
+  horizontal and vertical alignment, wrap, merge; Sort & Filter menu; AutoSum
+  split button). Larger font sizes grow short rows (never shrink) in the same
+  undo step. Name box + formula bar, sheet tabs (add/rename/delete/switch), status bar
   (Sum/Avg/Count), standard menus with shortcuts.
 - Windows: `WindowGroup(for: Int)` + DocumentStore registry; File→New/Open
   spawn windows; documents own their UndoManager.
@@ -385,8 +406,8 @@ Known gaps and the intended next steps, in priority order:
 1. **Interop bake-off:** open generated files in real Excel/Numbers/Sheets
    and fix nits (the writer follows the researched profile; nothing beats
    the real apps).
-2. Frozen-pane and merged-cell rendering in the grid (model+file already
-   round-trip).
+2. Copy/paste and fill of filtered ranges should skip hidden rows (Excel
+   copies visible cells only); hidden columns; SUBTOTAL ignoring filtered rows.
 3. Find & Replace (Find is done; add Replace / Replace All).
 4. Paste Special (values only), range-tiling paste.
 5. Autofill series inference (1,2→3; dates; weekday names).

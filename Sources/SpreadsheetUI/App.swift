@@ -39,7 +39,21 @@ public final class DocumentStore: ObservableObject {
         doc.toggleBold()
         doc.selection.select(range: CellRange(a1: "D2:D8")!)
         doc.setNumberFormat(.currency)
-        doc.selection.select(CellAddress(a1: "D8")!)
+        // Accounting-style rules: under the header, over the subtotal, and a
+        // double line under the grand total; filter buttons on the header.
+        doc.selection.select(range: CellRange(a1: "A1:D1")!)
+        doc.applyBorders(.bottom)
+        doc.selection.select(range: CellRange(a1: "D6")!)
+        doc.applyBorders(.top)
+        doc.selection.select(range: CellRange(a1: "D8")!)
+        doc.applyBorders(.doubleBottom)
+        doc.selection.select(CellAddress(a1: "A1")!)
+        doc.toggleAutoFilter()
+        if ProcessInfo.processInfo.environment["SIMPLESPREAD_DEMO"] == "layout" {
+            seedLayoutDemo(doc)
+        } else {
+            doc.selection.select(CellAddress(a1: "D8")!)
+        }
         if let z = ProcessInfo.processInfo.environment["SIMPLESPREAD_ZOOM"],
            let zoom = Double(z) {
             doc.setZoom(CGFloat(zoom))
@@ -49,6 +63,40 @@ public final class DocumentStore: ObservableObject {
             doc.setFindQuery(q)
         }
         doc.undoManager.removeAllActions()
+    }
+
+    /// `SIMPLESPREAD_DEMO=layout`: merged cells, a frozen header row, an
+    /// active filter and a scrolled view, for checking how they draw.
+    static func seedLayoutDemo(_ doc: SpreadsheetDocument) {
+        func put(_ a1: String, _ text: String) {
+            doc.commitInput(text, at: CellAddress(a1: a1)!)
+        }
+        doc.confirm = { _, _, _ in true }
+        put("F4", "Merged & centered")
+        doc.selection.select(range: CellRange(a1: "F4:H5")!)
+        doc.mergeSelection(.mergeAndCenter)
+        doc.setVerticalAlignment(.middle)
+        doc.applyBorders(.thickOutside)
+        doc.applyStyleToSelection("Fill Color") { $0.fillColor = RGBAColor(red: 0xFF, green: 0xF4, blue: 0xCC) }
+        let fruits = ["Apple", "Pear", "Fig", "Plum"]
+        put("A12", "Fruit"); put("B12", "Qty")
+        for row in 13...70 {
+            put("A\(row)", fruits[row % fruits.count])
+            put("B\(row)", String(row))
+        }
+        doc.selection.select(range: CellRange(a1: "A12:B12")!)
+        doc.toggleBold()
+        doc.selection.select(CellAddress(a1: "A1")!)
+        doc.toggleAutoFilter() // move the filter from the first table to this one
+        doc.selection.select(CellAddress(a1: "A12")!)
+        doc.toggleAutoFilter()
+        doc.setColumnFilter(0, ColumnFilter(values: ["Apple", "Fig"]))
+        doc.freezePanes(rows: 1, columns: 1)
+        doc.selection.select(CellAddress(a1: ProcessInfo.processInfo.environment["SIMPLESPREAD_CELL"] ?? "B40")!)
+        // The grid has no size until its window is up; scroll once it has.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            doc.requestScrollToActiveCell()
+        }
     }
 
     public func register(_ document: SpreadsheetDocument) -> Int {
@@ -539,6 +587,17 @@ struct ViewCommands: Commands {
             .disabled(document == nil)
 
             Divider()
+
+            Button("Freeze Panes") { document?.freezePanesAtSelection() }
+                .disabled(document == nil || document?.selection.activeCell == CellAddress(row: 0, column: 0))
+            Button("Freeze Top Row") { document?.freezePanes(rows: 1, columns: 0) }
+                .disabled(document == nil)
+            Button("Freeze First Column") { document?.freezePanes(rows: 0, columns: 1) }
+                .disabled(document == nil)
+            Button("Unfreeze Panes") { document?.freezePanes(rows: 0, columns: 0) }
+                .disabled(document?.hasFrozenPanes != true)
+
+            Divider()
         }
     }
 }
@@ -598,6 +657,23 @@ struct DataCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Data") {
+            Button("Sort A to Z") { document?.quickSort(ascending: true) }
+                .disabled(document == nil)
+            Button("Sort Z to A") { document?.quickSort(ascending: false) }
+                .disabled(document == nil)
+            Button("Custom Sort…") { document?.isSortPresented = true }
+                .disabled(document == nil)
+            Divider()
+            Button(document?.activeAutoFilter == nil ? "Filter" : "Remove Filter") {
+                document?.toggleAutoFilter()
+            }
+            .keyboardShortcut("l", modifiers: [.command, .shift])
+            .disabled(document == nil)
+            Button("Clear Filters") { document?.clearAllFilters() }
+                .disabled(document?.activeAutoFilter?.columns.isEmpty ?? true)
+            Button("Reapply Filter") { document?.reapplyAutoFilter() }
+                .disabled(document?.activeAutoFilter == nil)
+            Divider()
             Button("Refresh") {
                 guard let document, let pivot = document.activePivotIndex else { return }
                 document.refreshPivot(pivot)
@@ -639,6 +715,27 @@ struct FormatCommands: Commands {
                 }
                 .disabled(document == nil)
             }
+            Divider()
+            Button("Increase Indent") { document?.adjustIndent(by: 1) }
+                .keyboardShortcut("]", modifiers: [.command, .option])
+                .disabled(document == nil)
+            Button("Decrease Indent") { document?.adjustIndent(by: -1) }
+                .keyboardShortcut("[", modifiers: [.command, .option])
+                .disabled(document == nil)
+            Menu("Borders") {
+                ForEach(DocumentWindowView.borderChoices, id: \.0) { name, preset in
+                    Button(name) { document?.applyBorders(preset) }
+                }
+            }
+            .disabled(document == nil)
+            Menu("Merge Cells") {
+                Button("Merge & Center") { document?.mergeSelection(.mergeAndCenter) }
+                Button("Merge Across") { document?.mergeSelection(.mergeAcross) }
+                Button("Merge Cells") { document?.mergeSelection(.merge) }
+                Button("Unmerge Cells") { document?.unmergeSelection() }
+                    .disabled(document?.selectionHasMerge != true)
+            }
+            .disabled(document == nil)
             Divider()
             Button("Clear Formatting") { document?.clearFormattingInSelection() }
                 .keyboardShortcut("\\", modifiers: .command)

@@ -60,9 +60,15 @@ public enum WorkbookOperations {
             sheet.columnWidths = remapIndexMap(sheet.columnWidths, index: index, count: count)
         }
 
-        // 3. Remap merged ranges.
+        // 3. Remap merged ranges, hidden rows and the AutoFilter.
         sheet.mergedRanges = sheet.mergedRanges.compactMap { range in
             remapRange(range, axisIsRow: axisIsRow, index: index, count: count)
+        }
+        if axisIsRow {
+            sheet.hiddenRows = Set(sheet.hiddenRows.compactMap { remapIndex($0, index: index, count: count) })
+        }
+        if let filter = sheet.autoFilter {
+            sheet.autoFilter = remapAutoFilter(filter, axisIsRow: axisIsRow, index: index, count: count)
         }
 
         // 4. Rewrite formulas everywhere.
@@ -190,6 +196,52 @@ public enum WorkbookOperations {
             }
         }
         return out
+    }
+
+    /// Where one row/column index lands after the edit; nil when deleted.
+    static func remapIndex(_ pos: Int, index: Int, count: Int) -> Int? {
+        if count < 0 {
+            let delEnd = index - count - 1
+            if pos >= index && pos <= delEnd { return nil }
+            return pos > delEnd ? pos + count : pos
+        }
+        return pos >= index ? pos + count : pos
+    }
+
+    /// The filter moves and resizes with its range (a one-cell range still
+    /// counts, unlike a merge); per-column criteria follow their columns.
+    static func remapAutoFilter(_ filter: AutoFilter, axisIsRow: Bool, index: Int, count: Int) -> AutoFilter? {
+        if axisIsRow {
+            // Deleting the header row removes the filter, as in Excel.
+            guard remapIndex(filter.range.start.row, index: index, count: count) != nil else { return nil }
+        }
+        var start = axisIsRow ? filter.range.start.row : filter.range.start.column
+        var end = axisIsRow ? filter.range.end.row : filter.range.end.column
+        if count < 0 {
+            let delEnd = index - count - 1
+            if start >= index { start = start <= delEnd ? index : start + count }
+            if end >= index { end = end <= delEnd ? index - 1 : end + count }
+            if end < start { return nil }
+        } else {
+            if start >= index { start += count }
+            if end >= index { end += count }
+        }
+        var result = filter
+        if axisIsRow {
+            result.range = CellRange(start: CellAddress(row: start, column: filter.range.start.column),
+                                     end: CellAddress(row: end, column: filter.range.end.column))
+        } else {
+            result.range = CellRange(start: CellAddress(row: filter.range.start.row, column: start),
+                                     end: CellAddress(row: filter.range.end.row, column: end))
+            var columns: [Int: ColumnFilter] = [:]
+            for (offset, criteria) in filter.columns {
+                if let column = remapIndex(filter.range.start.column + offset, index: index, count: count) {
+                    columns[column - start] = criteria
+                }
+            }
+            result.columns = columns
+        }
+        return result
     }
 
     private static func remapRange(_ range: CellRange, axisIsRow: Bool, index: Int, count: Int) -> CellRange? {
