@@ -55,6 +55,18 @@ func runEditBenchmarks() {
         precondition(sheet.value(at: CellAddress(row: 4_999, column: 1)) == .number(301))
     }
 
+    // 2b. Engine bookkeeping alone: n distinct ranges all covering A1, read
+    //     by ROWS (which doesn't visit the cells); one edit dirties all.
+    for n in [10_000, 20_000] {
+        let wb = Workbook()
+        let sheet = wb.addSheet(named: "Sheet1")
+        for r in 0..<n {
+            sheet.setCell(Cell(formula: "ROWS(A1:A\(r + 300))"), at: CellAddress(row: r, column: 1))
+        }
+        let engine = time("engine init, \(n) ROWS(A1:A_)") { CalculationEngine(workbook: wb) }
+        time("edit A1 (dirties all \(n))") { _ = engine.setCellValue(.number(1), at: addr(sheet, 0, 0)) }
+    }
+
     // 3. n whole-column formulas over 100k cells: each evaluation clamps
     //    A:A to the used range.
     do {
@@ -102,6 +114,20 @@ func runEditBenchmarks() {
         for r in 0..<100_000 { sheet.setCell(Cell(formula: "A\(r + 1)*2"), at: CellAddress(row: r, column: 1)) }
         let engine = time("engine init, 300k cell-edge formulas") { CalculationEngine(workbook: wb) }
         time("edit A1 (dirties all 300k)") { _ = engine.setCellValue(.number(5), at: addr(sheet, 0, 0)) }
+    }
+
+    // 6. A full sheet of formulas (the README's 1M-formula open case).
+    do {
+        let wb = Workbook()
+        let sheet = wb.addSheet(named: "Sheet1")
+        let rows = CellAddress.maxRows
+        sheet.reserveCellCapacity(rows * 2)
+        for r in 0..<rows {
+            sheet.setCell(Cell(value: .number(Double(r % 997))), at: CellAddress(row: r, column: 0))
+            sheet.setCell(Cell(formula: "A\(r + 1)*2"), at: CellAddress(row: r, column: 1))
+        }
+        let engine = time("engine init, 1,048,576 formulas") { CalculationEngine(workbook: wb) }
+        time("edit A1") { _ = engine.setCellValue(.number(5), at: addr(sheet, 0, 0)) }
     }
 }
 
