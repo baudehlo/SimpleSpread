@@ -45,7 +45,9 @@ extension PivotDefinition {
     /// an axis; Excel keeps them afterwards.
     mutating func ensureItems(_ f: Int, cache: PivotCacheData) {
         guard f >= 0, fields[f].items.isEmpty else { return }
-        var items = cache.ascendingItemOrder(f).map { PivotItem(kind: .data, index: $0) }
+        var order = cache.ascendingItemOrder(f)
+        if fields[f].sort == .descending { order.reverse() }
+        var items = order.map { PivotItem(kind: .data, index: $0) }
         for kind in fields[f].subtotals { items.append(PivotItem(kind: kind)) }
         fields[f].items = items
     }

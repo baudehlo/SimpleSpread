@@ -241,6 +241,10 @@ public struct PivotFieldSettings: Equatable, Sendable {
     public var fillDownLabels: Bool
     /// Custom subtotal caption; "?" stands for the item label.
     public var subtotalCaption: String?
+    /// Items are sorted by a value field (`autoSortScope`, Excel's "Sort
+    /// Largest to Smallest" on a value) rather than by label. Not modelled:
+    /// such a pivot is kept preserve-only.
+    public var sortsByValue = false
 
     public init(axis: Axis? = nil, isDataField: Bool = false, items: [PivotItem] = [],
                 sort: Sort = .manual, subtotals: [PivotItem.Kind] = [.default],

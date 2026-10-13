@@ -193,15 +193,16 @@ public enum PivotCacheBuilder {
             if start == range.startNumber && end == range.endNumber { return result }
             range.startNumber = start
             range.endNumber = end
-            let step = range.interval > 0 ? range.interval : 1
-            let buckets = Int(((end - start) / step).rounded(.down)) + 1
-            func text(_ x: Double) -> String { x == x.rounded() ? String(Int64(x)) : "\(x)" }
-            var items: [PivotValue] = [.string("<" + text(start))]
-            for b in 0..<buckets {
-                let low = start + Double(b) * step
-                items.append(.string(text(low) + "-" + text(low + step - (step == step.rounded() ? 1 : 0))))
+            // The same ranges and labels as grouping makes (an outlier can't
+            // ask for more groups than a field may have).
+            let name = previous.fields[fieldIndex].name
+            guard end >= start else {
+                throw PivotEngineError("the grouped field “\(name)” no longer has values after its ranges start")
             }
-            items.append(.string(">" + text(start + Double(buckets) * step)))
+            guard let items = PivotFieldGroup.numberItems(start: start, end: end, interval: range.interval,
+                                                          integers: values.allSatisfy { $0 == $0.rounded() }) else {
+                throw Workbook.tooManyGroups(name, interval: range.interval)
+            }
             result.items = items
             result.range = range
             return result

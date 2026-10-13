@@ -53,23 +53,81 @@ extension PivotFieldGroup {
         return items
     }
 
-    /// Group items for numeric ranges: "<start", "a-b", …, ">end". Over
-    /// whole numbers (whole start and step) each range is closed — "0-4",
-    /// "5-9" — and the last one holds `end`; otherwise ranges are continuous
-    /// — "0-1", "1-2" — up to `end` (as Excel labels them).
-    static func numberItems(start: Double, end: Double, interval: Double, integers: Bool) -> [PivotValue] {
-        let step = interval > 0 ? interval : 1
-        let closed = integers && step == step.rounded() && start == start.rounded()
-        let span = (end - start) / step
-        let buckets = max(1, closed ? Int(span.rounded(.down)) + 1 : Int(span.rounded(.up)))
-        func text(_ x: Double) -> String { x == x.rounded() ? String(Int64(x)) : "\(x)" }
-        var items: [PivotValue] = [.string("<" + text(start))]
-        for b in 0..<buckets {
-            let low = start + Double(b) * step
-            items.append(.string(text(low) + "-" + text(low + step - (closed ? 1 : 0))))
+    /// The most items a grouped field may have: Excel's limit on a pivot
+    /// field's items. (An outlier in auto-ranged data could otherwise ask
+    /// for hundreds of millions of groups.)
+    public static let maxItems = 1_048_576
+
+    /// Numeric range grouping, in one place: the labels grouping and
+    /// refresh write and the bucket the engine puts each value in.
+    ///
+    /// Over whole numbers (whole data, start and step) each range is closed
+    /// — "0-4", "5-9" — and the last one holds `end`; otherwise ranges are
+    /// continuous — "0-1", "1-2", each from its low value up to the next,
+    /// the last one up to and including `end` (as Excel labels them).
+    /// Items are "<start", the ranges, ">end".
+    struct NumberRanges {
+        var start: Double
+        var end: Double
+        var step: Double
+        var closed: Bool
+        var count: Int
+
+        /// nil when the ranges are invalid or too many (see maxItems).
+        init?(start: Double, end: Double, interval: Double, integers: Bool) {
+            guard start.isFinite, end.isFinite, interval.isFinite, interval > 0, end >= start else { return nil }
+            let closed = integers && interval == interval.rounded() && start == start.rounded()
+            let span = (end - start) / interval
+            let ranges = closed ? span.rounded(.down) + 1 : max(1, span.rounded(.up))
+            guard ranges.isFinite, ranges <= Double(PivotFieldGroup.maxItems - 2) else { return nil }
+            self.start = start
+            self.end = end
+            self.step = interval
+            self.closed = closed
+            self.count = Int(ranges)
         }
-        items.append(.string(">" + text(closed ? start + Double(buckets) * step : end)))
-        return items
+
+        var items: [PivotValue] {
+            var items: [PivotValue] = [.string("<" + Self.text(start))]
+            items.reserveCapacity(count + 2)
+            for b in 0..<count {
+                let low = start + Double(b) * step
+                items.append(.string(Self.text(low) + "-" + Self.text(low + step - (closed ? 1 : 0))))
+            }
+            items.append(.string(">" + Self.text(closed ? start + Double(count) * step : end)))
+            return items
+        }
+
+        /// A label number: whole numbers without a decimal point, others to
+        /// 15 significant digits (so 0.1 steps read 0.3, not 0.30000000000000004).
+        static func text(_ x: Double) -> String {
+            if x == x.rounded(), abs(x) < 1e15 { return String(Int64(x)) }
+            var s = String(format: "%.15g", x)
+            if s.contains("."), !s.contains("e") {
+                while s.hasSuffix("0") { s.removeLast() }
+                if s.hasSuffix(".") { s.removeLast() }
+            }
+            return s
+        }
+
+        /// Item index of `v` among `itemCount` items laid out as above.
+        static func bucket(_ v: Double, start: Double, end: Double, interval: Double, itemCount n: Int) -> Int? {
+            guard n >= 2, v.isFinite else { return nil }
+            if v < start { return 0 }
+            if v > end { return n - 1 }
+            guard interval > 0, n >= 3 else { return nil }
+            // A hair of tolerance, so 0.3 lands in "0.3-0.4" despite 0.3/0.1
+            // being 2.9999999999999996.
+            let q = (v - start) / interval
+            guard let k = pivotCheckedInt((q + 1e-9 * max(1, abs(q))).rounded(.down)) else { return n - 2 }
+            // `end` itself belongs to the last range, never to ">end".
+            return min(max(k, 0) + 1, n - 2)
+        }
+    }
+
+    /// Group items for numeric ranges (see NumberRanges).
+    static func numberItems(start: Double, end: Double, interval: Double, integers: Bool) -> [PivotValue]? {
+        NumberRanges(start: start, end: end, interval: interval, integers: integers)?.items
     }
 }
 
@@ -140,13 +198,22 @@ extension Workbook {
               data.fields[f].sharedItems.allSatisfy({ if case .number = $0 { return true }; return false })
         else { throw PivotEngineError("only fields of numbers can be grouped into ranges") }
         let s = start ?? lo, e = end ?? hi
+        guard e >= s else { throw PivotEngineError("the ranges must end after they start") }
+        guard let items = PivotFieldGroup.numberItems(start: s, end: e, interval: interval,
+                                                      integers: values.allSatisfy { $0 == $0.rounded() }) else {
+            throw Self.tooManyGroups(data.fields[f].name, interval: interval)
+        }
         data.fields[f].group = PivotFieldGroup(
             base: f,
             range: PivotFieldGroup.Range(groupBy: .range, autoStart: start == nil, autoEnd: end == nil,
                                          startNumber: s, endNumber: e, interval: interval),
-            items: PivotFieldGroup.numberItems(start: s, end: e, interval: interval,
-                                              integers: values.allSatisfy { $0 == $0.rounded() }))
+            items: items)
         try applyGrouping(cacheIndex: c, data: data, field: f, newFields: [])
+    }
+
+    static func tooManyGroups(_ name: String, interval: Double) -> PivotEngineError {
+        PivotEngineError("grouping “\(name)” by \(PivotFieldGroup.NumberRanges.text(interval)) would make more than "
+                         + "\(PivotFieldGroup.maxItems.formatted()) groups; choose a larger step or set where the ranges start and end")
     }
 
     /// Remove a field's grouping (and the extra date-level fields it added).

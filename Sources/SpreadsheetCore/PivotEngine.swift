@@ -154,6 +154,9 @@ public struct PivotEngine {
             }
         }
         if definition.layout.subtotalHiddenItems { return "it includes hidden items in totals" }
+        // Recomputing would order the items by label and lose the sort (and
+        // a regenerated part would drop it).
+        if definition.fields.contains(where: \.sortsByValue) { return "it sorts items by their values" }
         return nil
     }
 
@@ -233,11 +236,8 @@ public struct PivotEngine {
         }
         guard n > 0, v.isFinite else { return nil }
         if range.groupBy == .range {
-            let start = range.startNumber ?? 0, end = range.endNumber ?? 0
-            if v < start { return 0 }
-            if v > end { return n - 1 }
-            guard range.interval > 0, let k = pivotCheckedInt(((v - start) / range.interval).rounded(.down)) else { return nil }
-            return min(k + 1, n - 1)
+            return PivotFieldGroup.NumberRanges.bucket(v, start: range.startNumber ?? 0, end: range.endNumber ?? 0,
+                                                       interval: range.interval, itemCount: n)
         }
         if let s = range.startDate, v < s { return 0 }
         if let e = range.endDate, v > e { return n - 1 }
