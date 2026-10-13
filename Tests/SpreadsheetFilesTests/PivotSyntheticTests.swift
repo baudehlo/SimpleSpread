@@ -130,7 +130,7 @@ struct PivotPackageBuilder {
             """)
         }
         for (name, text) in extraParts { add(name, text) }
-        return zip.finalize()
+        return try! zip.finalize() // a few KB: never over the ZIP limits
     }
 
     func read() throws -> (Workbook, XLSXReadReport) {
@@ -234,7 +234,7 @@ struct PivotReaderEdgeTests {
             writer.addEntry(name: entry.name, data: bytes)
         }
         var report = XLSXReadReport()
-        let workbook = try XLSXReader.read(data: writer.finalize(), report: &report)
+        let workbook = try XLSXReader.read(data: try writer.finalize(), report: &report)
         #expect(workbook.pivotTables.isEmpty)
         #expect(report.droppedPivots.map(\.reason) == ["the cache id 9 is listed twice"])
     }
@@ -261,7 +261,7 @@ struct PivotReaderEdgeTests {
             writer.addEntry(name: entry.name, data: bytes)
         }
         var report = XLSXReadReport()
-        let workbook = try XLSXReader.read(data: writer.finalize(), report: &report)
+        let workbook = try XLSXReader.read(data: try writer.finalize(), report: &report)
         #expect(report.droppedPivots.isEmpty)
         #expect(workbook.pivotTables.count == 1)
     }

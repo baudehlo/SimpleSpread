@@ -11,12 +11,16 @@ public final class LoadedFile: @unchecked Sendable {
     let isTextImport: Bool
     /// More rows than a sheet holds; the rest were not loaded.
     let truncatedRows: Bool
+    /// What the file holds that saving will not write back ("3 charts", …).
+    let unsupportedContent: [String]
 
-    init(workbook: Workbook, engine: CalculationEngine, isTextImport: Bool, truncatedRows: Bool) {
+    init(workbook: Workbook, engine: CalculationEngine, isTextImport: Bool, truncatedRows: Bool,
+         unsupportedContent: [String] = []) {
         self.workbook = workbook
         self.engine = engine
         self.isTextImport = isTextImport
         self.truncatedRows = truncatedRows
+        self.unsupportedContent = unsupportedContent
     }
 }
 

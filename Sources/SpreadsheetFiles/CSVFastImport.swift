@@ -17,8 +17,10 @@ public struct CSVImportReport: Sendable, Equatable {
 }
 
 extension CSV {
-    /// Fast import: scans UTF-8 bytes directly (no `[Character]` copy of the
-    /// file) and turns common fields (plain numbers, ISO dates, text with no
+    /// Fast import: scans the bytes directly (no `[Character]` copy of the
+    /// file, and no second pass: delimiters, quotes and line ends are ASCII
+    /// in UTF-8 and CP1252 alike, so each field is decoded on its own, as
+    /// UTF-8 with any invalid bytes read as CP1252) and turns common fields (plain numbers, ISO dates, text with no
     /// digits, TRUE/FALSE) into values without the general parser. Results
     /// match `ValueParser` exactly; anything unusual goes through it.
     ///
@@ -30,27 +32,6 @@ extension CSV {
         referenceDate: Date = Date(), maxRows: Int = CellAddress.maxRows,
         report: inout CSVImportReport, progress: ((Double) -> Bool)? = nil
     ) -> Workbook {
-        // UTF-8 is checked as the scan goes, so a huge file that stops at the
-        // row limit is never read to the end. Bytes that aren't UTF-8 mean
-        // the file is CP1252 (or similar): start again, transcoded.
-        var invalidUTF8 = false
-        let workbook = importWorkbook(data: data, delimiter: delimiter, sheetName: sheetName,
-                                      referenceDate: referenceDate, maxRows: maxRows, report: &report,
-                                      progress: progress, validating: true, invalidUTF8: &invalidUTF8)
-        guard invalidUTF8 else { return workbook }
-        report = CSVImportReport()
-        let transcoded = Data(decode(data: data).utf8)
-        var unused = false
-        return importWorkbook(data: transcoded, delimiter: delimiter, sheetName: sheetName,
-                              referenceDate: referenceDate, maxRows: maxRows, report: &report,
-                              progress: progress, validating: false, invalidUTF8: &unused)
-    }
-
-    private static func importWorkbook(
-        data: Data, delimiter: Character?, sheetName: String, referenceDate: Date, maxRows: Int,
-        report: inout CSVImportReport, progress: ((Double) -> Bool)?,
-        validating: Bool, invalidUTF8: inout Bool
-    ) -> Workbook {
         let workbook = Workbook()
         let sheet = workbook.addSheet(named: sheetName)
         withUTF8Bytes(of: data) { bytes in
@@ -61,41 +42,20 @@ extension CSV {
                                          decimalComma: d == ";", referenceDate: referenceDate)
             let total = max(1, bytes.count)
             var reserved = false
-            var validatedUpTo = 0
-            /// Check the bytes up to `end` (backed off to a character start).
-            func validate(upTo end: Int) -> Bool {
-                guard validating, end > validatedUpTo else { return true }
-                var stop = min(end, bytes.count)
-                if stop < bytes.count {
-                    var back = 0
-                    while back < 3, stop > validatedUpTo, bytes[stop] & 0xC0 == 0x80 { stop -= 1; back += 1 }
-                }
-                let chunk = UnsafeBufferPointer(rebasing: bytes[validatedUpTo..<stop])
-                guard isValidUTF8(chunk) else { invalidUTF8 = true; return false }
-                validatedUpTo = stop
-                return true
-            }
             let result = scanRecords(bytes, delimiter: delimiterByte, maxRecords: maxRows,
                                      shouldContinue: { offset, records in
-                // Validate a little ahead of the scan.
-                guard validate(upTo: offset + 512 * 1024) else { return false }
                 // Size the cell table once the first rows show how dense it is.
                 // Rows are projected from the bytes read, capped at the limit.
                 if !reserved, records >= 2000, offset > 0 {
                     reserved = true
                     let rows = min(Double(records) / Double(offset) * Double(total), Double(maxRows))
                     let cellsPerRow = Double(sheet.cells.count) / Double(records)
-                    sheet.reserveCellCapacity(Int(rows * cellsPerRow * 1.05))
+                    sheet.reserveCellCapacity(min(Int(rows * cellsPerRow * 1.05), Self.maxReservedCells))
                 }
                 return progress?(Double(offset) / Double(total)) ?? true
             }) { row, column, field in
                 importer.add(field, row: row, column: column)
             }
-            // The rest of what was scanned (all of it when the scan finished).
-            if !result.cancelled, !invalidUTF8 {
-                _ = validate(upTo: result.stoppedAtLimit ? result.endOffset : bytes.count)
-            }
-            if invalidUTF8 { return }
             report.rows = result.records
             report.columns = result.maxColumns
             report.truncated = result.stoppedAtLimit || result.maxColumns > CellAddress.maxColumns
@@ -104,10 +64,14 @@ extension CSV {
         return workbook
     }
 
+    /// Never reserve room for more cells than this up front (the estimate is
+    /// extrapolated; the table grows as needed past it).
+    static let maxReservedCells = 16_000_000
+
     // MARK: Bytes
 
     /// Run `body` over the file's bytes: a UTF-8 BOM is skipped and UTF-16
-    /// is transcoded. The caller validates the UTF-8 as it goes.
+    /// is transcoded. Fields are checked for UTF-8 as they are imported.
     static func withUTF8Bytes<R>(of data: Data, _ body: (UnsafeBufferPointer<UInt8>) -> R) -> R {
         func transcoded(_ text: String) -> R {
             var utf8 = Array(text.utf8)
@@ -297,6 +261,16 @@ struct FieldImporter {
 
     mutating func add(_ field: UnsafeBufferPointer<UInt8>, row: Int, column: Int) {
         guard !field.isEmpty, column < CellAddress.maxColumns else { return }
+        guard CSV.isValidUTF8(field) else {
+            // Not UTF-8 (a CP1252 byte or two): only those bytes are mapped.
+            let repaired = CSV.repairingUTF8(field)
+            repaired.withUnsafeBufferPointer { addUTF8($0, row: row, column: column) }
+            return
+        }
+        addUTF8(field, row: row, column: column)
+    }
+
+    private mutating func addUTF8(_ field: UnsafeBufferPointer<UInt8>, row: Int, column: Int) {
         let address = CellAddress(row: row, column: column)
         if let fast = FastFieldValue.classify(field) {
             switch fast {

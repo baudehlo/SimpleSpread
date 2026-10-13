@@ -28,6 +28,8 @@ struct XLSXReadReport {
         var reason: String
     }
     var droppedPivots: [DroppedPivot] = []
+    /// What the file holds that saving will not write back (see UnsupportedContent).
+    var unsupportedContent: [String] = []
 }
 
 struct ExternalRelationship: Equatable, Sendable {

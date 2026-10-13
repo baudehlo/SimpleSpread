@@ -48,6 +48,9 @@ public final class Sheet {
     /// Rows hidden by hand or by the AutoFilter (XLSX `row@hidden`).
     public var hiddenRows: Set<Int> = []
     public var autoFilter: AutoFilter?
+    /// Hidden in Excel (XLSX `sheet@state` "hidden" or "veryHidden"); kept
+    /// so a save writes it back.
+    public var isHidden = false
 
     public init(id: Int, name: String) {
         self.id = id
