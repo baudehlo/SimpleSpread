@@ -51,9 +51,15 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
   driven by GitHub Releases — a "Check for Updates…" menu item, automatic
   background checks, and one-click download-verify-replace-relaunch. See
   [docs/UPDATES.md](docs/UPDATES.md) for the signing-key and release setup.
-- **Formatting**: bold/italic/underline/strikethrough, colors, alignment,
-  and the number-format menu (automatic, number, percent, currency, date,
-  time, scientific, plain text) backed by a full Excel format-code renderer.
+- **Formatting**: font and size, bold/italic/underline/strikethrough,
+  colors, horizontal and vertical alignment, wrap text, indent, a format
+  painter, increase/decrease decimal, one-click currency and percent, and the
+  number-format menu (automatic, number, percent, currency, date, time,
+  scientific, plain text) backed by a full Excel format-code renderer.
+- **Toolbar**: undo/redo, format painter, clear formatting, number, font and
+  alignment controls, and AutoSum (Σ: Sum, plus Average, Count, Max and Min
+  from its menu), laid out in the order Excel's Home tab and the Google
+  Sheets toolbar share.
 
 ## Performance
 

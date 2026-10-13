@@ -760,6 +760,15 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             document?.fill(from: source, to: target)
             stateChanged()
         }
+        switch dragMode {
+        case .selectCells, .selectRows, .selectColumns:
+            if document?.formatPainterStyles != nil {
+                document?.applyFormatPainter()
+                stateChanged()
+            }
+        default:
+            break
+        }
         pendingFillTarget = nil
         dragMode = .none
         needsDisplay = true
@@ -909,6 +918,11 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             case 126: return .up
             default: return nil
             }
+        }
+
+        if event.keyCode == 53, document.formatPainterStyles != nil { // Esc
+            document.cancelFormatPainter()
+            return
         }
 
         if let dir = direction(for: event.keyCode) {

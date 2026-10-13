@@ -187,29 +187,105 @@ public struct DocumentWindowView: View {
         document.style(at: document.selection.activeCell)
     }
 
+    /// Groups follow the order shared by Excel's Home tab and the Google
+    /// Sheets toolbar: history, number, font, alignment, then functions.
+    /// Scrolls sideways when the window is too narrow to show it all.
     private var formatBar: some View {
-        HStack(spacing: 10) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                historyGroup
+                toolbarDivider
+                numberGroup
+                toolbarDivider
+                fontGroup
+                toolbarDivider
+                colorGroup
+                toolbarDivider
+                alignmentGroup
+                toolbarDivider
+                autoSumMenu
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+        }
+    }
+
+    private var toolbarDivider: some View {
+        Divider().frame(height: 16)
+    }
+
+    private var historyGroup: some View {
+        let undo = document.undoManager
+        return HStack(spacing: 2) {
+            toolButton("arrow.uturn.backward", help: undo.canUndo ? "Undo \(undo.undoActionName) (⌘Z)" : "Undo (⌘Z)") {
+                undo.undo()
+            }
+            .disabled(!undo.canUndo)
+            toolButton("arrow.uturn.forward", help: undo.canRedo ? "Redo \(undo.redoActionName) (⇧⌘Z)" : "Redo (⇧⌘Z)") {
+                undo.redo()
+            }
+            .disabled(!undo.canRedo)
+            styleToggle("paintbrush.pointed", active: document.formatPainterStyles != nil) {
+                if document.formatPainterStyles == nil {
+                    document.beginFormatPainter()
+                } else {
+                    document.cancelFormatPainter()
+                }
+                refocusGrid()
+            }
+            .help("Format painter: copy this formatting, then select cells to apply it (Esc cancels)")
+            toolButton("eraser", help: "Clear formatting (⌘\\)") {
+                document.clearFormattingInSelection()
+            }
+        }
+    }
+
+    private var numberGroup: some View {
+        HStack(spacing: 2) {
+            styleToggle("dollarsign", active: activeStyle.numberFormat == .currency) {
+                document.setNumberFormat(activeStyle.numberFormat == .currency ? .general : .currency)
+            }
+            .help("Format as currency")
+            styleToggle("percent", active: activeStyle.numberFormat == .percent) {
+                document.setNumberFormat(activeStyle.numberFormat == .percent ? .general : .percent)
+            }
+            .help("Format as percent")
+            textButton(".0", arrow: "arrow.left", help: "Decrease decimal places") {
+                document.adjustDecimals(by: -1)
+            }
+            textButton(".00", arrow: "arrow.right", help: "Increase decimal places") {
+                document.adjustDecimals(by: 1)
+            }
+            numberFormatMenu
+                .padding(.leading, 4)
+        }
+    }
+
+    private var fontGroup: some View {
+        HStack(spacing: 6) {
+            fontNameMenu
+            fontSizeMenu
             HStack(spacing: 2) {
                 styleToggle("bold", active: activeStyle.bold) { document.toggleBold() }
                     .keyboardShortcut("b", modifiers: .command)
+                    .help("Bold (⌘B)")
                 styleToggle("italic", active: activeStyle.italic) { document.toggleItalic() }
                     .keyboardShortcut("i", modifiers: .command)
+                    .help("Italic (⌘I)")
                 styleToggle("underline", active: activeStyle.underline) { document.toggleUnderline() }
                     .keyboardShortcut("u", modifiers: .command)
+                    .help("Underline (⌘U)")
                 styleToggle("strikethrough", active: activeStyle.strikethrough) { document.toggleStrikethrough() }
                     .keyboardShortcut("x", modifiers: [.command, .shift])
+                    .help("Strikethrough (⇧⌘X)")
             }
-            Divider().frame(height: 16)
-            HStack(spacing: 2) {
-                alignButton(.left, icon: "text.alignleft")
-                alignButton(.center, icon: "text.aligncenter")
-                alignButton(.right, icon: "text.alignright")
-            }
-            Divider().frame(height: 16)
-            numberFormatMenu
-            Divider().frame(height: 16)
-            // NSColorWell has a fixed intrinsic size — never clamp its frame
-            // (a narrower frame clips and the well overflows onto neighbors).
+        }
+    }
+
+    private var colorGroup: some View {
+        // NSColorWell has a fixed intrinsic size — never clamp its frame
+        // (a narrower frame clips and the well overflows onto neighbors).
+        HStack(spacing: 10) {
             HStack(spacing: 4) {
                 Image(systemName: "character")
                     .font(.system(size: 11))
@@ -220,7 +296,7 @@ public struct DocumentWindowView: View {
             }
             .help("Text color")
             HStack(spacing: 4) {
-                Image(systemName: "paintbrush.fill")
+                Image(systemName: "drop.fill")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                 ColorPicker("", selection: fillColorBinding, supportsOpacity: false)
@@ -228,10 +304,44 @@ public struct DocumentWindowView: View {
                     .fixedSize()
             }
             .help("Fill color")
-            Spacer()
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+    }
+
+    private var alignmentGroup: some View {
+        HStack(spacing: 2) {
+            alignButton(.left, icon: "text.alignleft", help: "Align left")
+            alignButton(.center, icon: "text.aligncenter", help: "Align center")
+            alignButton(.right, icon: "text.alignright", help: "Align right")
+            Spacer().frame(width: 6)
+            verticalAlignButton(.top, icon: "align.vertical.top", help: "Align top")
+            verticalAlignButton(.middle, icon: "align.vertical.center", help: "Align middle")
+            verticalAlignButton(.bottom, icon: "align.vertical.bottom", help: "Align bottom")
+            Spacer().frame(width: 6)
+            styleToggle("arrow.turn.down.left", active: activeStyle.wrapText) { document.toggleWrapText() }
+                .help("Wrap text")
+            toolButton("decrease.indent", help: "Decrease indent") { document.adjustIndent(by: -1) }
+                .disabled(activeStyle.indent == 0)
+            toolButton("increase.indent", help: "Increase indent") { document.adjustIndent(by: 1) }
+        }
+    }
+
+    static let autoSumFunctions = [
+        ("Sum", "SUM"), ("Average", "AVERAGE"), ("Count Numbers", "COUNT"), ("Max", "MAX"), ("Min", "MIN"),
+    ]
+
+    private var autoSumMenu: some View {
+        Menu {
+            ForEach(DocumentWindowView.autoSumFunctions, id: \.1) { name, function in
+                Button(name) { document.autoSum(function) }
+            }
+        } label: {
+            Image(systemName: "sum")
+        } primaryAction: {
+            document.autoSum()
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("AutoSum: total the numbers above or to the left (click the arrow for Average, Count, Max, Min)")
     }
 
     private func styleToggle(_ icon: String, active: Bool, action: @escaping () -> Void) -> some View {
@@ -244,10 +354,99 @@ public struct DocumentWindowView: View {
         .buttonStyle(.borderless)
     }
 
-    private func alignButton(_ alignment: TextAlignmentH, icon: String) -> some View {
+    private func toolButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .frame(width: 22, height: 20)
+        }
+        .buttonStyle(.borderless)
+        .help(help)
+    }
+
+    /// The ".0 ←" / ".00 →" decimal buttons, drawn as text like Sheets.
+    private func textButton(_ text: String, arrow: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 1) {
+                if arrow == "arrow.left" { Image(systemName: arrow).font(.system(size: 8, weight: .semibold)) }
+                Text(text).font(.system(size: 12, weight: .semibold))
+                if arrow == "arrow.right" { Image(systemName: arrow).font(.system(size: 8, weight: .semibold)) }
+            }
+            .frame(minWidth: 30, minHeight: 20)
+        }
+        .buttonStyle(.borderless)
+        .help(help)
+    }
+
+    private func alignButton(_ alignment: TextAlignmentH, icon: String, help: String) -> some View {
         styleToggle(icon, active: activeStyle.horizontalAlignment == alignment) {
             document.setHorizontalAlignment(alignment)
         }
+        .help(help)
+    }
+
+    private func verticalAlignButton(_ alignment: TextAlignmentV, icon: String, help: String) -> some View {
+        styleToggle(icon, active: activeStyle.verticalAlignment == alignment) {
+            document.setVerticalAlignment(alignment)
+        }
+        .help(help)
+    }
+
+    /// Common Mac fonts plus the usual Office ones, keeping only those
+    /// installed (Office fonts appear once Microsoft Office is installed).
+    static let fontChoices: [String] = [
+        CellStyle.defaultFontName, "Helvetica", "Arial", "Avenir Next", "Calibri", "Cambria",
+        "Courier New", "Georgia", "Gill Sans", "Menlo", "Palatino", "Times New Roman",
+        "Trebuchet MS", "Verdana",
+    ].filter { NSFont(name: $0, size: 12) != nil }
+
+    static let fontSizeChoices: [Double] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 30, 36, 48]
+
+    private var fontNameMenu: some View {
+        let current = activeStyle.fontName ?? CellStyle.defaultFontName
+        return Menu {
+            ForEach(DocumentWindowView.fontChoices, id: \.self) { name in
+                Button {
+                    document.setFontName(name)
+                } label: {
+                    if name == current {
+                        Label(name, systemImage: "checkmark")
+                    } else {
+                        Text(name)
+                    }
+                }
+            }
+        } label: {
+            Text(current)
+                .lineLimit(1)
+                .frame(width: 104, alignment: .leading)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Font")
+    }
+
+    private var fontSizeMenu: some View {
+        let current = activeStyle.fontSize ?? CellStyle.defaultFontSize
+        return Menu {
+            ForEach(DocumentWindowView.fontSizeChoices, id: \.self) { size in
+                Button {
+                    document.setFontSize(size)
+                } label: {
+                    if size == current {
+                        Label(NumberFormatEngine.generalString(for: size), systemImage: "checkmark")
+                    } else {
+                        Text(NumberFormatEngine.generalString(for: size))
+                    }
+                }
+            }
+        } label: {
+            Text(NumberFormatEngine.generalString(for: current))
+                .monospacedDigit()
+                .frame(minWidth: 20)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Font size")
     }
 
     static let formatChoices: [(String, NumberFormat)] = [

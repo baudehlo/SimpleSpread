@@ -382,6 +382,202 @@ public final class SpreadsheetDocument: ObservableObject {
         applyStyleToSelection("Alignment") { $0.horizontalAlignment = alignment }
     }
 
+    public func setVerticalAlignment(_ alignment: TextAlignmentV) {
+        applyStyleToSelection("Alignment") { $0.verticalAlignment = alignment }
+    }
+
+    public func toggleWrapText() {
+        let target = !style(at: selection.activeCell).wrapText
+        applyStyleToSelection("Wrap Text") { $0.wrapText = target }
+    }
+
+    /// Increase/Decrease Indent, clamped to Excel's 0...15 levels. Indenting
+    /// type-aligned (automatic) cells left-aligns them, as Excel does.
+    public func adjustIndent(by delta: Int) {
+        let target = max(0, min(15, style(at: selection.activeCell).indent + delta))
+        applyStyleToSelection(delta > 0 ? "Increase Indent" : "Decrease Indent") {
+            $0.indent = target
+            if target > 0, $0.horizontalAlignment == .automatic || $0.horizontalAlignment == .center {
+                $0.horizontalAlignment = .left
+            }
+        }
+    }
+
+    /// nil resets to the default font.
+    public func setFontName(_ name: String?) {
+        let stored = name == CellStyle.defaultFontName ? nil : name
+        applyStyleToSelection("Font") { $0.fontName = stored }
+    }
+
+    /// Set the font size and, like Excel's auto-height rows, grow any selected
+    /// row too short for the new size (rows never shrink). One undo step.
+    public func setFontSize(_ size: Double) {
+        let stored = size == CellStyle.defaultFontSize ? nil : size
+        let needed = Self.rowHeight(forFontSize: size)
+        let sheet = activeSheet
+        let range = selection.range
+        var oldHeights: [Int: CGFloat?] = [:]
+        // Cap at the used rows so a whole-column selection stays cheap.
+        let lastRow = min(range.end.row, max(range.start.row, sheet.usedRange?.end.row ?? 0))
+        for row in range.start.row...lastRow where sheet.rowHeight(row) < needed {
+            oldHeights[row] = sheet.rowHeights[row]
+        }
+        withUndoGroup {
+            applyStyleToSelection("Font Size") { $0.fontSize = stored }
+            guard !oldHeights.isEmpty else { return }
+            for row in oldHeights.keys { sheet.rowHeights[row] = needed }
+            registerRowHeightUndo(oldHeights, sheetID: sheet.id, actionName: "Font Size")
+            markChanged()
+        }
+    }
+
+    /// Default 12pt text sits in the default 22pt row; scale from there.
+    static func rowHeight(forFontSize size: Double) -> CGFloat {
+        CGFloat((size * 1.25 + 7).rounded(.up))
+    }
+
+    private func registerRowHeightUndo(_ heights: [Int: CGFloat?], sheetID: Int, actionName: String) {
+        undoManager.registerUndo(withTarget: self) { doc in
+            MainActor.assumeIsolated {
+                guard let sheet = doc.workbook.sheet(withID: sheetID) else { return }
+                var redo: [Int: CGFloat?] = [:]
+                for (row, height) in heights {
+                    redo[row] = sheet.rowHeights[row]
+                    sheet.rowHeights[row] = height
+                }
+                doc.registerRowHeightUndo(redo, sheetID: sheetID, actionName: actionName)
+                doc.markChanged()
+            }
+        }
+        undoManager.setActionName(actionName)
+    }
+
+    /// Increase/Decrease Decimal. A General cell starts from the decimals it
+    /// currently shows, as in Excel.
+    public func adjustDecimals(by delta: Int) {
+        let current = style(at: selection.activeCell).numberFormat
+        var base = current
+        if current.isGeneral {
+            var decimals = 0
+            if case .number(let n) = activeSheet.value(at: selection.activeCell) {
+                let shown = NumberFormatEngine.generalString(for: n)
+                if !shown.contains("E"), let dot = shown.firstIndex(of: ".") {
+                    decimals = shown.distance(from: dot, to: shown.endIndex) - 1
+                }
+            }
+            base = NumberFormat(code: decimals == 0 ? "0" : "0." + String(repeating: "0", count: decimals))
+        }
+        guard let target = base.adjustingDecimals(by: delta) ?? (current.isGeneral ? base : nil) else { return }
+        applyStyleToSelection(delta > 0 ? "Increase Decimal" : "Decrease Decimal") {
+            $0.numberFormat = target
+        }
+    }
+
+    // MARK: - AutoSum
+
+    /// AutoSum (Σ). With one cell selected, wrap the numbers directly above it
+    /// (else to its left) in `function`. With a range, total each column in
+    /// the range's empty bottom row, or in the row below it. One undo step.
+    public func autoSum(_ function: String = "SUM") {
+        let range = selection.range
+        let sheet = activeSheet
+        func isNumber(_ addr: CellAddress) -> Bool {
+            if case .number = sheet.value(at: addr) { return true }
+            return false
+        }
+        func isEmpty(_ addr: CellAddress) -> Bool { sheet.cell(at: addr).value.isEmpty && sheet.cell(at: addr).formula == nil }
+
+        var writes: [(CellAddress, String)] = []
+        if range.isSingleCell {
+            let target = range.start
+            var top = target.row
+            while top > 0, isNumber(CellAddress(row: top - 1, column: target.column)) { top -= 1 }
+            var left = target.column
+            while left > 0, isNumber(CellAddress(row: target.row, column: left - 1)) { left -= 1 }
+            let source: CellRange?
+            if top < target.row {
+                source = CellRange(start: CellAddress(row: top, column: target.column),
+                                   end: CellAddress(row: target.row - 1, column: target.column))
+            } else if left < target.column {
+                source = CellRange(start: CellAddress(row: target.row, column: left),
+                                   end: CellAddress(row: target.row, column: target.column - 1))
+            } else {
+                source = nil
+            }
+            writes.append((target, "=\(function)(\(source?.a1 ?? ""))"))
+        } else {
+            let bottomEmpty = range.end.row > range.start.row
+                && (range.start.column...range.end.column).allSatisfy {
+                    isEmpty(CellAddress(row: range.end.row, column: $0))
+                }
+            let targetRow = bottomEmpty ? range.end.row : range.end.row + 1
+            let lastSourceRow = targetRow - 1
+            for column in range.start.column...range.end.column {
+                let source = CellRange(start: CellAddress(row: range.start.row, column: column),
+                                       end: CellAddress(row: lastSourceRow, column: column))
+                writes.append((CellAddress(row: targetRow, column: column), "=\(function)(\(source.a1))"))
+            }
+        }
+        guard let first = writes.first, !refuseIfPivot(CellRange(start: first.0, end: writes.last!.0)) else { return }
+        withUndoGroup {
+            for (address, formula) in writes { commitInput(formula, at: address) }
+        }
+        if writes.count == 1, range.isSingleCell {
+            selection.select(first.0)
+        } else {
+            selection.select(range: CellRange(start: first.0, end: writes.last!.0))
+        }
+        requestScrollToActiveCell()
+    }
+
+    // MARK: - Format painter
+
+    /// Styles copied by the format painter, row-major over the source range;
+    /// the next selection made with the mouse receives them (tiled).
+    @Published public private(set) var formatPainterStyles: [[CellStyle]]?
+
+    public func beginFormatPainter() {
+        let range = selection.range
+        // Bound the copy: a whole-column selection copies its used part.
+        let lastRow = min(range.end.row, range.start.row + 999)
+        let lastColumn = min(range.end.column, range.start.column + 255)
+        formatPainterStyles = (range.start.row...lastRow).map { row in
+            (range.start.column...lastColumn).map { style(at: CellAddress(row: row, column: $0)) }
+        }
+    }
+
+    public func cancelFormatPainter() {
+        formatPainterStyles = nil
+    }
+
+    /// Called when a mouse selection ends while the painter is armed.
+    public func applyFormatPainter() {
+        guard let styles = formatPainterStyles, let firstRow = styles.first, !firstRow.isEmpty else { return }
+        formatPainterStyles = nil
+        var range = selection.range
+        // One cell clicked: paint the source's shape from there.
+        if range.isSingleCell {
+            range = CellRange(start: range.start,
+                              end: CellAddress(row: range.start.row + styles.count - 1,
+                                               column: range.start.column + firstRow.count - 1))
+            selection.select(range: range)
+        }
+        guard !refuseIfPivot(range) else { return }
+        let addresses = range.addresses
+        let snaps = snapshot(addresses)
+        for address in addresses {
+            let row = styles[(address.row - range.start.row) % styles.count]
+            let painted = row[(address.column - range.start.column) % row.count]
+            var cell = activeSheet.cell(at: address)
+            var target = painted
+            target.pivotButton = workbook.style(at: cell.styleIndex).pivotButton
+            cell.styleIndex = workbook.styleIndex(for: target)
+            activeSheet.setCell(cell, at: address)
+        }
+        registerCellUndo(snaps, actionName: "Paste Formatting")
+        markChanged()
+    }
+
     // MARK: - Structure
 
     public func insertRows(at index: Int, count: Int = 1) {
