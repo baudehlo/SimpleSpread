@@ -22,7 +22,19 @@ public final class Sheet {
     /// Stable identity that survives renames and reordering.
     public let id: Int
     public var name: String
-    public internal(set) var cells: [CellAddress: Cell] = [:]
+    /// Sparse storage. Assigning it wholesale (structural remaps) drops the
+    /// cached used bounds; `setCell` keeps them up to date.
+    public internal(set) var cells: [CellAddress: Cell] {
+        get { storage }
+        set {
+            storage = newValue
+            invalidateUsedBounds()
+        }
+    }
+    private var storage: [CellAddress: Cell] = [:]
+    /// Cached bounding box of `storage`; meaningful only when `boundsValid`.
+    private var bounds: CellRange?
+    private var boundsValid = true
 
     /// Explicit column widths in points, keyed by zero-based column index.
     public var columnWidths: [Int: CGFloat] = [:]
@@ -43,14 +55,36 @@ public final class Sheet {
     }
 
     public func cell(at address: CellAddress) -> Cell {
-        cells[address] ?? Cell()
+        storage[address] ?? Cell()
     }
 
     public func setCell(_ cell: Cell, at address: CellAddress) {
         if cell.isDefault {
-            cells.removeValue(forKey: address)
+            guard storage.removeValue(forKey: address) != nil else { return }
+            if storage.isEmpty {
+                bounds = nil
+                boundsValid = true
+            } else if boundsValid, let b = bounds,
+                      address.row == b.start.row || address.row == b.end.row
+                      || address.column == b.start.column || address.column == b.end.column {
+                // A cell on the edge went: the box may shrink. Rescan lazily.
+                boundsValid = false
+            }
         } else {
-            cells[address] = cell
+            storage[address] = cell
+            if boundsValid {
+                if let b = bounds {
+                    if !b.contains(address) {
+                        bounds = CellRange(
+                            start: CellAddress(row: min(b.start.row, address.row),
+                                               column: min(b.start.column, address.column)),
+                            end: CellAddress(row: max(b.end.row, address.row),
+                                             column: max(b.end.column, address.column)))
+                    }
+                } else {
+                    bounds = CellRange(address)
+                }
+            }
         }
     }
 
@@ -61,15 +95,34 @@ public final class Sheet {
 
     /// Make room for `count` cells up front (bulk imports).
     public func reserveCellCapacity(_ count: Int) {
-        cells.reserveCapacity(count)
+        storage.reserveCapacity(count)
     }
 
     public func value(at address: CellAddress) -> CellValue {
-        cells[address]?.value ?? .empty
+        storage[address]?.value ?? .empty
     }
 
     /// Bounding range of all non-default cells, or nil for an empty sheet.
+    /// Kept up to date by `setCell`; a rescan happens only after a cell on the
+    /// edge is removed or the storage is replaced, and then once.
     public var usedRange: CellRange? {
+        if !boundsValid {
+            bounds = Self.scanBounds(storage)
+            boundsValid = true
+        }
+        return bounds
+    }
+
+    private func invalidateUsedBounds() {
+        if storage.isEmpty {
+            bounds = nil
+            boundsValid = true
+        } else {
+            boundsValid = false
+        }
+    }
+
+    private static func scanBounds(_ cells: [CellAddress: Cell]) -> CellRange? {
         guard !cells.isEmpty else { return nil }
         var minR = Int.max, maxR = Int.min, minC = Int.max, maxC = Int.min
         for addr in cells.keys {
