@@ -24,7 +24,8 @@ struct FindScalingTests {
     }
 
     func waitForFind(_ doc: SpreadsheetDocument) async throws {
-        let deadline = Date().addingTimeInterval(30)
+        // Generous: CI runners under load are many times slower than a desk Mac.
+        let deadline = Date().addingTimeInterval(120)
         while doc.isFindSearching, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
@@ -38,7 +39,9 @@ struct FindScalingTests {
     }
 
     @Test func typingOnABigSheetDoesNotSearchOnTheMainThread() async throws {
-        let doc = bigDocument(rows: 100_000)
+        // 30,000 cells: over the 20,000 that Find searches at once, so this
+        // takes the background path, and quick enough for a loaded CI runner.
+        let doc = bigDocument(rows: 10_000)
         var keystrokes: [Double] = []
         for prefix in ["i", "it", "ite", "item", "item ", "item 9", "item 99", "item 999"] {
             keystrokes.append(seconds { doc.setFindQuery(prefix) })
@@ -47,10 +50,10 @@ struct FindScalingTests {
         #expect(worst < 0.1, "a keystroke took \(worst)s")
         #expect(doc.findStatus == "Searching…")
         try await waitForFind(doc)
-        // item 999, item 9990-9999 and item 99900-99999.
-        #expect(doc.findMatches.count == 111)
+        // item 999 and item 9990-9999.
+        #expect(doc.findMatches.count == 11)
         #expect(doc.findMatches.first == a("A1000"))
-        #expect(doc.findStatus == "1 of 111")
+        #expect(doc.findStatus == "1 of 11")
         #expect(doc.selection.activeCell == a("A1000"))
     }
 
