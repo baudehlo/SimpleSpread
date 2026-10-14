@@ -89,15 +89,11 @@ extension SpreadsheetDocument {
             }
         }
 
-        let savedCaches = workbook.pivotCaches, savedTables = workbook.pivotTables
-        let savedStyles = workbook.preservedStyles
-        registerWorkbookUndo(actionName: "Insert PivotTable")
-        var addedSheet: Int?
+        let before = takeSnapshot()
         let target: (sheetID: Int, at: CellAddress)
         switch destination {
         case .newSheet:
             let sheet = workbook.addSheet()
-            addedSheet = sheet.id
             target = (sheet.id, CellAddress(row: 2, column: 0))
         case .existing(let sheetID, let at):
             target = (sheetID, at)
@@ -111,15 +107,14 @@ extension SpreadsheetDocument {
             selection = SelectionState()
             selection.select(workbook.pivotTables[index].location.start)
             engine.rebuildAll()
+            registerSnapshotUndo(before, actionName: "Insert PivotTable")
             markChanged()
             return true
         } catch {
-            // Put back what changed by hand: undoing here could undo the
-            // user's previous action if the snapshot above wasn't taken.
-            workbook.pivotCaches = savedCaches
-            workbook.pivotTables = savedTables
-            workbook.preservedStyles = savedStyles
-            if let addedSheet { _ = workbook.removeSheet(withID: addedSheet) }
+            // Put the workbook back from the snapshot (never by undoing,
+            // which would undo the user's previous action). No cell has
+            // changed yet, so the engine needs no rebuild.
+            before.workbook.restore(into: workbook)
             notice = DocumentNotice(message: "Couldn’t create the pivot table.", detail: Self.reason(error))
             return false
         }
@@ -217,6 +212,7 @@ extension SpreadsheetDocument {
     /// ask before overwriting cells, then redraw. Cancelled or failed changes
     /// leave the workbook untouched.
     private func transaction(actionName: String, tables: [Int], _ change: () throws -> Void) -> Bool {
+        let before = takeSnapshot()
         let savedCaches = workbook.pivotCaches, savedTables = workbook.pivotTables
         func rollBack() {
             workbook.pivotCaches = savedCaches
@@ -265,14 +261,11 @@ extension SpreadsheetDocument {
                 return false
             }
         }
-        // Snapshot the old state for undo, then commit.
-        let newCaches = workbook.pivotCaches, newTables = workbook.pivotTables
-        rollBack()
-        registerWorkbookUndo(actionName: actionName)
-        workbook.pivotCaches = newCaches
-        workbook.pivotTables = newTables
+        // Commit. Undo puts back the snapshot taken before `change`, pivot
+        // definitions and caches included, so pivots stay editable.
         for (i, result) in results { workbook.applyPivotLayout(at: i, result: result) }
         engine.rebuildAll()
+        registerSnapshotUndo(before, actionName: actionName)
         markChanged()
         return true
     }

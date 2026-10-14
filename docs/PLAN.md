@@ -66,7 +66,7 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
 | Date system | Serial numbers, epoch 1899-12-30 = 0, **no** Lotus leap-year bug | Google Sheets' choice: exact Excel agreement for all dates ≥ Mar 1 1900; clean math |
 | Circular refs | Detect, mark #CYCLE! (exports as #REF!) | Sheets shows #REF! + message; a distinct code is clearer in-app |
 | Formula storage | Text (no '='), parsed AST cached in engine | Matches XLSX storage; AST enables reference transforms |
-| Undo | Cell-level snapshots for edits; whole-workbook XLSX snapshot for structural ops | The XLSX round-trip is the most-tested serialization in the codebase — reusing it for undo gets fidelity for free |
+| Undo | Cell-level snapshots for edits; an in-memory copy-on-write workbook snapshot (`WorkbookSnapshot`) for structural, sheet and pivot ops | Exact (nothing the file writer can't model is lost, pivots stay editable) and cheap to take; it was an XLSX round-trip, which cost seconds per step on big sheets and was lossy |
 | CSV import safety | `=`/`+`/`@` fields import as text, never formulas | OWASP CSV-injection guidance; files are data |
 | CSV export | Machine-canonical by default (full-precision numbers, ISO dates), display-mode as option | Round-trips beat Excel's lossy "as displayed" default |
 
@@ -177,7 +177,8 @@ per cell in the engine and reused for dependency extraction and transforms.
   Formulas naming a sheet that doesn't exist yet are re-installed when it
   appears. Sheets keep their used range up to date incrementally. Structural
   edits rebuild the whole graph (`rebuildAll`) — correct first, incremental
-  later. `spreadsheet-bench --edits` times edits on synthetic workbooks.
+  later. `spreadsheet-bench --edits` times edits on synthetic workbooks;
+  `--undo` times a row insert with its undo and redo.
 - **Iterative solvers** (IRR/XIRR/RATE): Newton–Raphson with numeric
   derivative, bracketing-scan + bisection fallback, #NUM! on non-convergence.
 
@@ -356,6 +357,26 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   style application, structural edits, sheet ops, clipboard, fill, file I/O.
   Every operation is one undo group (`groupsByEvent = false` + explicit
   groups so behavior is identical under tests and menus).
+- Undo of workbook-level commands (insert/delete rows and columns, add,
+  delete, rename and move sheet, Import CSV, every pivot edit, Delete over
+  a pivot): `takeSnapshot()` before the command, `registerSnapshotUndo`
+  after it. The snapshot is `Workbook.copy()` — every table shared
+  copy-on-write — plus the active sheet and selection. Once the command has
+  run, cell tables it didn't change are let go (each `Sheet` counts changes
+  to its cells), so a snapshot keeps only what the command replaced: the
+  edited sheet's old cell table after a row insert (about 100 bytes a cell:
+  ~1 GB for 1,048,576 × 10, where the XLSX snapshot was 24 MB), tables of
+  sheets whose formulas were rewritten, a deleted sheet, old pivot
+  definitions. Undo puts the snapshot back in place (the engine and views
+  keep the same `Workbook`; sheet ids are kept, so cell undo records still
+  apply), registers the state it replaced as the redo, and runs
+  `rebuildAll` unless the command left every formula alone (move sheet;
+  add sheet when no formula was waiting for its name). Frozen panes stay
+  as they are. A failed command puts its snapshot back directly, never by
+  undoing. Release, 1,048,576 × 10 values: row insert 0.9 s, undo 0.03 s,
+  redo 0.08 s (with the XLSX snapshot: about 5 s, 6–8 s and 6–8 s). With
+  1M formulas undo is `rebuildAll`, ~3 s. `spreadsheet-bench --undo`
+  measures both.
 - Grid: virtualized cell drawing with pinned headers; Excel's
   Ready/Enter/Edit machine — typing replaces (arrows commit+move),
   double-click/F2 edits in place (arrows move caret), Enter/Tab/Shift

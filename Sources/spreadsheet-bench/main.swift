@@ -8,6 +8,9 @@ import SpreadsheetFiles
 //   swift run -c release spreadsheet-bench --edits
 // or times saving a full synthetic sheet (snapshot, write, progress):
 //   swift run -c release spreadsheet-bench --save-full-sheet
+// or times a row insert with its undo and redo, as the document does them
+// (in-memory snapshots), against the XLSX round-trip undo used before:
+//   swift run -c release spreadsheet-bench --undo
 // Not part of the app; for measuring big-file performance.
 
 @discardableResult
@@ -195,6 +198,67 @@ if CommandLine.arguments.contains("--save-full-sheet") {
     exit(0)
 }
 
+/// Insert a row, undo, redo on a 1,048,576 x 10 sheet of values and on
+/// 1,048,576 formulas, the way SpreadsheetDocument does it (WorkbookSnapshot
+/// plus rebuildAll), and the XLSX snapshot undo it replaced.
+func runUndoBenchmarks() throws {
+    func valuesWorkbook() -> Workbook {
+        let wb = Workbook.newDocument()
+        let sheet = wb.sheets[0]
+        sheet.reserveCellCapacity(10 * 1_048_576)
+        for r in 0..<1_048_576 {
+            for c in 0..<10 { sheet.setCell(Cell(value: .number(Double(r))), at: CellAddress(row: r, column: c)) }
+        }
+        return wb
+    }
+    func formulasWorkbook() -> Workbook {
+        let wb = Workbook.newDocument()
+        let sheet = wb.sheets[0]
+        for r in 0..<1_048_575 {
+            sheet.setCell(Cell(value: .number(Double(r % 997))), at: CellAddress(row: r, column: 0))
+            sheet.setCell(Cell(formula: "A\(r + 1)*2"), at: CellAddress(row: r, column: 1))
+        }
+        return wb
+    }
+    for (name, make) in [("1,048,576 x 10 values", valuesWorkbook), ("1,048,575 formulas", formulasWorkbook)] {
+        let wb = make()
+        let engine = CalculationEngine(workbook: wb)
+        let id = wb.sheets[0].id
+        // In memory: what SpreadsheetDocument.insertRows and undo/redo do.
+        let before = time("\(name): snapshot + insert row") { () -> WorkbookSnapshot in
+            let before = WorkbookSnapshot(of: wb)
+            WorkbookOperations.insertRows(in: wb, sheetID: id, at: 5, count: 1)
+            engine.rebuildAll()
+            before.releaseUnchangedCells(comparedTo: wb)
+            return before
+        }
+        let after = time("\(name): undo") { () -> WorkbookSnapshot in
+            let after = WorkbookSnapshot(of: wb)
+            before.restore(into: wb)
+            engine.rebuildAll()
+            after.releaseUnchangedCells(comparedTo: wb)
+            return after
+        }
+        time("\(name): redo") {
+            after.restore(into: wb)
+            engine.rebuildAll()
+        }
+        // The XLSX snapshot undo this replaced: write before, read + rebuild + write on undo.
+        let data = try time("\(name): XLSX undo: snapshot (write)") { try XLSXWriter.data(for: wb) }
+        print("\(name): XLSX snapshot is \(data.count / 1_048_576) MB")
+        try time("\(name): XLSX undo: undo (read, rebuild, write)") {
+            _ = try XLSXWriter.data(for: wb)
+            wb.replaceContents(with: try XLSXReader.read(data: data))
+            engine.rebuildAll()
+        }
+    }
+}
+
+if CommandLine.arguments.contains("--undo") {
+    try runUndoBenchmarks()
+    exit(0)
+}
+
 if CommandLine.arguments.contains("--edits") {
     let total = Date()
     runEditBenchmarks()
@@ -204,7 +268,7 @@ if CommandLine.arguments.contains("--edits") {
 }
 
 guard CommandLine.arguments.count > 1 else {
-    print("usage: spreadsheet-bench <file.csv|file.xlsx> [--save] | --edits")
+    print("usage: spreadsheet-bench <file.csv|file.xlsx> [--save] | --edits | --undo | --save-full-sheet")
     exit(2)
 }
 let url = URL(fileURLWithPath: CommandLine.arguments[1])

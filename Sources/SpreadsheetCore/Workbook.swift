@@ -28,10 +28,14 @@ public final class Sheet {
         get { storage }
         set {
             storage = newValue
+            cellsVersion &+= 1
             invalidateUsedBounds()
         }
     }
     private var storage: [CellAddress: Cell] = [:]
+    /// Bumped whenever `storage` changes, so an undo snapshot can tell
+    /// whether a command touched this sheet's cells (WorkbookSnapshot).
+    private(set) var cellsVersion = 0
     /// Cached bounding box of `storage`; meaningful only when `boundsValid`.
     private var bounds: CellRange?
     private var boundsValid = true
@@ -64,6 +68,7 @@ public final class Sheet {
     public func setCell(_ cell: Cell, at address: CellAddress) {
         if cell.isDefault {
             guard storage.removeValue(forKey: address) != nil else { return }
+            cellsVersion &+= 1
             if storage.isEmpty {
                 bounds = nil
                 boundsValid = true
@@ -75,6 +80,7 @@ public final class Sheet {
             }
         } else {
             storage[address] = cell
+            cellsVersion &+= 1
             if boundsValid {
                 if let b = bounds {
                     if !b.contains(address) {
@@ -166,10 +172,17 @@ public final class Sheet {
     public func copy() -> Sheet {
         let sheet = Sheet(id: id, name: name)
         sheet.adoptContents(of: self)
-        // Keep the used-range cache rather than rescanning in the copy.
-        sheet.bounds = bounds
-        sheet.boundsValid = boundsValid
+        sheet.adoptCells(of: self)
         return sheet
+    }
+
+    /// Share another sheet's cell table (copy-on-write), keeping its
+    /// used-range cache rather than rescanning, and its `cellsVersion`.
+    func adoptCells(of other: Sheet) {
+        storage = other.storage
+        bounds = other.bounds
+        boundsValid = other.boundsValid
+        cellsVersion = other.cellsVersion
     }
 }
 
