@@ -336,9 +336,17 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
 - Grid: `GridLayout` offsets are O(log k) over the rows/columns with
   non-default sizes (prefix sums + binary search), cached per revision;
   status-bar statistics look up the selection rather than scan the sheet.
+- Save runs in the background (`BackgroundSave.swift`): the main thread
+  takes a `Workbook.copy()` snapshot (microseconds) and the writer
+  (~4.5 s for a full sheet) runs on a queue behind the shared progress
+  panel (`ProgressPanel.swift`, after 0.25 s, with Cancel), while the
+  user keeps editing; the document is clean only if its `changeCount`
+  didn't move during the save. One save per document at a time; close
+  and quit wait for saves. CSV import/export run the same way. The first
+  edit during a save copies that sheet's cell table once (~0.2 s for a
+  full sheet). `spreadsheet-bench --save-full-sheet` measures all this.
 - Still proportional to sheet size: the first calculation (~4 s per
-  million formulas), saving (~4.5 s for a full sheet, on the main thread),
-  and Find, which scans every cell per keystroke.
+  million formulas) and Find, which scans every cell per keystroke.
 
 ## 8. Application layer
 
