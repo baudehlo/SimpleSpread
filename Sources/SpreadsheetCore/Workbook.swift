@@ -156,6 +156,20 @@ public final class Sheet {
         mergedRanges = other.mergedRanges
         hiddenRows = other.hiddenRows
         autoFilter = other.autoFilter
+        isHidden = other.isHidden
+    }
+
+    /// An independent copy with the same id and name. Cheap: the cell table
+    /// and the other collections are copy-on-write, so nothing is duplicated
+    /// until one of the two sheets changes. For undo snapshots and saving in
+    /// the background.
+    public func copy() -> Sheet {
+        let sheet = Sheet(id: id, name: name)
+        sheet.adoptContents(of: self)
+        // Keep the used-range cache rather than rescanning in the copy.
+        sheet.bounds = bounds
+        sheet.boundsValid = boundsValid
+        return sheet
     }
 }
 
@@ -224,6 +238,20 @@ public final class Workbook {
     /// Take over another workbook's sheets (keeping their ids), styles and
     /// pivot tables, in place: for restoring a snapshot under objects (the
     /// engine, undo records) that hold this instance and its sheet ids.
+    /// An independent copy of the whole workbook (sheets keep their ids).
+    /// Cheap, as `Sheet.copy()` is: the large tables are shared until changed.
+    public func copy() -> Workbook {
+        let wb = Workbook()
+        wb.sheets = sheets.map { $0.copy() }
+        wb.styles = styles
+        wb.pivotCaches = pivotCaches
+        wb.pivotTables = pivotTables
+        wb.preservedStyles = preservedStyles
+        wb.definedNames = definedNames
+        wb.nextSheetID = nextSheetID
+        return wb
+    }
+
     public func replaceContents(with other: Workbook) {
         sheets = other.sheets
         nextSheetID = max(nextSheetID, (sheets.map(\.id).max() ?? 0) + 1)
