@@ -846,6 +846,43 @@ public final class SpreadsheetDocument: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
+    /// The selection as an HTML table, the form Numbers and Excel take
+    /// multi-line cells in. A line break inside a cell is a `<br>` marked
+    /// (for Excel) as staying in the same cell.
+    public func selectionHTML(skippingFiltered: Bool = true) -> String {
+        let range = selection.range
+        let skipped = rowsSkipped(by: skippingFiltered ? .copy : .cut, in: range)
+        var html = "<html><head><meta charset=\"utf-8\"></head><body><table>"
+        for r in range.start.row...range.end.row where !skipped.contains(r) {
+            html += "<tr>"
+            for c in range.start.column...range.end.column {
+                html += "<td>" + Self.htmlCell(displayString(at: CellAddress(row: r, column: c))) + "</td>"
+            }
+            html += "</tr>"
+        }
+        return html + "</table></body></html>"
+    }
+
+    static func htmlCell(_ text: String) -> String {
+        var out = ""
+        var previousWasCR = false
+        for ch in text.unicodeScalars {
+            switch ch {
+            case "&": out += "&amp;"
+            case "<": out += "&lt;"
+            case ">": out += "&gt;"
+            case "\"": out += "&quot;"
+            case "\r", "\n":
+                // CRLF is one break.
+                if ch == "\n" && previousWasCR { break }
+                out += "<br style=\"mso-data-placement:same-cell\">"
+            default: out.unicodeScalars.append(ch)
+            }
+            previousWasCR = ch == "\r"
+        }
+        return out
+    }
+
     /// Quote a field as Excel and Numbers do on the clipboard: a field with
     /// a tab or line break (or one that starts with a quote, which would
     /// otherwise read back as quoted) goes in double quotes, with its own

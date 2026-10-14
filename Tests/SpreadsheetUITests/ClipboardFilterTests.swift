@@ -199,3 +199,21 @@ struct ClipboardScaleQuotingFilterTests {
         #expect(doc.activeSheet.value(at: a("A3")) == .string("q"))
     }
 }
+
+@MainActor
+@Suite("HTML clipboard")
+struct HTMLClipboardTests {
+    @Test func multiLineCellIsOneHTMLCell() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("line one\nline two", at: CellAddress(a1: "A1")!)
+        doc.commitInput("a & <b>", at: CellAddress(a1: "B1")!)
+        doc.selection.select(range: CellRange(a1: "A1:B1")!)
+        let html = doc.selectionHTML()
+        #expect(html.contains("<tr><td>line one<br style=\"mso-data-placement:same-cell\">line two</td><td>a &amp; &lt;b&gt;</td></tr>"))
+        #expect(html.components(separatedBy: "<tr>").count == 2) // one row
+    }
+
+    @Test func crlfIsOneBreak() {
+        #expect(SpreadsheetDocument.htmlCell("a\r\nb").components(separatedBy: "<br").count == 2)
+    }
+}

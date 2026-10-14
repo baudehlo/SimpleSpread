@@ -1,7 +1,9 @@
 import AppKit
 import SpreadsheetCore
 
-/// Pasteboard integration: internal lossless payload + TSV for other apps.
+/// Pasteboard integration: internal lossless payload, plus TSV and an HTML
+/// table for other apps (Numbers ignores TSV quoting, so a cell with a line
+/// break only survives the trip as HTML; Excel reads both).
 extension SpreadsheetDocument {
     private static let payloadType = NSPasteboard.PasteboardType(ClipboardPayload.pasteboardType)
 
@@ -19,6 +21,7 @@ extension SpreadsheetDocument {
             pasteboard.setData(encoded, forType: SpreadsheetDocument.payloadType)
         }
         pasteboard.setString(selectionTSV(skippingFiltered: !cut), forType: .string)
+        pasteboard.setString(selectionHTML(skippingFiltered: !cut), forType: .html)
         if cut {
             clearSelectionContents(skippingFiltered: false)
         }
