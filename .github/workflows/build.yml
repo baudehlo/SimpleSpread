@@ -245,10 +245,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
         run: |
-          gh release create "v${VERSION}" \
-            --title "v${VERSION}" \
-            --notes "Release v${VERSION} — release notes will be updated shortly." \
-            "$DMG_NAME"
+          # Re-running a release (e.g. after a failed appcast push) replaces
+          # the DMG of the existing release instead of failing.
+          if gh release view "v${VERSION}" > /dev/null 2>&1; then
+            gh release upload "v${VERSION}" "$DMG_NAME" --clobber
+          else
+            gh release create "v${VERSION}" \
+              --title "v${VERSION}" \
+              --notes "Release v${VERSION} — release notes will be updated shortly." \
+              "$DMG_NAME"
+          fi
 
       # Sign the DMG with the Sparkle key and publish the appcast so existing
       # installs can auto-update.
@@ -273,7 +279,8 @@ jobs:
           # so the release never ends up without its appcast entry.
           for attempt in 1 2 3 4 5; do
             git fetch origin main
-            if git rebase origin/main && git push origin HEAD:main; then
+            # The build regenerates tracked files (icon.png): set them aside.
+            if git rebase --autostash origin/main && git push origin HEAD:main; then
               echo "Appcast pushed on attempt ${attempt}."
               exit 0
             fi
