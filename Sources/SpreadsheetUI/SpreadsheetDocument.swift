@@ -670,20 +670,16 @@ public final class SpreadsheetDocument: ObservableObject {
     public func insertRows(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: count) else { return }
-        let before = takeSnapshot()
-        WorkbookOperations.insertRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
-        engine.rebuildAll()
-        registerSnapshotUndo(before, actionName: "Insert Rows")
+        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: true, index: index,
+                                             count: count, isInsert: true))
         markChanged()
     }
 
     public func deleteRows(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: -count) else { return }
-        let before = takeSnapshot()
-        WorkbookOperations.deleteRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
-        engine.rebuildAll()
-        registerSnapshotUndo(before, actionName: "Delete Rows")
+        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: true, index: index,
+                                             count: count, isInsert: false))
         selection.select(CellAddress(row: min(index, max(0, GridLayout(sheet: activeSheet).rowCount - 1)),
                                      column: selection.activeCell.column))
         markChanged()
@@ -692,20 +688,16 @@ public final class SpreadsheetDocument: ObservableObject {
     public func insertColumns(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: count) else { return }
-        let before = takeSnapshot()
-        WorkbookOperations.insertColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
-        engine.rebuildAll()
-        registerSnapshotUndo(before, actionName: "Insert Columns")
+        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: false, index: index,
+                                             count: count, isInsert: true))
         markChanged()
     }
 
     public func deleteColumns(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: -count) else { return }
-        let before = takeSnapshot()
-        WorkbookOperations.deleteColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
-        engine.rebuildAll()
-        registerSnapshotUndo(before, actionName: "Delete Columns")
+        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: false, index: index,
+                                             count: count, isInsert: false))
         selection.select(CellAddress(row: selection.activeCell.row, column: index))
         markChanged()
     }

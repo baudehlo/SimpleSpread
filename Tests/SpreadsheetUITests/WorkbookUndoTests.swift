@@ -331,6 +331,8 @@ struct WorkbookUndoTests {
         let end = Date()
         print("200k cells: insert \(inserted.timeIntervalSince(start)) s, undo \(undone.timeIntervalSince(inserted)) s, redo \(end.timeIntervalSince(undone)) s")
         #expect(doc.activeSheet.value(at: a("A7")) == .number(50))
-        #expect(end.timeIntervalSince(start) < 0.5) // 2.5 s with the XLSX snapshot
+        // ~0.13 s alone (debug), more under a parallel test run; 2.5 s alone
+        // with the XLSX snapshot undo this replaced.
+        #expect(end.timeIntervalSince(start) < 1.5)
     }
 }

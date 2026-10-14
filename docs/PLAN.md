@@ -66,7 +66,7 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
 | Date system | Serial numbers, epoch 1899-12-30 = 0, **no** Lotus leap-year bug | Google Sheets' choice: exact Excel agreement for all dates ≥ Mar 1 1900; clean math |
 | Circular refs | Detect, mark #CYCLE! (exports as #REF!) | Sheets shows #REF! + message; a distinct code is clearer in-app |
 | Formula storage | Text (no '='), parsed AST cached in engine | Matches XLSX storage; AST enables reference transforms |
-| Undo | Cell-level snapshots for edits; an in-memory copy-on-write workbook snapshot (`WorkbookSnapshot`) for structural, sheet and pivot ops | Exact (nothing the file writer can't model is lost, pivots stay editable) and cheap to take; it was an XLSX round-trip, which cost seconds per step on big sheets and was lossy |
+| Undo | Cell-level snapshots for edits; inverse edits plus a small log for row/column insert and delete; an in-memory copy-on-write workbook snapshot (`WorkbookSnapshot`) for sheet and pivot ops | Exact (nothing the file writer can't model is lost, pivots stay editable) and cheap to take; it was an XLSX round-trip, which cost seconds per step on big sheets and was lossy |
 | CSV import safety | `=`/`+`/`@` fields import as text, never formulas | OWASP CSV-injection guidance; files are data |
 | CSV export | Machine-canonical by default (full-precision numbers, ISO dates), display-mode as option | Round-trips beat Excel's lossy "as displayed" default |
 
@@ -357,26 +357,30 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   style application, structural edits, sheet ops, clipboard, fill, file I/O.
   Every operation is one undo group (`groupsByEvent = false` + explicit
   groups so behavior is identical under tests and menus).
-- Undo of workbook-level commands (insert/delete rows and columns, add,
-  delete, rename and move sheet, Import CSV, every pivot edit, Delete over
-  a pivot): `takeSnapshot()` before the command, `registerSnapshotUndo`
-  after it. The snapshot is `Workbook.copy()` — every table shared
-  copy-on-write — plus the active sheet and selection. Once the command has
-  run, cell tables it didn't change are let go (each `Sheet` counts changes
-  to its cells), so a snapshot keeps only what the command replaced: the
-  edited sheet's old cell table after a row insert (about 100 bytes a cell:
-  ~1 GB for 1,048,576 × 10, where the XLSX snapshot was 24 MB), tables of
-  sheets whose formulas were rewritten, a deleted sheet, old pivot
-  definitions. Undo puts the snapshot back in place (the engine and views
-  keep the same `Workbook`; sheet ids are kept, so cell undo records still
-  apply), registers the state it replaced as the redo, and runs
-  `rebuildAll` unless the command left every formula alone (move sheet;
-  add sheet when no formula was waiting for its name). Frozen panes stay
-  as they are. A failed command puts its snapshot back directly, never by
-  undoing. Release, 1,048,576 × 10 values: row insert 0.9 s, undo 0.03 s,
-  redo 0.08 s (with the XLSX snapshot: about 5 s, 6–8 s and 6–8 s). With
-  1M formulas undo is `rebuildAll`, ~3 s. `spreadsheet-bench --undo`
-  measures both.
+- Undo of inserting and deleting rows and columns
+  (`SpreadsheetDocument+StructuralUndo.swift`): no copy of the sheet. The
+  step records the cells a delete removed, the original text of every
+  formula the edit rewrote (an edit and its opposite rewrite the same
+  formulas, so the rest needn't be kept), and the small layout tables,
+  defined names and pivot definitions. Undo runs the opposite edit and puts
+  those back; redo runs the edit again; each rebuilds the engine once. A
+  step on a full 1,048,576 × 10 sheet holds a few KB (a whole-sheet
+  snapshot would hold ~1 GB, the old XLSX snapshot 24 MB).
+- Undo of other workbook-level commands (add, delete, rename and move
+  sheet, Import CSV, every pivot edit, Delete over a pivot): `takeSnapshot()`
+  before the command, `registerSnapshotUndo` after it. The snapshot is
+  `Workbook.copy()` — every table shared copy-on-write — plus the active
+  sheet and selection. Once the command has run, cell tables it didn't
+  change are let go (each `Sheet` counts changes to its cells), so a
+  snapshot keeps only what the command replaced: a deleted sheet, tables
+  of sheets whose formulas a rename rewrote, old pivot definitions. Undo
+  puts the snapshot back in place (the engine and views keep the same
+  `Workbook`; sheet ids are kept, so cell undo records still apply),
+  registers the state it replaced as the redo, and runs `rebuildAll`
+  unless the command left every formula alone (move sheet; add sheet when
+  no formula was waiting for its name). Frozen panes stay as they are. A
+  failed command puts its snapshot back directly, never by undoing. With
+  1M formulas undo is mostly `rebuildAll`, ~3 s (release).
 - Grid: virtualized cell drawing with pinned headers; Excel's
   Ready/Enter/Edit machine — typing replaces (arrows commit+move),
   double-click/F2 edits in place (arrows move caret), Enter/Tab/Shift
