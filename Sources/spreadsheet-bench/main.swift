@@ -152,7 +152,11 @@ func runSaveBenchmark() throws {
     }
     // The main thread's part of a background save: one snapshot.
     var snapshot = wb
-    for _ in 0..<3 { snapshot = time("Workbook.copy() (main thread)") { wb.copy() } }
+    for _ in 0..<3 {
+        let start = Date()
+        snapshot = wb.copy()
+        print(String(format: "Workbook.copy() (main thread): %.1f µs", Date().timeIntervalSince(start) * 1e6))
+    }
     // Editing the live sheet while the snapshot is shared copies its cell
     // table once (the first edit after a save starts).
     time("first edit after the snapshot (copy-on-write)") {
@@ -181,6 +185,9 @@ func runSaveBenchmark() throws {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("spreadsheet-bench-save.xlsx")
     try time("write (atomic), \(data.count / 1_000_000) MB") { try data.write(to: url, options: .atomic) }
     try? FileManager.default.removeItem(at: url)
+    // After that edit the snapshot is the only owner of its cell table
+    // (which is why the app frees it on the saving thread).
+    time("free the snapshot") { snapshot = Workbook() }
 }
 
 if CommandLine.arguments.contains("--save-full-sheet") {
