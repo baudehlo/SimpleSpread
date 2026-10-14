@@ -487,13 +487,7 @@ public struct DocumentWindowView: View {
         .help(help)
     }
 
-    /// Common Mac fonts plus the usual Office ones, keeping only those
-    /// installed (Office fonts appear once Microsoft Office is installed).
-    static let fontChoices: [String] = [
-        CellStyle.defaultFontName, "Helvetica", "Arial", "Avenir Next", "Calibri", "Cambria",
-        "Courier New", "Georgia", "Gill Sans", "Menlo", "Palatino", "Times New Roman",
-        "Trebuchet MS", "Verdana",
-    ].filter { NSFont(name: $0, size: 12) != nil }
+    static var fontChoices: [String] { FontChoices.current }
 
     static let fontSizeChoices: [Double] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 30, 36, 48]
 
@@ -788,5 +782,31 @@ public struct DocumentWindowView: View {
         return Text(text)
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
+    }
+}
+
+/// The toolbar's font list: common Mac fonts plus the usual Office ones,
+/// keeping only those installed (Office fonts appear once Microsoft Office
+/// is). Asking the font server about each takes 10-40 ms, so it's done in
+/// the background at launch; until it finishes the menu lists them all.
+enum FontChoices {
+    static let candidates: [String] = [
+        CellStyle.defaultFontName, "Helvetica", "Arial", "Avenir Next", "Calibri", "Cambria",
+        "Courier New", "Georgia", "Gill Sans", "Menlo", "Palatino", "Times New Roman",
+        "Trebuchet MS", "Verdana",
+    ]
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var installed: [String]?
+
+    static var current: [String] {
+        lock.withLock { installed } ?? candidates
+    }
+
+    static func prepare() {
+        DispatchQueue.global(qos: .utility).async {
+            let found = candidates.filter { NSFont(name: $0, size: 12) != nil }
+            lock.withLock { installed = found }
+        }
     }
 }
