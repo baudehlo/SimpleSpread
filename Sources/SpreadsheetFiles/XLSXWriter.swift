@@ -13,45 +13,84 @@ public enum XLSXWriter {
     static let mainNS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
     static let relNS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 
-    public static func data(for workbook: Workbook) throws -> Data {
+    /// The share of `data(for:progress:)`'s progress spent writing the
+    /// sheets' XML; compressing the parts is the rest.
+    static let sheetDataShare = 0.85
+
+    /// The workbook as an .xlsx file's bytes. `progress` gets the fraction
+    /// done (0…1, never decreasing, ending at 1) every 64K cells and every
+    /// few MB compressed; returning false stops the write with
+    /// `XLSXError.cancelled`.
+    public static func data(for workbook: Workbook, progress: ((Double) -> Bool)? = nil) throws -> Data {
+        var last = 0.0
+        let report: (Double) throws -> Void = { fraction in
+            guard let progress else { return }
+            last = max(last, min(1, fraction))
+            if !progress(last) { throw XLSXError.cancelled }
+        }
+        try report(0)
         var zip = ZipArchiveWriter()
         var sharedStrings = SharedStringBuilder()
         let styles = StyleParts(workbook: workbook, extraFormats: generatedPivotFormats(workbook))
 
-        // Worksheets (collect shared strings while writing).
+        // Worksheets (collect shared strings while writing), in proportion
+        // to their cells.
         var sheetXMLs: [Data] = []
+        let totalCells = Double(workbook.sheets.reduce(0) { $0 + $1.cells.count + 1 })
+        var cellsDone = 0.0
         for sheet in workbook.sheets {
-            sheetXMLs.append(worksheetXML(sheet: sheet, workbook: workbook,
-                                          styles: styles, strings: &sharedStrings))
+            let start = cellsDone, count = Double(sheet.cells.count + 1)
+            sheetXMLs.append(try worksheetXML(sheet: sheet, workbook: workbook,
+                                              styles: styles, strings: &sharedStrings) { fraction in
+                try report(sheetDataShare * (start + fraction * count) / totalCells)
+            })
+            cellsDone += count
         }
 
         // Preserved pivot tables: workbook rel ids follow sheets, styles, sharedStrings.
         let pivots = try pivotPackage(for: workbook, firstWorkbookRelID: workbook.sheets.count + 3,
                                       formatID: styles.numberFormatID)
 
-        zip.addEntry(name: "[Content_Types].xml",
-                     data: Data(contentTypesXML(sheetCount: workbook.sheets.count, extra: pivots.contentTypes).utf8))
-        zip.addEntry(name: "_rels/.rels", data: Data(rootRelsXML().utf8))
-        zip.addEntry(name: "docProps/core.xml", data: Data(corePropsXML().utf8))
-        zip.addEntry(name: "docProps/app.xml", data: Data(appPropsXML(workbook: workbook).utf8))
-        zip.addEntry(name: "xl/workbook.xml",
-                     data: Data(workbookXML(workbook: workbook, pivotCaches: pivots.workbookElement).utf8))
-        zip.addEntry(name: "xl/_rels/workbook.xml.rels",
-                     data: Data(workbookRelsXML(sheetCount: workbook.sheets.count,
-                                                extra: pivots.workbookRelationships).utf8))
-        zip.addEntry(name: "xl/styles.xml", data: Data(styles.xml().utf8))
-        zip.addEntry(name: "xl/sharedStrings.xml", data: Data(sharedStrings.xml().utf8))
+        var parts: [(name: String, data: Data)] = []
+        parts.append(("[Content_Types].xml",
+                      Data(contentTypesXML(sheetCount: workbook.sheets.count, extra: pivots.contentTypes).utf8)))
+        parts.append(("_rels/.rels", Data(rootRelsXML().utf8)))
+        parts.append(("docProps/core.xml", Data(corePropsXML().utf8)))
+        parts.append(("docProps/app.xml", Data(appPropsXML(workbook: workbook).utf8)))
+        parts.append(("xl/workbook.xml",
+                      Data(workbookXML(workbook: workbook, pivotCaches: pivots.workbookElement).utf8)))
+        parts.append(("xl/_rels/workbook.xml.rels",
+                      Data(workbookRelsXML(sheetCount: workbook.sheets.count,
+                                           extra: pivots.workbookRelationships).utf8)))
+        parts.append(("xl/styles.xml", Data(styles.xml().utf8)))
+        parts.append(("xl/sharedStrings.xml", Data(sharedStrings.xml().utf8)))
         for (i, xml) in sheetXMLs.enumerated() {
-            zip.addEntry(name: "xl/worksheets/sheet\(i + 1).xml", data: xml)
+            parts.append(("xl/worksheets/sheet\(i + 1).xml", xml))
             if let rels = pivots.sheetRelationships[i] {
-                zip.addEntry(name: "xl/worksheets/_rels/sheet\(i + 1).xml.rels",
-                             data: Data(relationshipsXML(rels).utf8))
+                parts.append(("xl/worksheets/_rels/sheet\(i + 1).xml.rels", Data(relationshipsXML(rels).utf8)))
             }
         }
+        sheetXMLs = []
         for entry in pivots.entries {
-            zip.addEntry(name: entry.path, data: entry.data)
+            parts.append((entry.path, entry.data))
         }
-        return zip.finalize()
+
+        // Compression, in proportion to the bytes.
+        try report(sheetDataShare)
+        let totalBytes = Double(parts.reduce(0) { $0 + $1.data.count + 1 })
+        var bytesDone = 0.0
+        for index in parts.indices {
+            let start = bytesDone, count = Double(parts[index].data.count + 1)
+            try zip.addEntry(name: parts[index].name, data: parts[index].data) { fraction in
+                try report(sheetDataShare + (1 - sheetDataShare) * 0.99 * (start + fraction * count) / totalBytes)
+            }
+            // Each part's text can go once it is compressed.
+            parts[index].data = Data()
+            bytesDone += count
+        }
+        let archive = try zip.finalize()
+        try report(1)
+        return archive
     }
 
     // MARK: Package parts
@@ -105,10 +144,12 @@ public enum XLSXWriter {
         var s = xmlHeader
         s += "<workbook xmlns=\"\(mainNS)\" xmlns:r=\"\(relNS)\">"
         s += "<workbookPr date1904=\"0\"/>"
-        s += "<bookViews><workbookView activeTab=\"0\"/></bookViews>"
+        let shown = firstVisibleSheetIndex(workbook)
+        s += "<bookViews><workbookView activeTab=\"\(shown)\"/></bookViews>"
         s += "<sheets>"
         for (i, sheet) in workbook.sheets.enumerated() {
-            s += "<sheet name=\"\(XML.escapeAttribute(sheet.name))\" sheetId=\"\(sheet.id)\" r:id=\"rId\(i + 1)\"/>"
+            let state = sheet.isHidden && i != shown ? " state=\"hidden\"" : ""
+            s += "<sheet name=\"\(XML.escapeAttribute(sheet.name))\" sheetId=\"\(sheet.id)\"\(state) r:id=\"rId\(i + 1)\"/>"
         }
         s += "</sheets>"
         // Excel names every AutoFilter's range (hidden, sheet-scoped) and
@@ -121,12 +162,31 @@ public enum XLSXWriter {
                                            + absoluteA1(filter.range))
             definedNames += "</definedName>"
         }
+        for defined in workbook.definedNames
+        where defined.name.caseInsensitiveCompare("_xlnm._FilterDatabase") != .orderedSame {
+            var scope = ""
+            if let sheetID = defined.scopeSheetID {
+                // A name scoped to a sheet that's gone goes with it.
+                guard let index = workbook.indexOfSheet(withID: sheetID) else { continue }
+                scope = " localSheetId=\"\(index)\""
+            }
+            definedNames += "<definedName name=\"\(XML.escapeAttribute(defined.name))\"\(scope)"
+                + (defined.hidden ? " hidden=\"1\"" : "") + ">"
+            definedNames += XML.escapeText(FormulaFunctionPrefixes.adding(defined.formula))
+            definedNames += "</definedName>"
+        }
         if !definedNames.isEmpty {
             s += "<definedNames>" + definedNames + "</definedNames>"
         }
         s += pivotCaches // CT_Workbook: after sheets/definedNames/calcPr, before extLst
         s += "</workbook>"
         return s
+    }
+
+    /// The sheet Excel opens on: the first one not hidden. A workbook needs
+    /// one visible sheet, so if all are hidden the first is shown.
+    static func firstVisibleSheetIndex(_ workbook: Workbook) -> Int {
+        workbook.sheets.firstIndex { !$0.isHidden } ?? 0
     }
 
     /// "$A$1:$D$20" ("$A$1" for a single cell).
@@ -157,6 +217,16 @@ public enum XLSXWriter {
     static func worksheetXML(sheet: Sheet, workbook: Workbook,
                              styles: StyleParts, strings: inout SharedStringBuilder,
                              fastSheetData: Bool = true) -> Data {
+        worksheetXML(sheet: sheet, workbook: workbook, styles: styles, strings: &strings,
+                     fastSheetData: fastSheetData, progress: { _ in })
+    }
+
+    /// As above; `progress` gets the fraction of the sheet's cells written
+    /// (fast path only) and throws to stop.
+    static func worksheetXML(sheet: Sheet, workbook: Workbook,
+                             styles: StyleParts, strings: inout SharedStringBuilder,
+                             fastSheetData: Bool = true,
+                             progress: (Double) throws -> Void) rethrows -> Data {
         var s = xmlHeader
         s += "<worksheet xmlns=\"\(mainNS)\" xmlns:r=\"\(relNS)\">"
 
@@ -164,7 +234,8 @@ public enum XLSXWriter {
         s += "<dimension ref=\"\(used?.a1 ?? "A1")\"/>"
 
         // sheetViews (+ frozen panes)
-        let isFirst = workbook.sheets.first?.id == sheet.id
+        let shown = firstVisibleSheetIndex(workbook)
+        let isFirst = workbook.sheets.indices.contains(shown) && workbook.sheets[shown].id == sheet.id
         s += "<sheetViews><sheetView\(isFirst ? " tabSelected=\"1\"" : "") workbookViewId=\"0\">"
         if sheet.frozenRows > 0 || sheet.frozenColumns > 0 {
             let topLeft = CellAddress(row: sheet.frozenRows, column: sheet.frozenColumns).a1
@@ -200,7 +271,7 @@ public enum XLSXWriter {
             head = Data(s.utf8)
             s = ""
             sheetData.reserveCapacity(sheet.cells.count * 40)
-            appendSheetData(of: sheet, to: &sheetData, strings: &strings)
+            try appendSheetData(of: sheet, to: &sheetData, strings: &strings, progress: progress)
         } else {
         s += "<sheetData>"
         do {
@@ -315,7 +386,7 @@ public enum XLSXWriter {
         }
 
         if let formula = cell.formula {
-            let f = "<f>\(XML.escapeText(formula))</f>"
+            let f = "<f>\(XML.escapeText(FormulaFunctionPrefixes.adding(formula)))</f>"
             var valuePart = ""
             let saved = body
             _ = saved

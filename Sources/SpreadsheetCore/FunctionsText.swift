@@ -159,7 +159,8 @@ enum TextFunctions {
             let s = try strArg(args[0])
             let n = try intArg(args[1])
             guard n >= 0 else { throw CellError.value }
-            guard s.count * n <= 32767 else { throw CellError.value }
+            let (length, overflow) = s.count.multipliedReportingOverflow(by: n)
+            guard !overflow, length <= 32767 else { throw CellError.value }
             return .string(String(repeating: s, count: n))
         },
         .eager("EXACT", min: 2, max: 2) { args, _ in
@@ -175,12 +176,12 @@ enum TextFunctions {
             if case .string(let s) = v {
                 // Non-numeric text passes through (unless coercible).
                 if let n = Coerce.parseNumericText(s) {
-                    return .string(NumberFormatEngine.formatNumber(n, code: format))
+                    return .string(try NumberFormatEngine.formatForTEXT(n, code: format))
                 }
                 return .string(s)
             }
             let n = try Coerce.number(v)
-            return .string(NumberFormatEngine.formatNumber(n, code: format))
+            return .string(try NumberFormatEngine.formatForTEXT(n, code: format))
         },
         .eager("VALUE", min: 1, max: 1) { args, _ in
             let v = try args[0].toScalar()

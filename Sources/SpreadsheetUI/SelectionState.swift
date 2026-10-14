@@ -191,6 +191,13 @@ public struct GridLayout {
         return first...max(first, last)
     }
 
+    /// The rows of `range` that take up space, ascending: hidden rows are
+    /// skipped a run at a time, so a filtered sheet showing a few rows far
+    /// apart costs the rows shown, not the rows between them.
+    public func shownRows(in range: ClosedRange<Int>) -> [Int] {
+        rows.nonZeroIndices(in: range)
+    }
+
     public func visibleColumns(in rect: CGRect) -> ClosedRange<Int> {
         let first = column(atX: max(0, rect.minX))
         let last = column(atX: max(0, rect.maxX))
@@ -206,6 +213,8 @@ struct AxisSizes {
     private let indices: [Int]
     /// `deltaBefore[k]`: total (size - default) over `indices[0..<k]`.
     private let deltaBefore: [CGFloat]
+    /// Runs of consecutive zero-size indices (hidden rows), ascending.
+    private let zeroRuns: [ClosedRange<Int>]
 
     init(defaultSize: CGFloat, sizes: [Int: CGFloat]) {
         self.defaultSize = defaultSize
@@ -214,11 +223,46 @@ struct AxisSizes {
         var running: CGFloat = 0
         var totals: [CGFloat] = [0]
         totals.reserveCapacity(changed.count + 1)
-        for (_, size) in changed {
+        var runs: [ClosedRange<Int>] = []
+        for (index, size) in changed {
             running += size - defaultSize
             totals.append(running)
+            if size <= 0 {
+                if let last = runs.last, last.upperBound == index - 1 {
+                    runs[runs.count - 1] = last.lowerBound...index
+                } else {
+                    runs.append(index...index)
+                }
+            }
         }
         deltaBefore = totals
+        zeroRuns = runs
+    }
+
+    /// The indices of `range` whose size is not zero (for a positive
+    /// default size), ascending, skipping each run of zero-size indices in
+    /// one step.
+    func nonZeroIndices(in range: ClosedRange<Int>) -> [Int] {
+        // First run that ends at or after the range's start.
+        var lo = 0, hi = zeroRuns.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if zeroRuns[mid].upperBound < range.lowerBound { lo = mid + 1 } else { hi = mid }
+        }
+        var result: [Int] = []
+        var index = range.lowerBound
+        var run = lo
+        while index <= range.upperBound {
+            if run < zeroRuns.count, zeroRuns[run].lowerBound <= index {
+                index = zeroRuns[run].upperBound + 1
+                run += 1
+                continue
+            }
+            let stop = run < zeroRuns.count ? min(range.upperBound, zeroRuns[run].lowerBound - 1) : range.upperBound
+            result.append(contentsOf: index...stop)
+            index = stop + 1
+        }
+        return result
     }
 
     /// Number of changed indices below `index`.

@@ -199,3 +199,40 @@ struct CoercionTests {
         #expect(!textGe.matches(.number(999)))
     }
 }
+
+/// `ValueParser.parse` sees every typed, pasted and imported string: it must
+/// never trap (review #4: `Int(...)!` on long digit runs).
+@Suite("Input value parsing never traps")
+struct ValueParserFuzzTests {
+    let refDate = DateComponents(calendar: .current, year: 2026, month: 9, day: 13).date!
+
+    @Test func longDigitRunsInDateShapes() {
+        let long = "12345678901234567890"
+        let inputs = [
+            "2024-01-\(long)", "\(long)-01-02", "1/\(long)/2024", "\(long)/2", "3/\(long)",
+            "Jan \(long)", "\(long) Jan 2024", "2 Jan \(long)", "1/2/2024 \(long):00",
+            "\(long):30", "12:\(long)", "1e400", "-1e400%", "$1e400", "\(long)\(long)%",
+        ]
+        for input in inputs {
+            let parsed = ValueParser.parse(input, referenceDate: refDate)
+            if case .number(let n) = parsed.value { #expect(n.isFinite, "\(input)") }
+        }
+        #expect(ValueParser.parse("2024-01-\(long)").value == .string("2024-01-\(long)"))
+        #expect(ValueParser.parseSerialNumber(from: "1/\(long)/2024") == nil)
+    }
+
+    @Test func randomInputsNeverTrap() {
+        var rng = SystemRandomNumberGenerator()
+        let pieces = ["0", "1", "9", "12", "31", "2024", "99999999999999999999", "-", "/", ".", ",", ":",
+                      " ", "%", "$", "e", "E", "+", "AM", "PM", "Jan", "January", "a", "²", "½", "'",
+                      "=", "#", "N/A", "TRUE", "\t", "١", "e400", "0x1p3"]
+        for _ in 0..<20_000 {
+            let count = Int.random(in: 1...8, using: &rng)
+            let input = (0..<count).map { _ in pieces.randomElement(using: &rng)! }.joined()
+            let parsed = ValueParser.parse(input, referenceDate: refDate)
+            if case .number(let n) = parsed.value { #expect(n.isFinite, "\(input)") }
+            _ = ValueParser.parseSerialNumber(from: input, referenceDate: refDate)
+            _ = ValueParser.parseTimeText(input)
+        }
+    }
+}

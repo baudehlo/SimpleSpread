@@ -7,7 +7,7 @@ import Testing
 /// A document with Data!A1:B4 feeding a pivot table drawn at Report!B5:C8,
 /// with one report filter in row 3 (so it occupies B3:C8).
 @MainActor
-private func makePivotDocument() -> SpreadsheetDocument {
+private func makePivotDocument(rowField: Int = 0) -> SpreadsheetDocument {
     let wb = Workbook()
     let data = wb.addSheet(named: "Data")
     let report = wb.addSheet(named: "Report")
@@ -39,7 +39,7 @@ private func makePivotDocument() -> SpreadsheetDocument {
     <pivotTableDefinition xmlns="\(main)" name="Sales" cacheId="4" dataCaption="Values">\
     <location ref="B5:C8" firstHeaderRow="1" firstDataRow="1" firstDataCol="1" rowPageCount="1" colPageCount="1"/>\
     <pivotFields count="2"><pivotField axis="axisRow" showAll="0"><items count="3"><item x="0"/><item x="1"/><item t="default"/></items></pivotField>\
-    <pivotField dataField="1" showAll="0"/></pivotFields><rowFields count="1"><field x="0"/></rowFields>\
+    <pivotField dataField="1" showAll="0"/></pivotFields><rowFields count="1"><field x="\(rowField)"/></rowFields>\
     <rowItems count="3"><i><x/></i><i><x v="1"/></i><i t="grand"><x/></i></rowItems><colItems count="1"><i/></colItems>\
     <dataFields count="1"><dataField name="Sum of Qty" fld="1" baseField="0" baseItem="0"/></dataFields></pivotTableDefinition>
     """
@@ -136,7 +136,7 @@ struct PivotDocumentTests {
         doc.selection.select(range: r("E1:E2"))
         let payload = doc.selectionPayload()
         doc.selection.select(a("C7"))
-        doc.paste(payload: payload, sourceOrigin: a("E1"))
+        doc.paste(payload: payload)
         #expect(doc.activeSheet.value(at: a("C7")) == .number(2))
         #expect(doc.notice != nil)
     }
@@ -282,6 +282,20 @@ struct PivotDocumentTests {
         let table = try #require(reopened.workbook.pivotTables.first)
         #expect(table.name == "Sales" && table.location.a1 == "B5:C8" && table.pageFieldRows == 1)
         #expect(reopened.workbook.pivotCaches.first?.sourceRanges.first?.ref == "A1:B4")
+    }
+
+    @Test func aMalformedPivotFromAFileDrawsAndIsKeptAsIs() throws {
+        // <field x="5"/> with two fields: drawing used to trap the process.
+        let doc = makePivotDocument(rowField: 5)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("pivot-\(UUID().uuidString).xlsx")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try doc.save(to: url)
+        let reopened = try SpreadsheetDocument.open(url: url)
+        reopened.selectSheet(withID: try #require(reopened.workbook.pivotTables.first).sheetID)
+        #expect(reopened.pivotRole(at: a("C6")) == nil)
+        #expect(reopened.pivotEditBlocker(0)?.contains("field 5") == true)
+        #expect(!reopened.refreshPivot(0))
+        #expect(reopened.displayString(at: a("C6")) == "4") // Excel's cells stay as they were
     }
 }
 

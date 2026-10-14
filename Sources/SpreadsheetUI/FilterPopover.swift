@@ -179,7 +179,8 @@ struct FilterPopoverView: View {
         hasBlanks = result.hasBlanks
         let current = currentFilter
         if let values = current?.values {
-            checked = Set(allValues.filter { v in values.contains { $0.caseInsensitiveCompare(v) == .orderedSame } })
+            let shown = Set(values.map(ColumnFilter.folded))
+            checked = Set(allValues.filter { shown.contains(ColumnFilter.folded($0)) })
             blanksChecked = current?.includeBlanks ?? true
         } else {
             checked = Set(allValues)

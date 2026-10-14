@@ -28,6 +28,8 @@ struct XLSXReadReport {
         var reason: String
     }
     var droppedPivots: [DroppedPivot] = []
+    /// What the file holds that saving will not write back (see UnsupportedContent).
+    var unsupportedContent: [String] = []
 }
 
 struct ExternalRelationship: Equatable, Sendable {
@@ -659,7 +661,7 @@ extension XLSXWriter {
     static func patchedCacheDefinition(_ cache: PivotCache, payload: PivotCachePayload,
                                        recordsRelID: String?, workbook: Workbook) throws -> Data {
         var sourceIndex = 0
-        return try XMLRewriter.rewrite(payload.definition) { element in
+        return try rewriteIfChanged(payload.definition) { element in
             switch element.path {
             case ["pivotCacheDefinition"]:
                 let existing = relationshipIDAttribute(of: element)
@@ -701,11 +703,26 @@ extension XLSXWriter {
         }
     }
 
+    /// `data` rewritten by `visit` — or, when the visit changes nothing, the
+    /// original bytes, so a pivot saved unchanged is written back exactly
+    /// (the rewriter would otherwise reorder attributes and drop unused
+    /// namespace declarations).
+    static func rewriteIfChanged(_ data: Data, _ visit: XMLRewriter.Visitor) throws -> Data {
+        var changed = false
+        let output = try XMLRewriter.rewrite(data) { element in
+            let before = element.attributes
+            let action = visit(&element)
+            if action == .drop || element.attributes != before { changed = true }
+            return action
+        }
+        return changed ? output : data
+    }
+
     /// The pivot table with its location brought up to date. Conditional
     /// formats are removed: they must pair with the sheet's pivot
     /// conditional formatting, which SimpleSpread doesn't keep.
     static func patchedPivotTable(_ table: PivotTable, payload: PivotTablePayload) throws -> Data {
-        try XMLRewriter.rewrite(payload.definition) { element in
+        try rewriteIfChanged(payload.definition) { element in
             if element.path == ["pivotTableDefinition", "location"] {
                 element.attributes["ref"] = table.location.a1
             }

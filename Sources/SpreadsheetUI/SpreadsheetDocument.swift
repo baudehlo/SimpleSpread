@@ -19,6 +19,11 @@ public struct ClipboardPayload: Codable, Sendable {
     public var entries: [Entry]
     /// True if the source was a cut (paste moves rather than copies).
     public var isCut: Bool
+    /// The top-left cell of the copied range: a paste translates relative
+    /// references by its distance from here. It travels with the payload so
+    /// pastes into another window, or after a relaunch, translate correctly.
+    /// Nil in payloads from older builds (references then stay as they were).
+    public var sourceOrigin: CellAddress? = nil
 
     public static let pasteboardType = "com.kikiplan.simplespread.cells"
 }
@@ -28,6 +33,17 @@ public struct DocumentNotice: Identifiable, Equatable {
     public let id = UUID()
     public var message: String
     public var detail: String
+}
+
+/// Something holding typing that is not in its cell yet: the grid's in-cell
+/// editor or the formula bar. It remembers which sheet and cell the typing
+/// is for, so a commit lands there even after the user has moved on.
+@MainActor
+protocol PendingEditor: AnyObject {
+    /// True when there is typing to commit.
+    var hasPendingEdit: Bool { get }
+    /// Write the typing to its cell and close the editor.
+    func commitPendingEdit()
 }
 
 /// The document view-model: owns the workbook, the calculation engine,
@@ -48,9 +64,18 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Pre-filled name for the Save panel when there is no fileURL yet
     /// (e.g. "pricing.xlsx" after opening pricing.csv).
     @Published public var suggestedFileName: String?
+    /// What the opened file holds that saving will not write back ("3
+    /// charts", "comments", …), so a save over it asks first.
+    public internal(set) var unsupportedContent: [String] = []
+    /// The user has saved without it once (Save Anyway, or a copy).
+    public internal(set) var unsupportedContentAccepted = false
     @Published public private(set) var isModified = false
     /// Incremented whenever cell content/layout changes; grid views observe it.
     @Published public private(set) var revision = 0
+    /// Incremented by every change to the document's content (not by
+    /// switching sheets), so a background save knows whether the user
+    /// changed anything after its snapshot.
+    public private(set) var changeCount = 0
     /// View zoom (1.0 = 100%). Applied as NSScrollView magnification.
     @Published public var zoomLevel: CGFloat = 1.0
     /// An alert for the window to show; the window clears it on dismissal.
@@ -64,8 +89,9 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Asks the user to confirm (message, detail, button title); nil
     /// refuses. The app installs an alert; tests install a closure.
     public var confirm: ((String, String, String) -> Bool)?
-    /// Pivot cell roles of one sheet at one revision (for drawing).
-    var pivotRoleCache: (revision: Int, sheetID: Int, roles: [CellAddress: PivotCellRole])?
+    /// The editor holding typing not yet written to its cell (the grid's
+    /// in-cell editor or the formula bar), if any. See `commitPendingEdit`.
+    weak var pendingEditor: PendingEditor?
 
     public static let zoomRange: ClosedRange<CGFloat> = 0.25...4.0
     public static let zoomPresets: [CGFloat] = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0, 4.0]
@@ -123,9 +149,10 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     /// What the formula bar / in-place editor shows: the formula with '=',
-    /// or a re-parseable value representation.
-    public func editString(at address: CellAddress) -> String {
-        let cell = activeSheet.cell(at: address)
+    /// or text that commits back to exactly the same value.
+    public func editString(at address: CellAddress, sheetID: Int? = nil) -> String {
+        let sheet = sheetID.flatMap { workbook.sheet(withID: $0) } ?? activeSheet
+        let cell = sheet.cell(at: address)
         if let formula = cell.formula {
             return "=" + formula
         }
@@ -133,14 +160,10 @@ public final class SpreadsheetDocument: ObservableObject {
         switch cell.value {
         case .empty:
             return ""
-        case .number:
-            // Dates/times/percents edit in their formatted form so the commit
-            // round-trips through the same parser.
-            let code = style.numberFormat
-            if code.isDateTime || code.code.contains("%") {
-                return NumberFormatEngine.displayString(for: cell.value, format: code)
-            }
-            return cell.value.rawDisplayString
+        case .number(let n):
+            // Exact: dates, times and percents edit in their own form only
+            // when that loses nothing (see ValueParser.editText).
+            return ValueParser.editText(for: n, format: style.numberFormat)
         case .string(let s):
             // Escape strings that would re-parse as something else.
             let reparsed = ValueParser.parse(s)
@@ -162,6 +185,7 @@ public final class SpreadsheetDocument: ObservableObject {
     func markChanged() {
         isModified = true
         revision += 1
+        changeCount += 1
     }
 
     struct CellSnapshot {
@@ -225,37 +249,48 @@ public final class SpreadsheetDocument: ObservableObject {
         markChanged()
     }
 
-    /// Whole-workbook snapshot for structural ops (uses the XLSX round-trip,
-    /// which is fully covered by tests).
-    func registerWorkbookUndo(actionName: String) {
-        guard let data = try? XLSXWriter.data(for: workbook) else { return }
-        let sheetIndex = workbook.indexOfSheet(withID: activeSheetID) ?? 0
+    /// What a workbook-level undo step puts back: the workbook (an
+    /// in-memory copy-on-write snapshot, see WorkbookSnapshot for what it
+    /// keeps alive), the active sheet and the selection. Unchecked
+    /// Sendable: undo handlers may be typed @Sendable in some SDKs, but
+    /// they run on the main actor, the only place a snapshot is touched.
+    struct DocumentSnapshot: @unchecked Sendable {
+        let workbook: WorkbookSnapshot
+        let activeSheetID: Int
+        let selection: SelectionState
+    }
+
+    /// Take before a command that changes the workbook's structure (rows,
+    /// columns, sheets, pivots); pass to `registerSnapshotUndo` after it.
+    func takeSnapshot() -> DocumentSnapshot {
+        DocumentSnapshot(workbook: WorkbookSnapshot(of: workbook), activeSheetID: activeSheetID, selection: selection)
+    }
+
+    /// Record what has changed since `before` was taken (one command) as
+    /// one undo step. Undo puts `before` back and registers the state it replaced as
+    /// the redo, the same way. `rebuild` re-reads every formula afterwards
+    /// (rebuildAll): needed unless the command left formulas, defined names
+    /// and the sheets formulas can name exactly as they were.
+    func registerSnapshotUndo(_ before: DocumentSnapshot, actionName: String, rebuild: Bool = true) {
+        before.workbook.releaseUnchangedCells(comparedTo: workbook)
         withUndoGroup {
             undoManager.registerUndo(withTarget: self) { doc in
                 MainActor.assumeIsolated {
-                    doc.registerWorkbookUndo(actionName: actionName)
-                    doc.restoreWorkbook(from: data, activeSheetIndex: sheetIndex)
+                    let current = doc.takeSnapshot()
+                    doc.restore(before, rebuild: rebuild)
+                    doc.registerSnapshotUndo(current, actionName: actionName, rebuild: rebuild)
                 }
             }
             undoManager.setActionName(actionName)
         }
     }
 
-    private func restoreWorkbook(from data: Data, activeSheetIndex: Int) {
-        guard let restored = try? XLSXReader.read(data: data) else { return }
-        replaceWorkbookContents(with: restored)
-        let idx = min(activeSheetIndex, workbook.sheets.count - 1)
-        activeSheetID = workbook.sheets[idx].id
-        selection = SelectionState()
+    private func restore(_ snapshot: DocumentSnapshot, rebuild: Bool) {
+        snapshot.workbook.restore(into: workbook)
+        if rebuild { engine.rebuildAll() }
+        activeSheetID = workbook.sheet(withID: snapshot.activeSheetID)?.id ?? workbook.sheets[0].id
+        selection = snapshot.selection
         markChanged()
-    }
-
-    /// Move sheets/styles/pivots from another workbook instance into ours in
-    /// place. Sheet ids are kept (the writer stores them as sheetId), so cell
-    /// undo records registered before the snapshot still find their sheets.
-    private func replaceWorkbookContents(with other: Workbook) {
-        workbook.replaceContents(with: other)
-        engine.rebuildAll()
     }
 
     // MARK: - Pivot table protection
@@ -299,13 +334,41 @@ public final class SpreadsheetDocument: ObservableObject {
 
     // MARK: - Editing
 
+    /// True while an editor holds typing that is not in its cell yet. An
+    /// open editor counts as unsaved work.
+    public var hasPendingEdit: Bool { pendingEditor?.hasPendingEdit ?? false }
+
+    /// The one choke point for typing that is still in an editor: write it
+    /// to the cell it was typed for (which may be on another sheet by now)
+    /// and close the editor. Called before anything that would otherwise
+    /// lose it or put it in the wrong place: switching sheets, structural
+    /// and range edits, menu commands, save and close. Excel does the same
+    /// when you click away from a cell you are typing in.
+    public func commitPendingEdit() {
+        guard let editor = pendingEditor else { return }
+        pendingEditor = nil
+        editor.commitPendingEdit()
+    }
+
     /// Commit raw typed input into a cell (the shared parsing pipeline).
-    public func commitInput(_ text: String, at address: CellAddress) {
-        guard !refuseIfPivot(CellRange(address)) else { return }
-        let currentStyle = style(at: address)
+    /// `sheetID` defaults to the active sheet; an editor passes the sheet it
+    /// was opened on.
+    public func commitInput(_ text: String, at address: CellAddress, sheetID: Int? = nil) {
+        let sheetID = sheetID ?? activeSheetID
+        guard let sheet = workbook.sheet(withID: sheetID) else { return }
+        if sheetID == activeSheetID {
+            guard !refuseIfPivot(CellRange(address)) else { return }
+        } else if let table = workbook.pivotTables(intersecting: CellRange(address), onSheet: sheetID).first {
+            refusePivotEdit(table)
+            return
+        }
+        // Committing the editor's text unchanged is not an edit: no write,
+        // no undo step, no "modified" (and nothing to re-parse lossily).
+        guard text != editString(at: address, sheetID: sheetID) else { return }
+        let currentStyle = workbook.style(at: sheet.cell(at: address).styleIndex)
         let parsed = ValueParser.parse(text, textFormat: currentStyle.numberFormat.isTextFormat)
-        let snaps = snapshot([address])
-        let abs = AbsoluteAddress(sheetID: activeSheetID, address: address)
+        let snaps = snapshot([address], sheetID: sheetID)
+        let abs = AbsoluteAddress(sheetID: sheetID, address: address)
         if let formula = parsed.formulaText {
             engine.setCellFormula(formula, at: abs)
         } else {
@@ -315,9 +378,9 @@ public final class SpreadsheetDocument: ObservableObject {
         if let suggested = parsed.suggestedFormat, currentStyle.numberFormat.isGeneral {
             var newStyle = currentStyle
             newStyle.numberFormat = suggested
-            var cell = activeSheet.cell(at: address)
+            var cell = sheet.cell(at: address)
             cell.styleIndex = workbook.styleIndex(for: newStyle)
-            activeSheet.setCell(cell, at: address)
+            sheet.setCell(cell, at: address)
         }
         registerCellUndo(snaps, actionName: "Typing")
         markChanged()
@@ -327,6 +390,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Delete: clear contents, keeping formatting. Like Excel, rows the
     /// filter hides are left alone (`skippingFiltered`); a cut clears all.
     public func clearSelectionContents(skippingFiltered: Bool = true) {
+        commitPendingEdit()
         let touched = pivotTables(touching: selection.range)
         if !touched.isEmpty {
             // Deleting a whole pivot table removes it (as in Excel); clearing
@@ -338,8 +402,10 @@ public final class SpreadsheetDocument: ObservableObject {
             removePivotTablesAndClear(touched)
             return
         }
-        let skipped = skippingFiltered ? filteredOutRows(in: selection.range) : []
-        let addresses = selection.range.addresses.filter { !skipped.contains($0.row) }
+        let skipped = rowsSkipped(by: skippingFiltered ? .clear : .cut, in: selection.range)
+        // Only cells that hold something change (⌘A then Delete on a big
+        // sheet must not list every address in the range).
+        let addresses = occupiedAddresses(in: selection.range).filter { !skipped.contains($0.row) }
         let snaps = snapshot(addresses)
         for address in addresses {
             let abs = AbsoluteAddress(sheetID: activeSheetID, address: address)
@@ -353,7 +419,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Remove pivot tables and clear the selection, as one undoable step.
     private func removePivotTablesAndClear(_ tables: [PivotTable]) {
-        registerWorkbookUndo(actionName: "Delete")
+        let before = takeSnapshot()
         let sheetID = activeSheetID
         let names = Set(tables.map(\.name))
         workbook.removePivotTables { $0.sheetID == sheetID && names.contains($0.name)
@@ -361,17 +427,18 @@ public final class SpreadsheetDocument: ObservableObject {
         for address in selection.range.addresses where !activeSheet.cell(at: address).isDefault {
             engine.clearCell(at: AbsoluteAddress(sheetID: sheetID, address: address))
         }
+        registerSnapshotUndo(before, actionName: "Delete")
         markChanged()
     }
 
     // MARK: - Formatting
 
+    /// Restyle the selection (see `forEachFormattingTarget` for which cells
+    /// a big selection covers). One undo step.
     public func applyStyleToSelection(_ actionName: String, _ mutate: (inout CellStyle) -> Void) {
-        let addresses = selection.range.addresses
-        let snaps = snapshot(addresses)
-        workbook.modifyStyle(in: selection.range, ofSheetID: activeSheetID, mutate)
-        registerCellUndo(snaps, actionName: actionName)
-        markChanged()
+        applyStyle(to: selection.range, actionName: actionName, addressDependent: false) { _, style in
+            mutate(&style)
+        }
     }
 
     public func toggleBold() {
@@ -601,80 +668,137 @@ public final class SpreadsheetDocument: ObservableObject {
     // MARK: - Structure
 
     public func insertRows(at index: Int, count: Int = 1) {
+        commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: count) else { return }
-        registerWorkbookUndo(actionName: "Insert Rows")
-        WorkbookOperations.insertRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
-        engine.rebuildAll()
+        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: true, index: index,
+                                             count: count, isInsert: true))
         markChanged()
     }
 
     public func deleteRows(at index: Int, count: Int = 1) {
+        commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: -count) else { return }
-        registerWorkbookUndo(actionName: "Delete Rows")
-        WorkbookOperations.deleteRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
-        engine.rebuildAll()
+        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: true, index: index,
+                                             count: count, isInsert: false))
         selection.select(CellAddress(row: min(index, max(0, GridLayout(sheet: activeSheet).rowCount - 1)),
                                      column: selection.activeCell.column))
         markChanged()
     }
 
     public func insertColumns(at index: Int, count: Int = 1) {
+        commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: count) else { return }
-        registerWorkbookUndo(actionName: "Insert Columns")
-        WorkbookOperations.insertColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
-        engine.rebuildAll()
+        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: false, index: index,
+                                             count: count, isInsert: true))
         markChanged()
     }
 
     public func deleteColumns(at index: Int, count: Int = 1) {
+        commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: -count) else { return }
-        registerWorkbookUndo(actionName: "Delete Columns")
-        WorkbookOperations.deleteColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
-        engine.rebuildAll()
+        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: false, index: index,
+                                             count: count, isInsert: false))
         selection.select(CellAddress(row: selection.activeCell.row, column: index))
         markChanged()
     }
 
+    /// Resize a column (header drag, autofit). One undo step per drag.
     public func setColumnWidth(_ column: Int, width: CGFloat) {
-        activeSheet.columnWidths[column] = max(12, width)
-        markChanged()
+        resize(isRow: false, index: column, to: max(12, width), actionName: "Column Width")
     }
 
+    /// Resize a row (header drag). One undo step per drag.
     public func setRowHeight(_ row: Int, height: CGFloat) {
-        activeSheet.rowHeights[row] = max(12, height)
+        resize(isRow: true, index: row, to: max(12, height), actionName: "Row Height")
+    }
+
+    /// The resize the newest undo step records, and the revision it left the
+    /// document at. A drag calls setColumnWidth/setRowHeight for every mouse
+    /// move; while nothing else has changed since, those updates extend the
+    /// same undo step, which keeps the size from before the drag.
+    private struct ResizeStep: Equatable {
+        var sheetID: Int
+        var isRow: Bool
+        var index: Int
+        var revision: Int
+    }
+    private var lastResizeStep: ResizeStep?
+
+    private func resize(isRow: Bool, index: Int, to size: CGFloat, actionName: String) {
+        let sheet = activeSheet
+        let current = isRow ? sheet.rowHeight(index) : sheet.columnWidth(index)
+        guard current != size else { return }
+        let old = isRow ? sheet.rowHeights[index] : sheet.columnWidths[index]
+        let continuing = lastResizeStep == ResizeStep(sheetID: sheet.id, isRow: isRow, index: index,
+                                                      revision: revision)
+            && undoManager.undoActionName == actionName
+        if isRow { sheet.rowHeights[index] = size } else { sheet.columnWidths[index] = size }
+        if !continuing {
+            withUndoGroup {
+                registerSizeUndo(isRow: isRow, index: index, size: old, sheetID: sheet.id, actionName: actionName)
+            }
+        }
         markChanged()
+        lastResizeStep = ResizeStep(sheetID: sheet.id, isRow: isRow, index: index, revision: revision)
+    }
+
+    /// Undo sets one row's height (or column's width) back to `size`.
+    private func registerSizeUndo(isRow: Bool, index: Int, size: CGFloat?, sheetID: Int, actionName: String) {
+        undoManager.registerUndo(withTarget: self) { doc in
+            MainActor.assumeIsolated {
+                guard let sheet = doc.workbook.sheet(withID: sheetID) else { return }
+                let redo = isRow ? sheet.rowHeights[index] : sheet.columnWidths[index]
+                if isRow { sheet.rowHeights[index] = size } else { sheet.columnWidths[index] = size }
+                doc.registerSizeUndo(isRow: isRow, index: index, size: redo, sheetID: sheetID,
+                                     actionName: actionName)
+                doc.markChanged()
+            }
+        }
+        undoManager.setActionName(actionName)
     }
 
     // MARK: - Sheets
 
     public func addSheet() {
-        registerWorkbookUndo(actionName: "Add Sheet")
+        commitPendingEdit()
+        let before = takeSnapshot()
         let sheet = workbook.addSheet()
+        let resolved = engine.sheetsDidChange() // formulas that named it before it existed
         activeSheetID = sheet.id
         selection = SelectionState()
+        // Unless a formula was waiting for its name, nothing reads the new
+        // (empty) sheet: undo just takes it away again.
+        registerSnapshotUndo(before, actionName: "Add Sheet", rebuild: !resolved.isEmpty)
         markChanged()
     }
 
     public func deleteActiveSheet() {
+        commitPendingEdit()
         guard workbook.sheets.count > 1 else { return }
-        registerWorkbookUndo(actionName: "Delete Sheet")
+        let before = takeSnapshot()
         let deletedIndex = workbook.indexOfSheet(withID: activeSheetID) ?? 0
         WorkbookOperations.deleteSheet(in: workbook, sheetID: activeSheetID)
         engine.rebuildAll()
         let idx = min(deletedIndex, workbook.sheets.count - 1)
         activeSheetID = workbook.sheets[idx].id
         selection = SelectionState()
+        registerSnapshotUndo(before, actionName: "Delete Sheet")
         markChanged()
     }
 
     public func renameActiveSheet(to name: String) {
-        registerWorkbookUndo(actionName: "Rename Sheet")
+        commitPendingEdit()
+        // Not just the name: formulas and defined names that refer to the
+        // sheet are rewritten, so undo puts them back and rebuilds too.
+        let before = takeSnapshot()
         WorkbookOperations.renameSheet(in: workbook, sheetID: activeSheetID, to: name)
         engine.rebuildAll()
+        registerSnapshotUndo(before, actionName: "Rename Sheet")
         markChanged()
     }
 
     public func selectSheet(withID id: Int) {
+        commitPendingEdit()
         guard workbook.sheet(withID: id) != nil, id != activeSheetID else { return }
         activeSheetID = id
         selection = SelectionState()
@@ -682,28 +806,113 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func moveSheet(withID id: Int, to index: Int) {
-        registerWorkbookUndo(actionName: "Reorder Sheets")
+        commitPendingEdit()
+        let before = takeSnapshot()
         workbook.moveSheet(withID: id, to: index)
+        // Only the order changed: undo puts it back without a rebuild.
+        registerSnapshotUndo(before, actionName: "Reorder Sheets", rebuild: false)
         markChanged()
     }
 
     // MARK: - Clipboard
 
-    /// TSV of the selection's displayed values (external interchange).
-    /// The selection as tab-separated text. Like Excel, a copy leaves out
-    /// rows the filter hides (`skippingFiltered`); a cut keeps them all.
+    /// Range commands that treat filter-hidden rows differently.
+    enum RangeCommand {
+        case copy, cut, clear, fill
+        /// One copied cell pasted across a larger selection.
+        case pasteOneCell
+        /// A copied block pasted at the active cell.
+        case pasteBlock
+    }
+
+    /// The rows in `range` that `command` leaves alone. Excel's rules, kept
+    /// in one place:
+    /// - Copy, Delete (clear contents), Fill Down/Right and the fill handle,
+    ///   and pasting one cell across a selection act only on the rows a
+    ///   filter shows; the rows the AutoFilter hides are skipped.
+    /// - Cut, and pasting a block of cells, act on every row: Excel pastes
+    ///   a block contiguously, over filter-hidden rows too.
+    /// - Rows hidden by hand (not by a filter) are never skipped; Excel
+    ///   copies, clears and fills them like any other row.
+    func rowsSkipped(by command: RangeCommand, in range: CellRange) -> Set<Int> {
+        switch command {
+        case .copy, .clear, .fill, .pasteOneCell: return filteredOutRows(in: range)
+        case .cut, .pasteBlock: return []
+        }
+    }
+
+    /// The cells in `range` that hold something, without listing every
+    /// address of a huge range.
+    func occupiedAddresses(in range: CellRange) -> [CellAddress] {
+        let cells = activeSheet.cells
+        if range.cellCount > cells.count {
+            return cells.keys.filter(range.contains)
+        }
+        return range.addresses.filter { cells[$0] != nil }
+    }
+
+    /// The selection as tab-separated text (displayed values) for other
+    /// apps. Like Excel, a copy leaves out rows the filter hides
+    /// (`skippingFiltered`); a cut keeps them all.
     public func selectionTSV(skippingFiltered: Bool = true) -> String {
         let range = selection.range
-        let skipped = skippingFiltered ? filteredOutRows(in: range) : []
+        let skipped = rowsSkipped(by: skippingFiltered ? .copy : .cut, in: range)
         var lines: [String] = []
         for r in range.start.row...range.end.row where !skipped.contains(r) {
             var fields: [String] = []
             for c in range.start.column...range.end.column {
-                fields.append(displayString(at: CellAddress(row: r, column: c)))
+                fields.append(Self.tsvField(displayString(at: CellAddress(row: r, column: c))))
             }
             lines.append(fields.joined(separator: "\t"))
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// The selection as an HTML table, the form Numbers and Excel take
+    /// multi-line cells in. A line break inside a cell is a `<br>` marked
+    /// (for Excel) as staying in the same cell.
+    public func selectionHTML(skippingFiltered: Bool = true) -> String {
+        let range = selection.range
+        let skipped = rowsSkipped(by: skippingFiltered ? .copy : .cut, in: range)
+        var html = "<html><head><meta charset=\"utf-8\"></head><body><table>"
+        for r in range.start.row...range.end.row where !skipped.contains(r) {
+            html += "<tr>"
+            for c in range.start.column...range.end.column {
+                html += "<td>" + Self.htmlCell(displayString(at: CellAddress(row: r, column: c))) + "</td>"
+            }
+            html += "</tr>"
+        }
+        return html + "</table></body></html>"
+    }
+
+    static func htmlCell(_ text: String) -> String {
+        var out = ""
+        var previousWasCR = false
+        for ch in text.unicodeScalars {
+            switch ch {
+            case "&": out += "&amp;"
+            case "<": out += "&lt;"
+            case ">": out += "&gt;"
+            case "\"": out += "&quot;"
+            case "\r", "\n":
+                // CRLF is one break.
+                if ch == "\n" && previousWasCR { break }
+                out += "<br style=\"mso-data-placement:same-cell\">"
+            default: out.unicodeScalars.append(ch)
+            }
+            previousWasCR = ch == "\r"
+        }
+        return out
+    }
+
+    /// Quote a field as Excel and Numbers do on the clipboard: a field with
+    /// a tab or line break (or one that starts with a quote, which would
+    /// otherwise read back as quoted) goes in double quotes, with its own
+    /// quotes doubled. Other quotes are left alone (`5" screen`).
+    static func tsvField(_ text: String) -> String {
+        let needsQuotes = text.hasPrefix("\"") || text.contains { $0 == "\t" || $0.isNewline }
+        guard needsQuotes else { return text }
+        return "\"" + text.replacingOccurrences(of: "\"", with: "\"\"") + "\""
     }
 
     /// Internal payload (formulas + styles) for lossless paste. A copy of a
@@ -711,7 +920,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// does; a cut moves every row, hidden or not (it clears them all).
     public func selectionPayload(isCut: Bool = false) -> ClipboardPayload {
         let range = selection.range
-        let skipped = isCut ? [] : filteredOutRows(in: range)
+        let skipped = rowsSkipped(by: isCut ? .cut : .copy, in: range)
         let rows = (range.start.row...range.end.row).filter { !skipped.contains($0) }
         var entries: [ClipboardPayload.Entry] = []
         for (packedRow, row) in rows.enumerated() {
@@ -732,17 +941,15 @@ public final class SpreadsheetDocument: ObservableObject {
             }
         }
         return ClipboardPayload(rows: max(1, rows.count), columns: range.columnCount,
-                                entries: entries, isCut: isCut)
+                                entries: entries, isCut: isCut, sourceOrigin: range.start)
     }
 
     /// Paste an internal payload at the active cell. Copy adjusts relative
-    /// references by the displacement; cut pastes formulas verbatim.
-    public func paste(payload: ClipboardPayload, sourceOrigin: CellAddress?) {
+    /// references by the distance from the payload's origin; cut pastes
+    /// formulas verbatim.
+    public func paste(payload: ClipboardPayload) {
+        commitPendingEdit()
         let target = selection.range.start
-        var addresses: [CellAddress] = []
-        var writes: [(AbsoluteAddress, CellValue, String?)] = []
-        var styleWrites: [(CellAddress, CellStyle)] = []
-
         // Single-cell source replicates across a multi-cell target selection.
         let replicate = payload.rows == 1 && payload.columns == 1 && !selection.isSingleCell
         let targetRange = replicate ? selection.range
@@ -751,42 +958,40 @@ public final class SpreadsheetDocument: ObservableObject {
                                          column: target.column + payload.columns - 1))
         guard targetRange.end.isValid else { return }
         guard !refuseIfPivot(targetRange) else { return }
+        let skipped = rowsSkipped(by: replicate ? .pasteOneCell : .pasteBlock, in: targetRange)
+        let origin = payload.sourceOrigin ?? targetRange.start
 
-        func destinations(for entry: ClipboardPayload.Entry) -> [CellAddress] {
-            if replicate {
-                return targetRange.addresses
-            }
-            return [CellAddress(row: target.row + entry.rowOffset,
-                                column: target.column + entry.columnOffset)]
-        }
-
-        // Overwrite the whole target rect (paste clears cells the payload
-        // leaves empty).
-        let snaps = snapshot(targetRange.addresses)
-        for addr in targetRange.addresses {
-            addresses.append(addr)
-            writes.append((AbsoluteAddress(sheetID: activeSheetID, address: addr), .empty, nil))
-        }
+        // Keyed by destination, so a later entry replaces an earlier one
+        // without a search (a linear search here made paste quadratic).
+        var writes: [CellAddress: (value: CellValue, formula: String?, style: CellStyle)] = [:]
         for entry in payload.entries {
-            for dest in destinations(for: entry) {
+            let destinations = replicate
+                ? targetRange.addresses
+                : [CellAddress(row: target.row + entry.rowOffset,
+                               column: target.column + entry.columnOffset)]
+            for dest in destinations where !skipped.contains(dest.row) {
                 var formula = entry.cell.formula
                 if let f = formula, !payload.isCut {
-                    let origin = sourceOrigin ?? targetRange.start
                     let dr = dest.row - (origin.row + (entry.sourceRowOffset ?? entry.rowOffset))
                     let dc = dest.column - (origin.column + entry.columnOffset)
                     formula = WorkbookOperations.translatedFormula(f, byRows: dr, columns: dc)
                 }
-                if let idx = writes.firstIndex(where: { $0.0.address == dest }) {
-                    writes[idx] = (AbsoluteAddress(sheetID: activeSheetID, address: dest),
-                                   entry.cell.value, formula)
-                }
-                styleWrites.append((dest, entry.style))
+                writes[dest] = (entry.cell.value, formula, entry.style)
             }
         }
-        engine.setCells(writes)
-        for (addr, style) in styleWrites {
+        // The paste overwrites the whole target rect: cells the payload
+        // leaves empty are cleared (only cells that hold something need it).
+        let cleared = occupiedAddresses(in: targetRange).filter {
+            writes[$0] == nil && !skipped.contains($0.row)
+        }
+        let snaps = snapshot(Array(writes.keys) + cleared)
+        let sheetID = activeSheetID
+        var entries = writes.map { (AbsoluteAddress(sheetID: sheetID, address: $0.key), $0.value.value, $0.value.formula) }
+        entries += cleared.map { (AbsoluteAddress(sheetID: sheetID, address: $0), CellValue.empty, nil) }
+        engine.setCells(entries)
+        for (addr, write) in writes {
             var cell = activeSheet.cell(at: addr)
-            cell.styleIndex = workbook.styleIndex(for: style)
+            cell.styleIndex = workbook.styleIndex(for: write.style)
             activeSheet.setCell(cell, at: addr)
         }
         registerCellUndo(snaps, actionName: "Paste")
@@ -794,28 +999,25 @@ public final class SpreadsheetDocument: ObservableObject {
         markChanged()
     }
 
-    /// Paste external plain text: tabs split columns, newlines split rows,
-    /// each field goes through input parsing (formulas allowed — user action).
+    /// Paste external plain text: tab-separated, with Excel-style quoting (a
+    /// quoted field may hold tabs and line breaks, so `"line1⏎line2"` is one
+    /// cell). Each field goes through input parsing (formulas allowed — user
+    /// action).
     public func paste(text: String) {
-        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-        var lines = normalized.components(separatedBy: "\n")
-        if lines.last?.isEmpty == true { lines.removeLast() }
-        guard !lines.isEmpty else { return }
-        let grid = lines.map { $0.components(separatedBy: "\t") }
+        commitPendingEdit()
+        let grid = CSV.parse(text, delimiter: "\t")
+        guard !grid.isEmpty else { return }
         let target = selection.range.start
-
+        let width = grid.map(\.count).max() ?? 1
+        let pasteRange = CellRange(start: target, end: CellAddress(row: target.row + grid.count - 1,
+                                                                    column: target.column + width - 1))
+        guard pasteRange.end.isValid, !refuseIfPivot(pasteRange) else { return }
         var affected: [CellAddress] = []
         for (r, row) in grid.enumerated() {
-            for (c, _) in row.enumerated() {
+            for c in row.indices {
                 affected.append(CellAddress(row: target.row + r, column: target.column + c))
             }
         }
-        guard affected.allSatisfy(\.isValid) else { return }
-        let width = grid.map(\.count).max() ?? 1
-        guard !refuseIfPivot(CellRange(start: target, end: CellAddress(row: target.row + grid.count - 1,
-                                                                        column: target.column + width - 1)))
-        else { return }
         let snaps = snapshot(affected)
         for (r, row) in grid.enumerated() {
             for (c, field) in row.enumerated() {
@@ -838,16 +1040,15 @@ public final class SpreadsheetDocument: ObservableObject {
             }
         }
         registerCellUndo(snaps, actionName: "Paste")
-        let endRow = target.row + grid.count - 1
-        let endCol = target.column + (grid.map(\.count).max() ?? 1) - 1
-        selection.select(range: CellRange(start: target,
-                                          end: CellAddress(row: endRow, column: endCol)))
+        selection.select(range: pasteRange)
         markChanged()
     }
 
-    /// Fill the source range's pattern across the target (fill-handle drag):
-    /// values/styles copy, formulas adjust per destination offset.
+    /// Fill the source range's pattern across the target (fill-handle drag,
+    /// Fill Down/Right): values/styles copy, formulas adjust per destination
+    /// offset. Rows the filter hides are left alone, as in Excel.
     public func fill(from source: CellRange, to targetRange: CellRange) {
+        commitPendingEdit()
         guard targetRange.end.isValid else { return }
         // Only the cells being written matter (the source may sit in a pivot).
         if let table = pivotTables(touching: targetRange).first(where: { table in
@@ -856,12 +1057,11 @@ public final class SpreadsheetDocument: ObservableObject {
             refusePivotEdit(table)
             return
         }
-        let snaps = snapshot(targetRange.addresses)
+        let skipped = rowsSkipped(by: .fill, in: targetRange)
         var writes: [(AbsoluteAddress, CellValue, String?)] = []
         var styleWrites: [(CellAddress, Int)] = []
-        for addr in targetRange.addresses {
-            if source.contains(addr) { continue }
-            func flooredMod(_ a: Int, _ n: Int) -> Int { ((a % n) + n) % n }
+        func flooredMod(_ a: Int, _ n: Int) -> Int { ((a % n) + n) % n }
+        for addr in targetRange.addresses where !source.contains(addr) && !skipped.contains(addr.row) {
             let srcRow = source.start.row + flooredMod(addr.row - targetRange.start.row, source.rowCount)
             let srcCol = source.start.column + flooredMod(addr.column - targetRange.start.column, source.columnCount)
             let srcAddr = CellAddress(row: srcRow, column: srcCol)
@@ -882,6 +1082,7 @@ public final class SpreadsheetDocument: ObservableObject {
             }
             styleWrites.append((addr, styleIndex))
         }
+        let snaps = snapshot(writes.map(\.0.address))
         engine.setCells(writes)
         for (addr, styleIndex) in styleWrites {
             var cell = activeSheet.cell(at: addr)
@@ -916,22 +1117,22 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Clear Formatting (⌘\): reset every selected cell to the default style,
     /// leaving values and formulas intact.
     public func clearFormattingInSelection() {
-        let addresses = selection.range.addresses
-        let snaps = snapshot(addresses)
-        var changed = false
-        for addr in addresses {
-            var cell = activeSheet.cell(at: addr)
+        // Only stored cells can carry formatting.
+        let sheet = activeSheet
+        var snaps: [StyleSnapshot] = []
+        for addr in storedAddresses(in: selection.range, sheet: sheet) {
+            var cell = sheet.cell(at: addr)
             // A pivot's field buttons belong to the pivot, not the formatting.
             let target = workbook.style(at: cell.styleIndex).pivotButton
                 ? workbook.styleIndex(for: CellStyle(pivotButton: true)) : 0
             if cell.styleIndex != target {
+                snaps.append(StyleSnapshot(address: addr, styleIndex: cell.styleIndex))
                 cell.styleIndex = target
-                activeSheet.setCell(cell, at: addr)
-                changed = true
+                sheet.setCell(cell, at: addr)
             }
         }
-        guard changed else { return }
-        registerCellUndo(snaps, actionName: "Clear Formatting")
+        guard !snaps.isEmpty else { return }
+        registerStyleUndo(snaps, sheetID: sheet.id, actionName: "Clear Formatting")
         markChanged()
     }
 
@@ -987,24 +1188,140 @@ public final class SpreadsheetDocument: ObservableObject {
     /// "3 of 12" / "No results" / "" — for the find bar.
     public var findStatus: String {
         if findQuery.isEmpty { return "" }
+        if isFindSearching { return "Searching…" }
         if findMatches.isEmpty { return "No results" }
         return "\(findCurrentIndex + 1) of \(findMatches.count)"
     }
 
+    /// Sheets with up to this many cells to check are searched at once, on
+    /// the main thread (a few milliseconds). Bigger searches run in the
+    /// background once typing pauses.
+    static let findSynchronousLimit = 20_000
+    /// How long typing must pause before a background search starts.
+    static let findDebounce: Duration = .milliseconds(150)
+
+    /// True while a background search for `findQuery` is pending.
+    @Published public private(set) var isFindSearching = false
+    private var findTask: Task<Void, Never>?
+    /// The last finished search, so a query that extends it (typing one
+    /// more letter) only rechecks its matches.
+    private var lastFind: FindResult?
+
+    /// What one search found, and on what.
+    struct FindResult: Sendable {
+        var sheetID: Int
+        var revision: Int
+        var query: String
+        var matches: [CellAddress]
+    }
+
+    /// A copy of what a search reads. The cells and the style table are
+    /// values, so the copy costs nothing and is safe to read off the main
+    /// thread while the document goes on changing.
+    struct FindInput: Sendable {
+        var sheetID: Int
+        var revision: Int
+        var query: String
+        var cells: [CellAddress: Cell]
+        var styles: StyleTable
+        /// Only these addresses can match (the previous query's matches,
+        /// when this query contains it); nil searches every cell.
+        var candidates: [CellAddress]?
+    }
+
     /// Recompute matches in the active sheet. Searches both the displayed value
-    /// and the formula text, case-insensitively.
+    /// and the formula text, case-insensitively. Big sheets are searched in
+    /// the background after a short pause (see `findSynchronousLimit`).
     public func recomputeFind(preferringSelection: Bool) {
-        let query = findQuery.lowercased()
-        guard !query.isEmpty else {
+        findTask?.cancel()
+        findTask = nil
+        let input = findInput()
+        guard !input.query.isEmpty else {
+            isFindSearching = false
             findMatches = []
             findCurrentIndex = 0
             return
         }
+        let workload = input.candidates?.count ?? input.cells.count
+        if workload <= Self.findSynchronousLimit {
+            isFindSearching = false
+            finishFind(Self.search(input), preferringSelection: preferringSelection)
+            return
+        }
+        isFindSearching = true
+        findTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.findDebounce)
+            guard !Task.isCancelled else { return }
+            let worker = Task.detached(priority: .userInitiated) { SpreadsheetDocument.search(input) }
+            let result = await withTaskCancellationHandler {
+                await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
+            guard !Task.isCancelled, let self, let result else { return }
+            self.findTask = nil
+            self.isFindSearching = false
+            self.finishFind(result, preferringSelection: preferringSelection)
+        }
+    }
+
+    /// Finish a pending background search now (Return in the find bar
+    /// before it has finished).
+    private func completePendingFind() {
+        guard isFindSearching else { return }
+        findTask?.cancel()
+        findTask = nil
+        isFindSearching = false
+        finishFind(Self.search(findInput()), preferringSelection: true)
+    }
+
+    private func findInput() -> FindInput {
+        let sheet = activeSheet
+        let query = findQuery.lowercased()
+        var candidates: [CellAddress]?
+        if let last = lastFind, last.sheetID == sheet.id, last.revision == revision,
+           !last.query.isEmpty, query.contains(last.query) {
+            // Every cell whose text contains the new query contains the old.
+            candidates = last.matches
+        }
+        return FindInput(sheetID: sheet.id, revision: revision, query: query, cells: sheet.cells,
+                         styles: workbook.styles, candidates: candidates)
+    }
+
+    /// The matches for `input`, row-major; nil if the task was cancelled.
+    nonisolated static func search(_ input: FindInput) -> FindResult? {
         var results: [CellAddress] = []
-        for (addr, cell) in activeSheet.cells where cellMatchesFind(cell, query: query) {
-            results.append(addr)
+        var checked = 0
+        func check(_ address: CellAddress, _ cell: Cell) -> Bool {
+            checked += 1
+            if checked % 4096 == 0, Task.isCancelled { return false }
+            if cellMatchesFind(cell, query: input.query, styles: input.styles) { results.append(address) }
+            return true
+        }
+        if let candidates = input.candidates {
+            for address in candidates {
+                guard let cell = input.cells[address] else { continue }
+                if !check(address, cell) { return nil }
+            }
+        } else {
+            for (address, cell) in input.cells {
+                if !check(address, cell) { return nil }
+            }
         }
         results.sort() // CellAddress is Comparable (row-major)
+        return FindResult(sheetID: input.sheetID, revision: input.revision, query: input.query,
+                          matches: results)
+    }
+
+    private func finishFind(_ result: FindResult?, preferringSelection: Bool) {
+        guard let result else { return }
+        // The user switched sheets while it ran: search the new one.
+        guard result.sheetID == activeSheetID else {
+            recomputeFind(preferringSelection: preferringSelection)
+            return
+        }
+        lastFind = result
+        let results = result.matches
         findMatches = results
         guard !results.isEmpty else {
             findCurrentIndex = 0
@@ -1020,8 +1337,8 @@ public final class SpreadsheetDocument: ObservableObject {
         selectCurrentMatch()
     }
 
-    private func cellMatchesFind(_ cell: Cell, query: String) -> Bool {
-        let format = workbook.style(at: cell.styleIndex).numberFormat
+    nonisolated private static func cellMatchesFind(_ cell: Cell, query: String, styles: StyleTable) -> Bool {
+        let format = styles[cell.styleIndex].numberFormat
         if NumberFormatEngine.displayString(for: cell.value, format: format)
             .lowercased().contains(query) {
             return true
@@ -1033,12 +1350,14 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func findNext() {
+        completePendingFind()
         guard !findMatches.isEmpty else { return }
         findCurrentIndex = (findCurrentIndex + 1) % findMatches.count
         selectCurrentMatch()
     }
 
     public func findPrevious() {
+        completePendingFind()
         guard !findMatches.isEmpty else { return }
         findCurrentIndex = (findCurrentIndex - 1 + findMatches.count) % findMatches.count
         selectCurrentMatch()
@@ -1060,12 +1379,33 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func selectionStatistics() -> SelectionStats {
-        var stats = SelectionStats(count: 0, numericCount: 0, sum: 0)
-        // Cap the scan for enormous selections.
-        let range = selection.range
-        guard range.cellCount <= 1_000_000 else { return stats }
-        // Like Excel's status bar, rows a filter hides are left out.
         let sheet = activeSheet
+        let key = StatsKey(revision: revision, sheetID: sheet.id, range: selection.range)
+        if let cached = statsCache, cached.key == key { return cached.stats }
+        let stats = computeSelectionStatistics(sheet: sheet)
+        statsCache = (key, stats)
+        return stats
+    }
+
+    /// The status bar asks on every redraw; the answer only changes with
+    /// the selection or an edit.
+    private struct StatsKey: Equatable {
+        var revision: Int
+        var sheetID: Int
+        var range: CellRange
+    }
+    private var statsCache: (key: StatsKey, stats: SelectionStats)?
+
+    private func computeSelectionStatistics(sheet: Sheet) -> SelectionStats {
+        var stats = SelectionStats(count: 0, numericCount: 0, sum: 0)
+        // Only the used part of the selection can hold values (a whole
+        // column is a million addresses, mostly past the data).
+        guard let used = sheet.usedRange, let range = Self.intersection(selection.range, used) else {
+            return stats
+        }
+        // Cap the work (lookups or stored cells scanned) for enormous sheets.
+        guard min(range.cellCount, sheet.cells.count) <= 4_000_000 else { return stats }
+        // Like Excel's status bar, rows a filter hides are left out.
         let hidden = sheet.hiddenRows
         func add(_ cell: Cell) {
             if cell.value.isEmpty { return }
@@ -1092,12 +1432,58 @@ public final class SpreadsheetDocument: ObservableObject {
 
     // MARK: - File I/O
 
+    /// Save now, on this thread (tests and small documents; the app saves in
+    /// the background, see BackgroundSaver).
     public func save(to url: URL) throws {
-        let data = try XLSXWriter.data(for: workbook)
+        let snapshot = makeSaveSnapshot()
+        try Self.write(snapshot, to: url)
+        didSave(snapshot, to: url)
+    }
+
+    /// The document as it is now, for writing on another thread while the
+    /// user carries on: the typing still in an editor is committed first,
+    /// and the workbook is copied (copy-on-write, so this is quick even for
+    /// a million cells; the first edit afterwards pays for copying the
+    /// sheet it changes).
+    public func makeSaveSnapshot() -> SaveSnapshot {
+        commitPendingEdit()
+        return SaveSnapshot(workbook: workbook.copy(), changeCount: changeCount)
+    }
+
+    /// Write a snapshot as .xlsx (any thread). `progress` gets the fraction
+    /// done; once `shouldContinue` says no, this throws `CancellationError`
+    /// and leaves any file at `url` as it was (the file is replaced
+    /// atomically, only once it is complete).
+    nonisolated public static func write(_ snapshot: SaveSnapshot, to url: URL,
+                                         progress: @escaping (Double) -> Void = { _ in },
+                                         shouldContinue: @escaping () -> Bool = { true }) throws {
+        let data: Data
+        do {
+            data = try XLSXWriter.data(for: snapshot.workbook) { fraction in
+                progress(fraction)
+                return shouldContinue()
+            }
+        } catch XLSXError.cancelled {
+            throw CancellationError()
+        }
+        guard shouldContinue() else { throw CancellationError() }
         try data.write(to: url, options: .atomic)
+    }
+
+    /// A snapshot is on disk at `url`: the document now saves there, and it
+    /// is unmodified unless it changed after the snapshot was taken.
+    public func didSave(_ snapshot: SaveSnapshot, to url: URL) {
+        didSave(changeCount: snapshot.changeCount, to: url)
+    }
+
+    /// As above, for the snapshot's `changeCount` (so the snapshot itself,
+    /// perhaps by now the only owner of a million cells, can be freed on
+    /// the saving thread rather than here).
+    func didSave(changeCount savedChangeCount: Int, to url: URL) {
         fileURL = url
         suggestedFileName = nil
-        isModified = false
+        isModified = changeCount != savedChangeCount
+        unsupportedContentAccepted = true
     }
 
     public static func open(url: URL) throws -> SpreadsheetDocument {
@@ -1118,6 +1504,7 @@ public final class SpreadsheetDocument: ObservableObject {
         let isTextImport = textImportExtensions.contains(ext)
         let workbook: Workbook
         var truncated = false
+        var unsupported: [String] = []
         progress(0, .reading)
         if isTextImport {
             var report = CSVImportReport()
@@ -1129,7 +1516,7 @@ public final class SpreadsheetDocument: ObservableObject {
             truncated = report.truncated
         } else {
             do {
-                workbook = try XLSXReader.read(data: data) { fraction in
+                workbook = try XLSXReader.read(data: data, unsupportedContent: &unsupported) { fraction in
                     progress(fraction, .reading)
                     return shouldContinue()
                 }
@@ -1140,7 +1527,8 @@ public final class SpreadsheetDocument: ObservableObject {
         guard shouldContinue() else { throw CancellationError() }
         progress(nil, .calculating)
         let engine = CalculationEngine(workbook: workbook)
-        return LoadedFile(workbook: workbook, engine: engine, isTextImport: isTextImport, truncatedRows: truncated)
+        return LoadedFile(workbook: workbook, engine: engine, isTextImport: isTextImport, truncatedRows: truncated,
+                          unsupportedContent: unsupported)
     }
 
     /// The document for a loaded file (main thread).
@@ -1152,6 +1540,7 @@ public final class SpreadsheetDocument: ObservableObject {
             doc.suggestedFileName = url.deletingPathExtension().lastPathComponent + ".xlsx"
         } else {
             doc.fileURL = url
+            doc.unsupportedContent = loaded.unsupportedContent
         }
         if loaded.truncatedRows {
             // Excel's "File not loaded completely", in our words.
@@ -1165,13 +1554,33 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Import a CSV file as a new sheet in this document.
     public func importCSVSheet(from url: URL) throws {
-        registerWorkbookUndo(actionName: "Import CSV")
+        importCSVSheet(try Self.readCSVSheet(from: url))
+    }
+
+    /// Read and parse a CSV file for `importCSVSheet` (any thread; the
+    /// slow part). `progress` gets the fraction read; once `shouldContinue`
+    /// says no, this throws `CancellationError`.
+    nonisolated static func readCSVSheet(from url: URL,
+                                         progress: @escaping (Double) -> Void = { _ in },
+                                         shouldContinue: @escaping () -> Bool = { true }) throws -> ImportedCSV {
         let data = try Data(contentsOf: url, options: .alwaysMapped)
         var report = CSVImportReport()
         let imported = CSV.importWorkbook(data: data,
                                           sheetName: url.deletingPathExtension().lastPathComponent,
-                                          report: &report)
-        if report.truncated {
+                                          report: &report) { fraction in
+            progress(fraction)
+            return shouldContinue()
+        }
+        if report.cancelled { throw CancellationError() }
+        return ImportedCSV(workbook: imported, truncated: report.truncated)
+    }
+
+    /// Add a CSV file read by `readCSVSheet` as a new sheet (main thread).
+    func importCSVSheet(_ read: ImportedCSV) {
+        // Taken once the file has been read: an unreadable file leaves no undo step.
+        let before = takeSnapshot()
+        let imported = read.workbook
+        if read.truncated {
             notice = DocumentNotice(
                 message: "This file has more rows than a sheet can hold.",
                 detail: "Only the first 1,048,576 rows were imported, as in Excel.")
@@ -1187,11 +1596,27 @@ public final class SpreadsheetDocument: ObservableObject {
         engine.rebuildAll()
         activeSheetID = sheet.id
         selection = SelectionState()
+        registerSnapshotUndo(before, actionName: "Import CSV")
         markChanged()
     }
 
     public func exportActiveSheetCSV(to url: URL) throws {
-        let data = CSV.export(sheet: activeSheet, workbook: workbook)
+        try Self.writeCSV(of: makeCSVExportSnapshot(), to: url)
+    }
+
+    /// The active sheet as it is now, for exporting on another thread.
+    func makeCSVExportSnapshot() -> CSVExportSnapshot {
+        commitPendingEdit()
+        let copy = workbook.copy()
+        return CSVExportSnapshot(workbook: copy, sheet: copy.sheet(withID: activeSheetID) ?? copy.sheets[0])
+    }
+
+    /// Write a sheet as CSV (any thread). Throws `CancellationError`, leaving
+    /// any file at `url` as it was, once `shouldContinue` says no.
+    nonisolated static func writeCSV(of snapshot: CSVExportSnapshot, to url: URL,
+                                     shouldContinue: () -> Bool = { true }) throws {
+        let data = CSV.export(sheet: snapshot.sheet, workbook: snapshot.workbook)
+        guard shouldContinue() else { throw CancellationError() }
         try data.write(to: url, options: .atomic)
     }
 }

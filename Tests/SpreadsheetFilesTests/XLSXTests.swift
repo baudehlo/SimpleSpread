@@ -264,7 +264,7 @@ struct XLSXForeignFileTests {
         // Non-standard worksheet part name on purpose.
         zip.addEntry(name: "xl/worksheets/data.xml", data: Data((header +
             "<worksheet xmlns=\"\(main)\">" + worksheetXML + "</worksheet>").utf8))
-        return zip.finalize()
+        return try! zip.finalize() // a few KB: never over the ZIP limits
     }
 
     @Test func readsRowlessAndRlessCells() throws {

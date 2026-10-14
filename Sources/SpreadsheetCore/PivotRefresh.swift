@@ -34,11 +34,34 @@ extension PivotValue {
         }
     }
 
+    /// A number or a date (what range groups hold).
+    var isNumeric: Bool {
+        switch self {
+        case .number, .date: return true
+        default: return false
+        }
+    }
+
     /// Identity for matching items across refreshes (text ignores case).
     var matchKey: PivotValue {
         if case .string(let s) = self { return .string(s.lowercased()) }
         if case .date(let d) = self { return .number(d) }
         return self
+    }
+}
+
+extension PivotCacheData {
+    /// Field `f`'s axis items (by index) in ascending order. A range
+    /// grouping's items are already in order — "<start", the parts (Jan…Dec,
+    /// Qtr1…Qtr4, 0-9, 10-19…), ">end" — and keep it; anything else sorts
+    /// in Excel's ascending order.
+    public func ascendingItemOrder(_ f: Int) -> [Int] {
+        guard f >= 0, f < fields.count else { return [] }
+        let values = fields[f].axisItems
+        if let group = fields[f].group, group.range != nil, !group.items.isEmpty {
+            return Array(values.indices)
+        }
+        return values.indices.sorted { PivotValue.ascending(values[$0], values[$1]) }
     }
 }
 
@@ -156,6 +179,10 @@ public enum PivotCacheBuilder {
             return result
         }
         guard var range = group.range else { return result }
+        if fields[base].sharedItems.contains(where: { !$0.isNumeric }) {
+            throw PivotEngineError("the grouped field “\(fields[base].name)” now has blank or text cells, "
+                                   + "which no group can hold; ungroup it, then refresh")
+        }
         let values = fields[base].sharedItems.compactMap { v -> Double? in
             switch v { case .number(let n), .date(let n): return n; default: return nil }
         }
@@ -166,15 +193,16 @@ public enum PivotCacheBuilder {
             if start == range.startNumber && end == range.endNumber { return result }
             range.startNumber = start
             range.endNumber = end
-            let step = range.interval > 0 ? range.interval : 1
-            let buckets = Int(((end - start) / step).rounded(.down)) + 1
-            func text(_ x: Double) -> String { x == x.rounded() ? String(Int64(x)) : "\(x)" }
-            var items: [PivotValue] = [.string("<" + text(start))]
-            for b in 0..<buckets {
-                let low = start + Double(b) * step
-                items.append(.string(text(low) + "-" + text(low + step - (step == step.rounded() ? 1 : 0))))
+            // The same ranges and labels as grouping makes (an outlier can't
+            // ask for more groups than a field may have).
+            let name = previous.fields[fieldIndex].name
+            guard end >= start else {
+                throw PivotEngineError("the grouped field “\(name)” no longer has values after its ranges start")
             }
-            items.append(.string(">" + text(start + Double(buckets) * step)))
+            guard let items = PivotFieldGroup.numberItems(start: start, end: end, interval: range.interval,
+                                                          integers: values.allSatisfy { $0 == $0.rounded() }) else {
+                throw Workbook.tooManyGroups(name, interval: range.interval)
+            }
             result.items = items
             result.range = range
             return result
@@ -221,11 +249,18 @@ extension PivotDefinition {
 
         var result = self
         result.fields = new.fields.map { _ in PivotFieldSettings(showAll: false) }
+        // Old → new item positions per (new) field, for whatever names an
+        // item by position.
+        var movedItems: [Int: [Int: Int]] = [:]
         for (i, settings) in fields.enumerated() {
             guard let j = fieldMap[i] else { continue }
             var s = settings
             if !settings.items.isEmpty || settings.axis != nil {
-                s.items = Self.remapItems(settings, oldItems: old.fields[i].axisItems, newItems: new.fields[j].axisItems)
+                let (items, moved) = Self.remapItems(settings, oldItems: old.fields[i].axisItems,
+                                                     newItems: new.fields[j].axisItems,
+                                                     ascending: new.ascendingItemOrder(j))
+                s.items = items
+                movedItems[j] = moved
             }
             result.fields[j] = s
         }
@@ -234,14 +269,6 @@ extension PivotDefinition {
         result.pageFields = pageFields.map { page in
             var p = page
             p.field = map(page.field)
-            if let item = page.selectedItem, item < fields[page.field].items.count,
-               let x = fields[page.field].items[item].index, x < old.fields[page.field].axisItems.count {
-                let key = old.fields[page.field].axisItems[x].matchKey
-                let newItems = new.fields[p.field].axisItems
-                p.selectedItem = result.fields[p.field].items.firstIndex { item in
-                    item.index.map { $0 < newItems.count && newItems[$0].matchKey == key } ?? false
-                }
-            }
             return p
         }
         result.dataFields = dataFields.map { d in
@@ -256,39 +283,49 @@ extension PivotDefinition {
             filter.field = f
             return filter
         }
+        for (j, moved) in movedItems { result.replaceItems(field: j, with: result.fields[j].items, moved: moved) }
         return result
     }
 
-    static func remapItems(_ settings: PivotFieldSettings, oldItems: [PivotValue], newItems: [PivotValue]) -> [PivotItem] {
+    /// A field's items carried to a rebuilt cache, matched by value, and
+    /// where each old position went. `ascending` is the new items' ascending
+    /// order (natural order for grouped fields).
+    static func remapItems(_ settings: PivotFieldSettings, oldItems: [PivotValue], newItems: [PivotValue],
+                           ascending: [Int]) -> (items: [PivotItem], moved: [Int: Int]) {
         var byKey: [PivotValue: PivotItem] = [:]
+        var oldPositions: [PivotValue: [Int]] = [:]
         var oldOrder: [PivotValue] = []
-        for item in settings.items where item.kind == .data {
-            guard let x = item.index, x < oldItems.count else { continue }
+        for (p, item) in settings.items.enumerated() where item.kind == .data {
+            guard let x = item.index, x >= 0, x < oldItems.count else { continue }
             let key = oldItems[x].matchKey
             if byKey[key] == nil { oldOrder.append(key) }
             byKey[key] = item
+            oldPositions[key, default: []].append(p)
         }
         var newIndex: [PivotValue: Int] = [:]
         for (i, v) in newItems.enumerated() where newIndex[v.matchKey] == nil { newIndex[v.matchKey] = i }
 
         var order: [Int]
-        let fresh = newItems.indices.filter { byKey[newItems[$0].matchKey] == nil }
-            .sorted { PivotValue.ascending(newItems[$0], newItems[$1]) }
+        let fresh = ascending.filter { $0 < newItems.count && byKey[newItems[$0].matchKey] == nil }
         switch settings.sort {
         case .manual:
             order = oldOrder.compactMap { newIndex[$0] } + fresh
         case .ascending, .descending:
-            order = newItems.indices.sorted { PivotValue.ascending(newItems[$0], newItems[$1]) }
+            order = ascending.filter { $0 < newItems.count }
             if settings.sort == .descending { order.reverse() }
         }
-        var items = order.map { x -> PivotItem in
-            var item = byKey[newItems[x].matchKey] ?? PivotItem(kind: .data)
+        var moved: [Int: Int] = [:]
+        var items: [PivotItem] = []
+        for x in order {
+            let key = newItems[x].matchKey
+            var item = byKey[key] ?? PivotItem(kind: .data)
             item.index = x
             item.kind = .data
-            return item
+            for p in oldPositions[key] ?? [] { moved[p] = items.count }
+            items.append(item)
         }
         for kind in settings.subtotals { items.append(PivotItem(kind: kind)) }
-        return items
+        return (items, moved)
     }
 }
 

@@ -22,7 +22,23 @@ public final class Sheet {
     /// Stable identity that survives renames and reordering.
     public let id: Int
     public var name: String
-    public internal(set) var cells: [CellAddress: Cell] = [:]
+    /// Sparse storage. Assigning it wholesale (structural remaps) drops the
+    /// cached used bounds; `setCell` keeps them up to date.
+    public internal(set) var cells: [CellAddress: Cell] {
+        get { storage }
+        set {
+            storage = newValue
+            cellsVersion &+= 1
+            invalidateUsedBounds()
+        }
+    }
+    private var storage: [CellAddress: Cell] = [:]
+    /// Bumped whenever `storage` changes, so an undo snapshot can tell
+    /// whether a command touched this sheet's cells (WorkbookSnapshot).
+    private(set) var cellsVersion = 0
+    /// Cached bounding box of `storage`; meaningful only when `boundsValid`.
+    private var bounds: CellRange?
+    private var boundsValid = true
 
     /// Explicit column widths in points, keyed by zero-based column index.
     public var columnWidths: [Int: CGFloat] = [:]
@@ -36,6 +52,9 @@ public final class Sheet {
     /// Rows hidden by hand or by the AutoFilter (XLSX `row@hidden`).
     public var hiddenRows: Set<Int> = []
     public var autoFilter: AutoFilter?
+    /// Hidden in Excel (XLSX `sheet@state` "hidden" or "veryHidden"); kept
+    /// so a save writes it back.
+    public var isHidden = false
 
     public init(id: Int, name: String) {
         self.id = id
@@ -43,14 +62,38 @@ public final class Sheet {
     }
 
     public func cell(at address: CellAddress) -> Cell {
-        cells[address] ?? Cell()
+        storage[address] ?? Cell()
     }
 
     public func setCell(_ cell: Cell, at address: CellAddress) {
         if cell.isDefault {
-            cells.removeValue(forKey: address)
+            guard storage.removeValue(forKey: address) != nil else { return }
+            cellsVersion &+= 1
+            if storage.isEmpty {
+                bounds = nil
+                boundsValid = true
+            } else if boundsValid, let b = bounds,
+                      address.row == b.start.row || address.row == b.end.row
+                      || address.column == b.start.column || address.column == b.end.column {
+                // A cell on the edge went: the box may shrink. Rescan lazily.
+                boundsValid = false
+            }
         } else {
-            cells[address] = cell
+            storage[address] = cell
+            cellsVersion &+= 1
+            if boundsValid {
+                if let b = bounds {
+                    if !b.contains(address) {
+                        bounds = CellRange(
+                            start: CellAddress(row: min(b.start.row, address.row),
+                                               column: min(b.start.column, address.column)),
+                            end: CellAddress(row: max(b.end.row, address.row),
+                                             column: max(b.end.column, address.column)))
+                    }
+                } else {
+                    bounds = CellRange(address)
+                }
+            }
         }
     }
 
@@ -61,15 +104,34 @@ public final class Sheet {
 
     /// Make room for `count` cells up front (bulk imports).
     public func reserveCellCapacity(_ count: Int) {
-        cells.reserveCapacity(count)
+        storage.reserveCapacity(count)
     }
 
     public func value(at address: CellAddress) -> CellValue {
-        cells[address]?.value ?? .empty
+        storage[address]?.value ?? .empty
     }
 
     /// Bounding range of all non-default cells, or nil for an empty sheet.
+    /// Kept up to date by `setCell`; a rescan happens only after a cell on the
+    /// edge is removed or the storage is replaced, and then once.
     public var usedRange: CellRange? {
+        if !boundsValid {
+            bounds = Self.scanBounds(storage)
+            boundsValid = true
+        }
+        return bounds
+    }
+
+    private func invalidateUsedBounds() {
+        if storage.isEmpty {
+            bounds = nil
+            boundsValid = true
+        } else {
+            boundsValid = false
+        }
+    }
+
+    private static func scanBounds(_ cells: [CellAddress: Cell]) -> CellRange? {
         guard !cells.isEmpty else { return nil }
         var minR = Int.max, maxR = Int.min, minC = Int.max, maxC = Int.min
         for addr in cells.keys {
@@ -100,6 +162,27 @@ public final class Sheet {
         mergedRanges = other.mergedRanges
         hiddenRows = other.hiddenRows
         autoFilter = other.autoFilter
+        isHidden = other.isHidden
+    }
+
+    /// An independent copy with the same id and name. Cheap: the cell table
+    /// and the other collections are copy-on-write, so nothing is duplicated
+    /// until one of the two sheets changes. For undo snapshots and saving in
+    /// the background.
+    public func copy() -> Sheet {
+        let sheet = Sheet(id: id, name: name)
+        sheet.adoptContents(of: self)
+        sheet.adoptCells(of: self)
+        return sheet
+    }
+
+    /// Share another sheet's cell table (copy-on-write), keeping its
+    /// used-range cache rather than rescanning, and its `cellsVersion`.
+    func adoptCells(of other: Sheet) {
+        storage = other.storage
+        bounds = other.bounds
+        boundsValid = other.boundsValid
+        cellsVersion = other.cellsVersion
     }
 }
 
@@ -112,6 +195,13 @@ public final class Workbook {
     public var pivotTables: [PivotTable] = []
     /// Stylesheet entries the preserved pivot parts refer to; nil without pivots.
     public var preservedStyles: PreservedStyles?
+    /// Defined names (XLSX `<definedNames>`), including Excel's built-in
+    /// `_xlnm.*` ones (print areas and titles), kept in file order.
+    public var definedNames: [DefinedName] = [] {
+        didSet { definedNameCache = nil }
+    }
+    /// Lookup table and parsed formulas for `definedNames` (DefinedNames.swift).
+    var definedNameCache: DefinedNameCache?
     private var nextSheetID = 1
 
     public init() {}
@@ -158,6 +248,20 @@ public final class Workbook {
         return sheets.remove(at: idx)
     }
 
+    /// An independent copy of the whole workbook (sheets keep their ids).
+    /// Cheap, as `Sheet.copy()` is: the large tables are shared until changed.
+    public func copy() -> Workbook {
+        let wb = Workbook()
+        wb.sheets = sheets.map { $0.copy() }
+        wb.styles = styles
+        wb.pivotCaches = pivotCaches
+        wb.pivotTables = pivotTables
+        wb.preservedStyles = preservedStyles
+        wb.definedNames = definedNames
+        wb.nextSheetID = nextSheetID
+        return wb
+    }
+
     /// Take over another workbook's sheets (keeping their ids), styles and
     /// pivot tables, in place: for restoring a snapshot under objects (the
     /// engine, undo records) that hold this instance and its sheet ids.
@@ -168,6 +272,7 @@ public final class Workbook {
         pivotCaches = other.pivotCaches
         pivotTables = other.pivotTables
         preservedStyles = other.preservedStyles
+        definedNames = other.definedNames
     }
 
     public func moveSheet(withID id: Int, to newIndex: Int) {

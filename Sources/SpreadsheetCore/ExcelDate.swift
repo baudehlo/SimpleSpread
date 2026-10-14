@@ -94,25 +94,34 @@ public enum ExcelDate {
         (Double(hour) * 3600 + Double(minute) * 60 + second) / 86400
     }
 
-    /// Break a serial number into calendar components. Returns nil for non-finite input.
+    /// The last serial Excel can show as a date: December 31, 9999.
+    public static let maxSerial = 2958465.0
+
+    /// True for serials a date can be made of: 0 (1899-12-30) up to the end of
+    /// 9999-12-31. Excel shows ##### for anything else in a date format, and
+    /// date functions return #NUM!.
+    public static func isValidSerial(_ serial: Double) -> Bool {
+        serial >= 0 && serial < maxSerial + 1
+    }
+
+    /// Break a serial number into calendar components. Returns nil outside
+    /// the valid date range (see `isValidSerial`), including non-finite input.
     public static func components(fromSerial serial: Double) -> Components? {
-        guard serial.isFinite else { return nil }
-        let wholeDays = Int(serial.rounded(.down))
-        var frac = serial - Double(wholeDays)
+        guard isValidSerial(serial), let wholeDays = checkedInt(serial) else { return nil }
+        let frac = serial - Double(wholeDays)
         // Guard against floating point putting us a hair below the day boundary.
         var totalSeconds = (frac * 86400).rounded(toPlaces: 6)
         var dayAdjust = 0
         if totalSeconds >= 86400 { totalSeconds -= 86400; dayAdjust = 1 }
         let days = wholeDays + serialEpochDays + dayAdjust
         let (y, m, d) = civilFromDays(days)
-        let hour = Int(totalSeconds) / 3600
-        let minute = (Int(totalSeconds) % 3600) / 60
+        let wholeSeconds = checkedInt(totalSeconds) ?? 0 // 0..<86400
+        let hour = wholeSeconds / 3600
+        let minute = (wholeSeconds % 3600) / 60
         let second = totalSeconds - Double(hour * 3600 + minute * 60)
         // 1899-12-31 (serial 1) was a Sunday; weekday cycles with period 7.
         // days since 1970-01-01: 1970-01-01 was a Thursday -> weekday index 4 (0=Sun).
         let weekdayIndex = (days % 7 + 7 + 4) % 7  // 0 = Sunday
-        frac = 0 // silence unused warning path
-        _ = frac
         return Components(year: y, month: m, day: d, hour: hour, minute: minute, second: second, weekday: weekdayIndex + 1)
     }
 

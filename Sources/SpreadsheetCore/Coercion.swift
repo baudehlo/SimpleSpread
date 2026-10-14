@@ -46,10 +46,12 @@ public enum Coerce {
         }
     }
 
-    /// Text form used by '&' and text functions: numbers in General form,
-    /// booleans as TRUE/FALSE, blank as "".
+    /// Text form used by '&' and text functions: numbers to Excel's 15
+    /// significant digits (not the grid's General form), booleans as
+    /// TRUE/FALSE, blank as "".
     public static func displayText(_ v: CellValue) -> String {
-        v.rawDisplayString
+        if case .number(let n) = v { return NumberFormatEngine.textCoercionString(for: n) }
+        return v.rawDisplayString
     }
 
     /// Parse text as a number the way operators do: plain/scientific numbers,
@@ -231,6 +233,8 @@ public enum Coerce {
 // MARK: - Criteria (SUMIF/COUNTIF family)
 
 /// A parsed criterion: an optional comparison operator plus a target value.
+/// Every criteria function goes through `matchingCells` (FunctionRegistry),
+/// which tests each cell, error cells included, with `matches`.
 public struct Criterion {
     public enum Operator {
         case equal, notEqual, less, lessOrEqual, greater, greaterOrEqual
@@ -256,20 +260,21 @@ public struct Criterion {
             rest = String(raw.dropFirst(prefix.count))
             break
         }
-        // Parse remainder: number, boolean, else text.
-        let target: CellValue
-        if rest.isEmpty {
-            target = .empty
-        } else if let n = Coerce.parseNumericText(rest) {
-            target = .number(n)
-        } else if rest.caseInsensitiveCompare("TRUE") == .orderedSame {
-            target = .bool(true)
-        } else if rest.caseInsensitiveCompare("FALSE") == .orderedSame {
-            target = .bool(false)
-        } else {
-            target = .string(rest)
+        return Criterion(op: op, target: operand(rest))
+    }
+
+    /// The operand after the operator, read the way typed input is: numbers
+    /// ("5", "50%", "$4"), dates and times (">=1/1/2024"), booleans and
+    /// error literals ("#N/A"); anything else is text (wildcards allowed).
+    static func operand(_ text: String) -> CellValue {
+        if text.isEmpty { return .empty }
+        if let n = Coerce.parseNumericText(text) { return .number(n) }
+        switch ValueParser.parse(text, allowFormulas: false).value {
+        case .number(let n): return .number(n)
+        case .bool(let b): return .bool(b)
+        case .error(let e): return .error(e)
+        default: return .string(text)
         }
-        return Criterion(op: op, target: target)
     }
 
     public init(op: Operator, target: CellValue) {

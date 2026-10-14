@@ -27,12 +27,24 @@ public enum XLSXReader {
         return try read(data: data, report: &report, progress: progress)
     }
 
+    /// Read with progress (as above), also listing what the file holds that
+    /// saving will not write back ("3 charts", "comments", …; empty when
+    /// nothing is lost).
+    public static func read(data: Data, unsupportedContent: inout [String],
+                            progress: ((Double) -> Bool)?) throws -> Workbook {
+        var report = XLSXReadReport()
+        let workbook = try read(data: data, report: &report, progress: progress)
+        unsupportedContent = report.unsupportedContent
+        return workbook
+    }
+
     /// Read, also reporting what couldn't be carried over (for tests and
     /// diagnostics). `fastSheetData: false` reads cells with XMLParser, the
     /// reference the fast scanner is tested against.
     static func read(data: Data, report: inout XLSXReadReport,
                      progress: ((Double) -> Bool)? = nil, fastSheetData: Bool = true) throws -> Workbook {
         let zip = try ZipArchiveReader(data: data)
+        var unsupported = UnsupportedContent.scanPackage(zip)
 
         // 1. Root rels -> workbook part.
         let rootRels = try parseRelationships(zipData(zip, "_rels/.rels"), baseDir: "")
@@ -54,7 +66,9 @@ public enum XLSXReader {
         var sharedStrings: [String] = []
         if let ssRel = wbRels.first(where: { $0.type.hasSuffix("/sharedStrings") }),
            let ssData = try? zipData(zip, ssRel.target) {
-            sharedStrings = try parseSharedStrings(ssData)
+            var richText = false
+            sharedStrings = try parseSharedStrings(ssData, richText: &richText)
+            if richText { unsupported.add(.richText) }
         }
         var styleInfos: [ReadStyle] = []
         var customFormats: [Int: String] = [:]
@@ -87,22 +101,20 @@ public enum XLSXReader {
             }
             defer { doneSize += size }
             guard let rel = wbRels.first(where: { $0.id == sheetMeta.relID }) else { continue }
-            let sheet = workbook.insertSheet(
+            var sheet = workbook.insertSheet(
                 Sheet(id: max(1, sheetMeta.sheetID), name: sheetMeta.name),
                 at: workbook.sheets.count)
             // Guard against duplicate ids from odd files.
             if workbook.sheets.filter({ $0.id == sheet.id }).count > 1 {
                 workbook.removeSheet(withID: sheet.id)
-                let replacement = workbook.addSheet(named: sheetMeta.name)
-                try parseWorksheet(zipData(zip, rel.target), into: replacement,
-                                   sharedStrings: sharedStrings, styleIndexMap: styleIndexMap,
-                                   progress: sheetProgress, fastSheetData: fastSheetData)
-                sheetParts.append(SheetPart(sheetID: replacement.id, sheetIndex: sheetIndex, path: rel.target))
-                continue
+                sheet = workbook.addSheet(named: sheetMeta.name)
             }
-            try parseWorksheet(zipData(zip, rel.target), into: sheet,
-                               sharedStrings: sharedStrings, styleIndexMap: styleIndexMap,
-                               progress: sheetProgress, fastSheetData: fastSheetData)
+            sheet.isHidden = sheetMeta.state == "hidden" || sheetMeta.state == "veryHidden"
+            if sheetMeta.state == "veryHidden" { unsupported.add(.veryHiddenSheets) }
+            let found = try parseWorksheet(zipData(zip, rel.target), into: sheet,
+                                           sharedStrings: sharedStrings, styleIndexMap: styleIndexMap,
+                                           progress: sheetProgress, fastSheetData: fastSheetData)
+            unsupported.formUnion(found)
             sheetParts.append(SheetPart(sheetID: sheet.id, sheetIndex: sheetIndex, path: rel.target))
         }
 
@@ -110,11 +122,17 @@ public enum XLSXReader {
             workbook.addSheet()
         }
 
+        // 4b. Defined names (the AutoFilter's own name is rebuilt on save).
+        workbook.definedNames = definedNames(workbookInfo.definedNames, sheetParts: sheetParts)
+
         // 5. Pivot tables (definitions only; their cells are already loaded).
         report.droppedPivots = readPivotTables(PivotReadContext(
             zip: zip, workbookInfo: workbookInfo, workbookRels: wbRels, sheetParts: sheetParts,
             stylesData: stylesData, customFormats: customFormats), into: workbook)
         workbook.clearStrayPivotButtons() // buttons of pivots not kept
+        unsupported.add(.pivotTables, count: report.droppedPivots.filter { $0.tableName != nil }.count)
+        unsupported.formUnion(workbookInfo.unsupported)
+        report.unsupportedContent = unsupported.descriptions
 
         // 6. 1904 date system: shift date-formatted numerics into 1900 serials.
         if workbookInfo.date1904 {
@@ -131,6 +149,24 @@ public enum XLSXReader {
             }
         }
         return workbook
+    }
+
+    /// The model's defined names: sheet scopes by sheet id, formulas
+    /// without '=' or `_xlfn.` prefixes. Names scoped to a sheet that wasn't
+    /// loaded are dropped.
+    static func definedNames(_ names: [WorkbookInfo.DefinedName], sheetParts: [SheetPart]) -> [DefinedName] {
+        names.compactMap { defined in
+            guard defined.name.caseInsensitiveCompare("_xlnm._FilterDatabase") != .orderedSame else { return nil }
+            var scope: Int?
+            if let local = defined.localSheetIndex {
+                guard let part = sheetParts.first(where: { $0.sheetIndex == local }) else { return nil }
+                scope = part.sheetID
+            }
+            var formula = defined.formula.trimmingCharacters(in: .whitespacesAndNewlines)
+            if formula.hasPrefix("=") { formula.removeFirst() }
+            return DefinedName(name: defined.name, scopeSheetID: scope,
+                               formula: FormulaFunctionPrefixes.stripped(formula), hidden: defined.hidden)
+        }
     }
 
     // MARK: Path helpers
@@ -212,6 +248,8 @@ public enum XLSXReader {
             let name: String
             let sheetID: Int
             let relID: String
+            /// "visible", "hidden" or "veryHidden".
+            var state = "visible"
         }
         struct PivotCacheMeta {
             let cacheID: Int
@@ -222,11 +260,14 @@ public enum XLSXReader {
             /// Index into `sheets` for a sheet-scoped name; nil = workbook scope.
             let localSheetIndex: Int?
             let formula: String
+            var hidden = false
         }
         var sheets: [SheetMeta] = []
         var date1904 = false
         var pivotCaches: [PivotCacheMeta] = []
         var definedNames: [DefinedName] = []
+        /// Workbook-level settings that are not written back.
+        var unsupported: Set<UnsupportedContent.Kind> = []
     }
 
     static func parseWorkbook(_ data: Data) throws -> WorkbookInfo {
@@ -234,7 +275,7 @@ public enum XLSXReader {
             var info = WorkbookInfo()
             var depth = 0
             var inPivotCaches = false
-            var definedName: (name: String, local: Int?)?
+            var definedName: (name: String, local: Int?, hidden: Bool)?
             var definedNameText = ""
             func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                         qualifiedName: String?, attributes: [String: String]) {
@@ -250,7 +291,8 @@ public enum XLSXReader {
                     }
                 case "definedName":
                     if let n = attributes["name"] {
-                        definedName = (n, Int(attributes["localSheetId"] ?? ""))
+                        let hidden = attributes["hidden"].map { $0 == "1" || $0.lowercased() == "true" } ?? false
+                        definedName = (n, Int(attributes["localSheetId"] ?? ""), hidden)
                         definedNameText = ""
                     }
                 case "workbookPr":
@@ -259,10 +301,18 @@ public enum XLSXReader {
                 case "sheet":
                     guard let sheetName = attributes["name"] else { return }
                     let relID = attributes["r:id"] ?? attributes.first { $0.key.hasSuffix(":id") }?.value ?? ""
-                    let sheetID = Int(attributes["sheetId"] ?? "") ?? (info.sheets.count + 1)
-                    let state = attributes["state"] ?? "visible"
-                    _ = state // hidden sheets still loaded
-                    info.sheets.append(.init(name: sheetName, sheetID: sheetID, relID: relID))
+                    // CT_Sheet@sheetId is an unsignedInt; anything else gets a fresh id.
+                    let given = Int(attributes["sheetId"] ?? "").flatMap { (1...Int(UInt32.max)).contains($0) ? $0 : nil }
+                    let sheetID = given ?? (info.sheets.count + 1)
+                    info.sheets.append(.init(name: sheetName, sheetID: sheetID, relID: relID,
+                                             state: attributes["state"] ?? "visible"))
+                case "workbookProtection" where depth == 2:
+                    let locks = ["lockStructure", "lockWindows", "lockRevision"]
+                    if locks.contains(where: { boolAttr(attributes[$0], default: false) }) {
+                        info.unsupported.insert(.workbookProtection)
+                    }
+                case "customWorkbookViews" where depth == 2:
+                    info.unsupported.insert(.customViews)
                 default:
                     break
                 }
@@ -276,8 +326,9 @@ public enum XLSXReader {
                         qualifiedName: String?) {
                 if depth == 2 && localName(name) == "pivotCaches" { inPivotCaches = false }
                 depth -= 1
-                if localName(name) == "definedName", let (n, local) = definedName {
-                    info.definedNames.append(.init(name: n, localSheetIndex: local, formula: definedNameText))
+                if localName(name) == "definedName", let (n, local, hidden) = definedName {
+                    info.definedNames.append(.init(name: n, localSheetIndex: local, formula: definedNameText,
+                                                   hidden: hidden))
                     definedName = nil
                 }
             }
@@ -293,7 +344,14 @@ public enum XLSXReader {
     // MARK: Shared strings
 
     static func parseSharedStrings(_ data: Data) throws -> [String] {
+        var richText = false
+        return try parseSharedStrings(data, richText: &richText)
+    }
+
+    /// `richText`: set when a string has formatted runs (only the text is kept).
+    static func parseSharedStrings(_ data: Data, richText: inout Bool) throws -> [String] {
         final class Delegate: NSObject, XMLParserDelegate {
+            var richText = false
             var strings: [String] = []
             var current = ""
             var inSI = false
@@ -306,6 +364,7 @@ public enum XLSXReader {
                 switch localName(name) {
                 case "si": inSI = true; current = ""
                 case "rPh": inPhonetic = true
+                case "rPr": if inSI && !inPhonetic { richText = true }
                 case "t": if inSI && !inPhonetic { inT = true; text = "" }
                 default: break
                 }
@@ -332,6 +391,7 @@ public enum XLSXReader {
         }
         let delegate = Delegate()
         try runParser(data, delegate: delegate)
+        richText = richText || delegate.richText
         return delegate.strings
     }
 
@@ -378,7 +438,7 @@ public enum XLSXReader {
             style.verticalAlignment = vertical
             style.wrapText = wrapText
             style.pivotButton = pivotButton
-            style.indent = max(0, indent)
+            style.indent = min(max(0, indent), 250) // Excel's limit
             style.borders = borders
             if numFmtID != 0 {
                 if let custom = customFormats[numFmtID] {
@@ -446,7 +506,11 @@ public enum XLSXReader {
                         if v != "none" { currentFont?.underline = true }
                     }
                 case "strike": if currentFont != nil, boolAttr(attributes["val"], default: true) { currentFont?.strike = true }
-                case "sz": if currentFont != nil { currentFont?.size = Double(attributes["val"] ?? "") }
+                case "sz":
+                    // Excel's sizes run 1-409 points.
+                    if currentFont != nil, let size = Double(attributes["val"] ?? ""), size.isFinite {
+                        currentFont?.size = min(max(size, 1), 409)
+                    }
                 case "name": if inFonts { currentFont?.name = attributes["val"] }
                 case "color":
                     if currentFont != nil, let rgb = attributes["rgb"] { currentFont?.colorARGB = rgb }
@@ -536,14 +600,21 @@ public enum XLSXReader {
 
     // MARK: Worksheet
 
+    /// Read one worksheet into `sheet`. Returns what the sheet holds that is
+    /// not kept (conditional formatting, print settings, …).
+    @discardableResult
     static func parseWorksheet(_ data: Data, into sheet: Sheet,
                                sharedStrings: [String], styleIndexMap: [Int: Int],
-                               progress: ((Double) -> Bool)? = nil, fastSheetData: Bool = true) throws {
+                               progress: ((Double) -> Bool)? = nil,
+                               fastSheetData: Bool = true) throws -> Set<UnsupportedContent.Kind> {
         // Rows and cells (`<sheetData>`) go to the byte scanner; the rest of
         // the sheet, small by comparison, to XMLParser below. If the scanner
         // meets anything it doesn't expect, the whole sheet goes to XMLParser.
+        // The scanner reads UTF-8 only; other encodings are XMLParser's.
         var rest = data
-        if fastSheetData, let span = sheetDataSpan(in: data) {
+        var found: Set<UnsupportedContent.Kind> = []
+        var cellsRead = false
+        if fastSheetData, isUTF8(data), let span = sheetDataSpan(in: data) {
             var scanner = SheetDataScanner(sheet: sheet, sharedStrings: sharedStrings,
                                            styleIndexMap: styleIndexMap)
             do {
@@ -555,16 +626,42 @@ public enum XLSXReader {
                 guard finished else { throw XLSXError.cancelled }
                 rest = data.subdata(in: 0..<span.outer.lowerBound)
                 rest.append(data.subdata(in: span.outer.upperBound..<data.count))
+                cellsRead = true
+                if scanner.builder.sawRowFormatting { found.insert(.rowFormatting) }
+                if scanner.builder.sawOutline { found.insert(.outlines) }
             } catch XLSXError.invalidXML {
                 sheet.removeAllCells()
                 sheet.rowHeights = [:]
                 sheet.hiddenRows = []
             }
-        } else if let progress, !progress(0) {
+        }
+        if !cellsRead, let progress, !progress(0) {
             throw XLSXError.cancelled
         }
-        try parseWorksheetWithXMLParser(rest, into: sheet, sharedStrings: sharedStrings,
-                                        styleIndexMap: styleIndexMap)
+        found.formUnion(try parseWorksheetWithXMLParser(rest, into: sheet, sharedStrings: sharedStrings,
+                                                        styleIndexMap: styleIndexMap,
+                                                        progress: cellsRead ? nil : progress))
+        return found
+    }
+
+    /// False when the part declares an encoding other than UTF-8 (or has a
+    /// UTF-16 byte order mark). No declaration means UTF-8.
+    static func isUTF8(_ data: Data) -> Bool {
+        data.withUnsafeBytes { raw -> Bool in
+            let b = raw.bindMemory(to: UInt8.self)
+            if b.count >= 2, (b[0] == 0xFF && b[1] == 0xFE) || (b[0] == 0xFE && b[1] == 0xFF) { return false }
+            var start = 0
+            if b.count >= 3, b[0] == 0xEF, b[1] == 0xBB, b[2] == 0xBF { start = 3 }
+            let head = Array(b[start..<min(b.count, start + 256)])
+            guard head.starts(with: Array("<?xml".utf8)) else { return true }
+            let end = (0..<max(0, head.count - 1)).first { head[$0] == 0x3F && head[$0 + 1] == 0x3E } ?? head.count
+            let declaration = String(decoding: head[0..<end], as: UTF8.self)
+            guard let range = declaration.range(of: "encoding") else { return true }
+            let afterName = declaration[range.upperBound...].drop { $0 == " " || $0 == "=" || $0 == "\t" }
+            guard let quote = afterName.first, quote == "\"" || quote == "'" else { return true }
+            let value = afterName.dropFirst().prefix { $0 != quote }.lowercased()
+            return value == "utf-8" || value == "utf8"
+        }
     }
 
     /// Where `<sheetData>` is: `outer` covers the element, `inner` its
@@ -575,7 +672,7 @@ public enum XLSXReader {
             let name = Array("sheetData".utf8)
             let n = b.count
             func isName(at k: Int) -> Bool {
-                guard k + name.count <= n else { return false }
+                guard k >= 0, k + name.count <= n else { return false }
                 for m in 0..<name.count where b[k + m] != name[m] { return false }
                 return true
             }
@@ -609,7 +706,7 @@ public enum XLSXReader {
                 if b[e + name.count] == 0x3E, isName(at: e) {
                     var open = e - 1
                     while open > innerStart, b[open] != 0x3C, b[open] != 0x3E { open -= 1 }
-                    if b[open] == 0x3C, open + 1 < n, b[open + 1] == 0x2F {
+                    if b[open] == 0x3C, open + 1 < n, b[open + 1] == 0x2F, open >= innerStart {
                         return (tagStart..<(e + name.count + 1), innerStart..<open)
                     }
                 }
@@ -620,28 +717,28 @@ public enum XLSXReader {
     }
 
     /// The XMLParser reader: everything outside `<sheetData>` always, and
-    /// the cells too when the fast scanner is off or gave up.
+    /// the cells too when the fast scanner is off or gave up. `progress` is
+    /// asked as the parse goes; false stops it with `XLSXError.cancelled`.
+    @discardableResult
     static func parseWorksheetWithXMLParser(_ data: Data, into sheet: Sheet,
-                                            sharedStrings: [String], styleIndexMap: [Int: Int]) throws {
+                                            sharedStrings: [String], styleIndexMap: [Int: Int],
+                                            progress: ((Double) -> Bool)? = nil) throws -> Set<UnsupportedContent.Kind> {
         final class Delegate: NSObject, XMLParserDelegate {
             let sheet: Sheet
-            let sharedStrings: [String]
             let styleIndexMap: [Int: Int]
+            var cells: SheetCellBuilder
 
-            var currentRow = -1        // 0-based row of the <row> being parsed
-            var nextColumn = 0         // inferred column for r-less cells
-            var cellAddress: CellAddress?
-            var cellType = ""
-            var cellStyleIndex = 0
             var valueText = ""
             var formulaText: String?
+            var resolvedFormula: String?
             var inV = false, inF = false, inIS = false, inIST = false
             var inlineText = ""
-            // Shared formulas: si -> (master address, formula text)
-            var sharedFormulas: [String: (CellAddress, String)] = [:]
             var currentSharedSI: String?
             var currentFormulaIsShared = false
             var depth = 0
+            /// Local names of the open elements (path[1] is a worksheet child).
+            var path: [String] = []
+            var found: Set<UnsupportedContent.Kind> = []
             // AutoFilter (worksheet level only, not customSheetView copies).
             var autoFilter: AutoFilter?
             var filterColumnID: Int?
@@ -653,18 +750,44 @@ public enum XLSXReader {
             var criterionOwners: [Int] = []
             var preservedCriteria: [Int: Int] = [:] // colId -> child index
 
-            init(sheet: Sheet, sharedStrings: [String], styleIndexMap: [Int: Int]) {
+            // Progress: asked every few thousand elements.
+            let progress: ((Double) -> Bool)?
+            let position: ParsePosition?
+            var elementCount = 0
+            var lastFraction = 0.0
+            var cancelled = false
+
+            init(sheet: Sheet, sharedStrings: [String], styleIndexMap: [Int: Int],
+                 progress: ((Double) -> Bool)?, data: Data) {
                 self.sheet = sheet
-                self.sharedStrings = sharedStrings
                 self.styleIndexMap = styleIndexMap
+                self.cells = SheetCellBuilder(sheet: sheet, sharedStrings: sharedStrings, styleIndexMap: styleIndexMap)
+                self.progress = progress
+                self.position = progress == nil ? nil : ParsePosition(data)
+            }
+
+            func checkProgress(_ parser: XMLParser) {
+                guard let progress, let position, !cancelled else { return }
+                elementCount += 1
+                guard elementCount & 4095 == 0 else { return }
+                lastFraction = max(lastFraction, position.fraction(line: parser.lineNumber, column: parser.columnNumber))
+                if !progress(lastFraction) {
+                    cancelled = true
+                    parser.abortParsing()
+                }
             }
 
             func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?,
                         qualifiedName: String?, attributes: [String: String]) {
                 depth += 1
-                switch localName(name) {
+                let local = localName(name)
+                path.append(local)
+                checkProgress(parser)
+                noteUnsupported(local, attributes: attributes)
+                switch local {
                 case "autoFilter" where depth == 2:
-                    if let ref = attributes["ref"], let range = CellRange(a1: ref) {
+                    if let ref = attributes["ref"], let range = CellRange(a1: ref),
+                       range.start.isValid, range.end.isValid {
                         autoFilter = AutoFilter(range: range)
                     }
                 case "filterColumn" where depth == 3 && autoFilter != nil:
@@ -676,7 +799,7 @@ public enum XLSXReader {
                 case _ where depth == 4 && filterColumnID != nil:
                     let colID = filterColumnID!
                     criterionOwners.append(colID)
-                    let element = localName(name)
+                    let element = local
                     guard element != "extLst", filterCriterion == nil else { break }
                     filterCriterion = element
                     switch element {
@@ -692,7 +815,7 @@ public enum XLSXReader {
                     // Even filters/customFilters may turn out to need it.
                     preservedCriteria[colID] = criterionOwners.count - 1
                 case _ where depth == 5 && filterColumnID != nil && !filterColumnPreserve:
-                    switch (filterCriterion, localName(name)) {
+                    switch (filterCriterion, local) {
                     case ("filters", "filter"):
                         filterColumn.values?.insert(XML.decodeIllegalCharacters(attributes["val"] ?? ""))
                     case ("customFilters", "customFilter"):
@@ -707,32 +830,18 @@ public enum XLSXReader {
                         filterColumnPreserve = true
                     }
                 case "row":
-                    if let r = Int(attributes["r"] ?? ""), r >= 1 {
-                        currentRow = r - 1
-                    } else {
-                        currentRow += 1
-                    }
-                    nextColumn = 0
-                    if let ht = Double(attributes["ht"] ?? ""),
-                       boolAttr(attributes["customHeight"], default: false) || attributes["ht"] != nil {
-                        sheet.rowHeights[currentRow] = CGFloat(ht)
-                    }
-                    if boolAttr(attributes["hidden"], default: false), currentRow < CellAddress.maxRows {
-                        sheet.hiddenRows.insert(currentRow)
-                    }
+                    cells.startRow(r: Int(attributes["r"] ?? ""), height: Double(attributes["ht"] ?? ""),
+                                   hidden: boolAttr(attributes["hidden"], default: false),
+                                   customFormat: boolAttr(attributes["customFormat"], default: false),
+                                   style: Int(attributes["s"] ?? ""),
+                                   outlineLevel: Int(attributes["outlineLevel"] ?? ""))
                 case "c":
-                    if let a1 = attributes["r"], let addr = CellAddress(a1: a1) {
-                        cellAddress = addr
-                        nextColumn = addr.column + 1
-                        if currentRow < 0 { currentRow = addr.row }
-                    } else {
-                        cellAddress = CellAddress(row: max(0, currentRow), column: nextColumn)
-                        nextColumn += 1
-                    }
-                    cellType = attributes["t"] ?? "n"
-                    cellStyleIndex = Int(attributes["s"] ?? "") ?? 0
+                    cells.startCell(address: attributes["r"].flatMap { CellAddress(a1: $0) },
+                                    type: SheetCellBuilder.CellType(attributes["t"]),
+                                    style: Int(attributes["s"] ?? ""))
                     valueText = ""
                     formulaText = nil
+                    resolvedFormula = nil
                     inlineText = ""
                     currentSharedSI = nil
                     currentFormulaIsShared = false
@@ -750,41 +859,125 @@ public enum XLSXReader {
                     if inIS { inIST = true }
                 case "col":
                     if let minCol = Int(attributes["min"] ?? ""), let maxCol = Int(attributes["max"] ?? ""),
-                       let width = Double(attributes["width"] ?? "") {
-                        // width chars -> px -> points
-                        let px = width * 7 + 5
+                       let width = Double(attributes["width"] ?? ""), width.isFinite, width >= 0 {
+                        // width chars -> px -> points (Excel's limit is 255 characters)
+                        let px = min(width, 255) * 7 + 5
                         let points = CGFloat(px * 0.75)
-                        for col in minCol...min(maxCol, minCol + 4096) {
-                            sheet.columnWidths[col - 1] = points
+                        let first = min(max(1, minCol), CellAddress.maxColumns + 1)
+                        let last = min(maxCol, first + 4096, CellAddress.maxColumns)
+                        if first <= last {
+                            for col in first...last {
+                                sheet.columnWidths[col - 1] = points
+                            }
                         }
                     }
                 case "mergeCell":
-                    if let ref = attributes["ref"], let range = CellRange(a1: ref), !range.isSingleCell {
+                    if let ref = attributes["ref"], let range = CellRange(a1: ref), !range.isSingleCell,
+                       range.start.isValid, range.end.isValid {
                         sheet.mergedRanges.append(range)
                     }
                 case "pane":
                     if attributes["state"] == "frozen" || attributes["state"] == "frozenSplit" {
-                        sheet.frozenColumns = Int(attributes["xSplit"] ?? "") ?? 0
-                        sheet.frozenRows = Int(attributes["ySplit"] ?? "") ?? 0
+                        let x = Int(attributes["xSplit"] ?? "") ?? 0
+                        let y = Int(attributes["ySplit"] ?? "") ?? 0
+                        sheet.frozenColumns = min(max(0, x), CellAddress.maxColumns - 1)
+                        sheet.frozenRows = min(max(0, y), CellAddress.maxRows - 1)
                     }
                 case "sheetFormatPr":
-                    if let h = Double(attributes["defaultRowHeight"] ?? "") {
-                        sheet.defaultRowHeight = CGFloat(max(12, h * (22.0 / 15.0)))
+                    if let h = Double(attributes["defaultRowHeight"] ?? ""), h.isFinite {
+                        let scaled = min(h, SheetCellBuilder.maxRowHeight) * (22.0 / 15.0)
+                        sheet.defaultRowHeight = CGFloat(max(12, scaled))
                     }
                 default:
                     break
                 }
             }
 
+            /// Worksheet content SimpleSpread reads past (it will not be saved).
+            func noteUnsupported(_ local: String, attributes: [String: String]) {
+                if depth == 2 {
+                    switch local {
+                    case "conditionalFormatting": found.insert(.conditionalFormatting)
+                    case "dataValidations": found.insert(.dataValidation)
+                    case "hyperlinks": found.insert(.hyperlinks)
+                    case "sheetProtection":
+                        // Present but off (LibreOffice writes sheet="false").
+                        if boolAttr(attributes["sheet"], default: false) { found.insert(.sheetProtection) }
+                    case "scenarios": found.insert(.scenarios)
+                    case "customSheetViews": found.insert(.customViews)
+                    case "oleObjects": found.insert(.embeddedObjects)
+                    case "controls": found.insert(.formControls)
+                    case "rowBreaks", "colBreaks", "legacyDrawingHF": found.insert(.printSettings)
+                    case "printOptions":
+                        // gridLinesSet defaults to true and means nothing alone.
+                        if attributes.contains(where: { $0.key != "gridLinesSet" && boolAttr($0.value, default: false) }) {
+                            found.insert(.printSettings)
+                        }
+                    case "pageSetup":
+                        if Self.pageSetupIsCustom(attributes) { found.insert(.printSettings) }
+                    default: break
+                    }
+                } else if depth == 3 {
+                    switch (path[1], local) {
+                    case ("sheetPr", "pageSetUpPr"):
+                        if boolAttr(attributes["fitToPage"], default: false) { found.insert(.printSettings) }
+                    case ("cols", "col"):
+                        if boolAttr(attributes["hidden"], default: false) { found.insert(.hiddenColumns) }
+                        if let style = Int(attributes["style"] ?? ""), (styleIndexMap[style] ?? 0) != 0 {
+                            found.insert(.columnFormatting)
+                        }
+                        if let level = Int(attributes["outlineLevel"] ?? ""), level > 0 { found.insert(.outlines) }
+                    default: break
+                    }
+                } else if depth == 4, path[1] == "extLst" {
+                    switch local {
+                    case "conditionalFormattings": found.insert(.conditionalFormatting)
+                    case "dataValidations": found.insert(.dataValidation)
+                    case "sparklineGroups": found.insert(.sparklines)
+                    case "slicerList": found.insert(.slicers)
+                    case "timelineRefs": found.insert(.timelines)
+                    default: break
+                    }
+                }
+            }
+
+            /// Anything beyond paper size, portrait orientation and printer
+            /// resolution (what Excel writes once a sheet has been printed).
+            static func pageSetupIsCustom(_ attributes: [String: String]) -> Bool {
+                for (key, value) in attributes {
+                    switch localName(key) {
+                    case "paperSize", "horizontalDpi", "verticalDpi", "id", "copies", "usePrinterDefaults":
+                        continue
+                    case "orientation" where value == "portrait" || value == "default": continue
+                    case "scale" where value == "100": continue
+                    case "fitToWidth", "fitToHeight": continue // only with sheetPr/pageSetUpPr@fitToPage
+                    case "firstPageNumber": continue // only with useFirstPageNumber
+                    case "pageOrder" where value == "downThenOver": continue
+                    case "cellComments" where value == "none": continue
+                    case "errors" where value == "displayed": continue
+                    case "useFirstPageNumber", "blackAndWhite", "draft":
+                        if !boolAttr(value, default: false) { continue }
+                        return true
+                    default:
+                        return true
+                    }
+                }
+                return false
+            }
+
             func parser(_ parser: XMLParser, foundCharacters string: String) {
                 if inV { valueText += string }
                 else if inF { formulaText = (formulaText ?? "") + string }
                 else if inIST { inlineText += string }
+                else if depth >= 3, path[1] == "headerFooter",
+                        string.contains(where: { !$0.isWhitespace }) {
+                    found.insert(.printSettings) // a header or footer with text
+                }
             }
 
             func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?,
                         qualifiedName: String?) {
-                defer { depth -= 1 }
+                defer { depth -= 1; path.removeLast() }
                 if depth == 3, localName(name) == "filterColumn", let colID = filterColumnID {
                     if filterColumnPreserve {
                         filterColumn = ColumnFilter(preservedXML: "") // filled in after the parse
@@ -799,63 +992,32 @@ public enum XLSXReader {
                 case "v": inV = false
                 case "f":
                     inF = false
-                    if currentFormulaIsShared, let si = currentSharedSI, let addr = cellAddress {
-                        if let text = formulaText, !text.isEmpty {
-                            sharedFormulas[si] = (addr, text)
-                        } else if let (masterAddr, masterText) = sharedFormulas[si] {
-                            // Follower: translate the master formula by the offset.
-                            formulaText = XLSXReader.translateFormula(
-                                masterText,
-                                byRows: addr.row - masterAddr.row,
-                                columns: addr.column - masterAddr.column)
-                        }
-                    }
+                    resolvedFormula = cells.formula(text: formulaText, shared: currentFormulaIsShared,
+                                                    si: currentSharedSI)
                 case "t": inIST = false
                 case "is": inIS = false
                 case "c":
-                    commitCell()
+                    cells.commitCell(value: valueText, inlineText: inlineText, formula: resolvedFormula)
+                    resolvedFormula = nil
                 default:
                     break
                 }
             }
-
-            func commitCell() {
-                guard let addr = cellAddress, addr.isValid else { return }
-                var value = CellValue.empty
-                switch cellType {
-                case "n":
-                    if let n = Double(valueText) { value = .number(n) }
-                case "s":
-                    if let idx = Int(valueText), idx >= 0, idx < sharedStrings.count {
-                        value = .string(sharedStrings[idx])
-                    }
-                case "str":
-                    value = .string(XML.decodeIllegalCharacters(valueText))
-                case "b":
-                    value = .bool(valueText == "1" || valueText.lowercased() == "true")
-                case "e":
-                    value = .error(CellError.parse(valueText) ?? .value)
-                case "inlineStr":
-                    value = .string(XML.decodeIllegalCharacters(inlineText))
-                case "d":
-                    if let serial = XLSXReader.isoDateToSerial(valueText) { value = .number(serial) }
-                default:
-                    if let n = Double(valueText) { value = .number(n) }
-                }
-                let mappedStyle = styleIndexMap[cellStyleIndex] ?? 0
-                let cell = Cell(value: value, formula: formulaText.flatMap { $0.isEmpty ? nil : $0 },
-                                styleIndex: mappedStyle)
-                if !cell.isDefault {
-                    sheet.setCell(cell, at: addr)
-                }
-                cellAddress = nil
-            }
         }
 
-        let delegate = Delegate(sheet: sheet, sharedStrings: sharedStrings, styleIndexMap: styleIndexMap)
-        try runParser(data, delegate: delegate)
+        let delegate = Delegate(sheet: sheet, sharedStrings: sharedStrings, styleIndexMap: styleIndexMap,
+                                progress: progress, data: data)
+        do {
+            try runParser(data, delegate: delegate)
+        } catch {
+            if delegate.cancelled { throw XLSXError.cancelled }
+            throw error
+        }
+        var found = delegate.found
+        if delegate.cells.sawRowFormatting { found.insert(.rowFormatting) }
+        if delegate.cells.sawOutline { found.insert(.outlines) }
 
-        guard var filter = delegate.autoFilter else { return }
+        guard var filter = delegate.autoFilter else { return found }
         // Criteria we can't evaluate are kept as XML and written back verbatim.
         let owners = delegate.criterionOwners
         let preserved = delegate.preservedCriteria.filter { filter.columns[$0.key]?.preservedXML != nil }
@@ -872,6 +1034,42 @@ public enum XLSXReader {
             }
         }
         sheet.autoFilter = filter
+        return found
+    }
+
+    /// Turns XMLParser's line and column into a fraction of the part read.
+    final class ParsePosition {
+        private let count: Int
+        /// Byte offset of each line's start, when there are few lines (Excel
+        /// writes a sheet on one or two); otherwise the line count is used.
+        private let lineStarts: [Int]?
+        private let lines: Int
+
+        init(_ data: Data) {
+            count = max(1, data.count)
+            var starts = [0]
+            var lineCount = 1
+            data.withUnsafeBytes { raw in
+                let b = raw.bindMemory(to: UInt8.self)
+                for k in 0..<b.count where b[k] == 0x0A {
+                    lineCount += 1
+                    if starts.count <= 4096 { starts.append(k + 1) }
+                }
+            }
+            lines = lineCount
+            lineStarts = starts.count <= 4096 ? starts : nil
+        }
+
+        func fraction(line: Int, column: Int) -> Double {
+            let f: Double
+            if let lineStarts {
+                let start = lineStarts[min(max(0, line - 1), lineStarts.count - 1)]
+                f = Double(start + max(0, column)) / Double(count)
+            } else {
+                f = Double(max(0, line - 1)) / Double(lines)
+            }
+            return min(1, max(0, f))
+        }
     }
 
     /// A fragment carries every namespace declaration in scope where it was
@@ -907,20 +1105,24 @@ public enum XLSXReader {
         WorkbookOperations.translatedFormula(text, byRows: rows, columns: columns)
     }
 
+    /// An ISO 8601 date or date-time (`t="d"` cells) as a serial; nil for
+    /// anything else, including empty text and dates outside years 0–9999.
     static func isoDateToSerial(_ s: String) -> Double? {
-        let parts = s.split(separator: "T", maxSplits: 1)
-        let dateParts = parts[0].split(separator: "-")
-        guard dateParts.count == 3,
-              let y = Int(dateParts[0]), let m = Int(dateParts[1]), let d = Int(dateParts[2]) else {
+        let parts = s.split(separator: "T", maxSplits: 1, omittingEmptySubsequences: false)
+        guard let datePart = parts.first else { return nil }
+        let dateParts = datePart.split(separator: "-", omittingEmptySubsequences: false)
+        guard dateParts.count == 3, dateParts.allSatisfy({ !$0.isEmpty && $0.count <= 4 }),
+              let y = Int(dateParts[0]), let m = Int(dateParts[1]), let d = Int(dateParts[2]),
+              (0...9999).contains(y), (1...12).contains(m), (1...31).contains(d) else {
             return nil
         }
         var serial = ExcelDate.serial(year: y, month: m, day: d)
         if parts.count > 1 {
             let timeParts = parts[1].split(separator: ":")
             if timeParts.count >= 2 {
-                let h = Int(timeParts[0]) ?? 0
-                let min = Int(timeParts[1]) ?? 0
-                let sec = timeParts.count > 2 ? (Double(timeParts[2].prefix(while: { $0.isNumber || $0 == "." })) ?? 0) : 0
+                let h = Int(timeParts[0].prefix(6)) ?? 0
+                let min = Int(timeParts[1].prefix(6)) ?? 0
+                let sec = timeParts.count > 2 ? (Double(timeParts[2].prefix(while: { $0.isNumber || $0 == "." }).prefix(20)) ?? 0) : 0
                 serial += ExcelDate.timeFraction(hour: h, minute: min, second: sec)
             }
         }

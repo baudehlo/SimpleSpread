@@ -395,9 +395,80 @@ enum PivotXMLWriter {
             s += "<pivotTableStyleInfo" + attr("name", name) + " showRowHeaders=\"1\" showColHeaders=\"1\""
                 + " showRowStripes=\"0\" showColStripes=\"0\" showLastColumn=\"1\"/>"
         }
-        if !d.filters.isEmpty, let filters = carry.fragments["filters"] { s += filters }
+        s += filtersXML(d.filters, carried: carry.fragments["filters"])
         s += extensionList(carry.fragments["extLst"], hideValuesRow: l.hideValuesRow)
         return s + "</pivotTableDefinition>"
+    }
+
+    /// `<filters>` from the model, so field numbers are current after a
+    /// refresh or an edit and a filter whose field was removed is gone. A
+    /// filter read from the file keeps its original element (its name,
+    /// string values, extensions) with the numbers brought up to date.
+    static func filtersXML(_ filters: [PivotFilter], carried: String?) -> String {
+        guard !filters.isEmpty else { return "" }
+        var originals: [Int: String] = [:]
+        if let carried, let fragments = try? XMLRewriter.fragments(of: Data(carried.utf8), where: { $0.path == ["filters", "filter"] }) {
+            for fragment in fragments {
+                var id: Int?
+                try? XMLRewriter.scan(Data(fragment.utf8)) { element in
+                    if element.path.count == 1 { id = Int(element.attributes["id"] ?? "") }
+                    return .keep
+                }
+                if let id, originals[id] == nil { originals[id] = fragment }
+            }
+        }
+        var nextID = (filters.compactMap(\.id) + Array(originals.keys)).max().map { $0 + 1 } ?? 1
+        var s = "<filters count=\"\(filters.count)\">"
+        for filter in filters {
+            let id: Int
+            if let existing = filter.id { id = existing } else { id = nextID; nextID += 1 }
+            if let original = originals[id], let patched = patchedFilter(original, filter, id: id) {
+                s += patched
+            } else {
+                s += generatedFilter(filter, id: id)
+            }
+        }
+        return s + "</filters>"
+    }
+
+    private static func patchedFilter(_ original: String, _ filter: PivotFilter, id: Int) -> String? {
+        guard let data = try? XMLRewriter.rewrite(Data(original.utf8), { element in
+            if element.path.count == 1 {
+                element.attributes["fld"] = String(filter.field)
+                element.attributes["evalOrder"] = String(filter.evalOrder)
+                element.attributes["id"] = String(id)
+                if filter.type == "count" || element.attributes["iMeasureFld"] != nil {
+                    element.attributes["iMeasureFld"] = String(filter.measureField)
+                }
+            }
+            return .keep
+        }) else { return nil }
+        var s = String(decoding: data, as: UTF8.self)
+        if s.hasPrefix("<?xml"), let declaration = s.range(of: "?>") {
+            s = String(s[declaration.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return s
+    }
+
+    private static func generatedFilter(_ filter: PivotFilter, id: Int) -> String {
+        var s = "<filter" + attr("fld", String(filter.field)) + attr("type", filter.type)
+            + attr("evalOrder", String(filter.evalOrder)) + attr("id", String(id))
+        if filter.type == "count" { s += attr("iMeasureFld", String(filter.measureField)) }
+        s += "><autoFilter ref=\"A1\"><filterColumn colId=\"0\">"
+        if filter.type == "count" {
+            let value = XLSXWriter.serialNumberString(filter.top10Value ?? 10)
+            s += "<top10"
+            if !filter.top10Top { s += attr("top", "0") }
+            if filter.top10Percent { s += attr("percent", "1") }
+            s += attr("val", value) + attr("filterVal", value) + "/>"
+        } else {
+            s += "<customFilters" + (filter.conditionsAreAnd ? attr("and", "1") : "") + ">"
+            for c in filter.conditions {
+                s += "<customFilter" + (c.op == "equal" ? "" : attr("operator", c.op)) + attr("val", c.value) + "/>"
+            }
+            s += "</customFilters>"
+        }
+        return s + "</filterColumn></autoFilter></filter>"
     }
 
     /// The table's extLst, making sure x14 hideValuesRow is present when the

@@ -3,12 +3,26 @@ import Compression
 import zlib
 
 /// Minimal ZIP (PKZIP) container support — exactly what XLSX needs:
-/// stored + deflate entries, correct CRC-32, no data descriptors, no ZIP64.
-public enum ZipError: Error, Equatable {
+/// stored + deflate entries, correct CRC-32, no data descriptors, no ZIP64
+/// (so no entry or archive of 4 GiB or more, and at most 65,534 entries).
+public enum ZipError: Error, Equatable, LocalizedError {
     case notAZipFile
     case corrupt(String)
     case unsupported(String)
     case entryNotFound(String)
+    /// Over a size limit: a part too big for the ZIP format to write, or an
+    /// archive whose contents would inflate beyond what is believable.
+    case tooLarge(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .notAZipFile: return "The file is not a valid workbook (it is not a ZIP package)."
+        case .corrupt(let detail): return "The file is damaged (\(detail))."
+        case .unsupported(let detail): return "This kind of file is not supported (\(detail))."
+        case .entryNotFound(let name): return "The file is missing a part it needs (\(name))."
+        case .tooLarge(let detail): return detail
+        }
+    }
 }
 
 public struct ZipEntry: Sendable {
@@ -51,27 +65,38 @@ enum Deflate {
     /// the pieces join into one ordinary deflate stream. Returns nil when
     /// compression doesn't shrink the data.
     static func compress(_ data: Data) -> Data? {
+        compress(data, progress: { _ in })
+    }
+
+    /// As above, calling `progress` with the fraction of chunks done after
+    /// each batch of chunks (a few per core, so the cores stay busy); it
+    /// throws to stop.
+    static func compress(_ data: Data, batchSize: Int? = nil,
+                         progress: (Double) throws -> Void) rethrows -> Data? {
         guard !data.isEmpty else { return nil }
         let chunkSize = 1 << 20
         let chunkCount = (data.count + chunkSize - 1) / chunkSize
+        let batchSize = max(1, batchSize ?? ProcessInfo.processInfo.activeProcessorCount * 4)
         var pieces = [Data?](repeating: nil, count: chunkCount)
-        let failed = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
-            let base = raw.bindMemory(to: Bytef.self).baseAddress!
+        let failed = try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
             let results = UnsafeMutableBufferPointer<Data?>.allocate(capacity: chunkCount)
             results.initialize(repeating: nil)
-            defer { results.deallocate() }
-            let compressChunk = { (index: Int) in
-                let start = index * chunkSize
-                let count = min(chunkSize, raw.count - start)
-                let primer = min(start, 32 * 1024)
-                results[index] = deflateChunk(base + start, count: count,
-                                              dictionary: base + start - primer, dictionaryCount: primer,
-                                              last: index == chunkCount - 1)
+            defer {
+                results.deinitialize()
+                results.deallocate()
             }
-            if chunkCount == 1 {
-                compressChunk(0)
-            } else {
-                DispatchQueue.concurrentPerform(iterations: chunkCount, execute: compressChunk)
+            let job = ChunkJob(input: raw.bindMemory(to: Bytef.self), results: results,
+                               chunkSize: chunkSize, chunkCount: chunkCount)
+            var next = 0
+            while next < chunkCount {
+                let first = next, count = min(batchSize, chunkCount - next)
+                if count == 1 {
+                    job.compress(chunk: first)
+                } else {
+                    DispatchQueue.concurrentPerform(iterations: count) { job.compress(chunk: first + $0) }
+                }
+                next += count
+                try progress(Double(next) / Double(chunkCount))
             }
             for i in 0..<chunkCount { pieces[i] = results[i] }
             return pieces.contains { $0 == nil }
@@ -84,9 +109,30 @@ enum Deflate {
         return output
     }
 
+    /// The chunks of one `compress`, shared by the worker threads. Unchecked
+    /// Sendable: each thread only reads `input` and writes its own slot of
+    /// `results`, and both buffers outlive `concurrentPerform`, which
+    /// returns only once every chunk is done.
+    private struct ChunkJob: @unchecked Sendable {
+        let input: UnsafeBufferPointer<Bytef>
+        let results: UnsafeMutableBufferPointer<Data?>
+        let chunkSize: Int
+        let chunkCount: Int
+
+        func compress(chunk index: Int) {
+            guard let base = input.baseAddress else { return }
+            let start = index * chunkSize
+            let count = min(chunkSize, input.count - start)
+            let primer = min(start, 32 * 1024)
+            results[index] = Deflate.deflateChunk(base + start, count: count,
+                                                  dictionary: base + start - primer, dictionaryCount: primer,
+                                                  last: index == chunkCount - 1)
+        }
+    }
+
     /// Deflate one chunk at level 6. Every chunk but the last ends with a
     /// sync flush (byte-aligned, stream left open); the last finishes it.
-    private static func deflateChunk(_ input: UnsafePointer<Bytef>, count: Int,
+    fileprivate static func deflateChunk(_ input: UnsafePointer<Bytef>, count: Int,
                                      dictionary: UnsafePointer<Bytef>, dictionaryCount: Int,
                                      last: Bool) -> Data? {
         var stream = z_stream()
@@ -133,12 +179,39 @@ enum Deflate {
 // MARK: - Reader
 
 public struct ZipArchiveReader {
+    /// What a package may inflate to. Entries are inflated whole, so these
+    /// bound the memory a hostile file (a "ZIP bomb") can make a read take.
+    public struct Limits: Sendable {
+        /// Largest single entry (the format's own limit without ZIP64).
+        public var maxEntrySize: Int
+        /// All entries together, as declared in the central directory.
+        public var maxTotalSize: Int
+        /// Deflate tops out near 1032:1, and real workbook parts stay far
+        /// below; a deflated entry over `ratioCheckSize` claiming more is refused.
+        public var maxCompressionRatio: Int
+        public var ratioCheckSize: Int
+
+        public init(maxEntrySize: Int, maxTotalSize: Int, maxCompressionRatio: Int, ratioCheckSize: Int) {
+            self.maxEntrySize = maxEntrySize
+            self.maxTotalSize = maxTotalSize
+            self.maxCompressionRatio = maxCompressionRatio
+            self.ratioCheckSize = ratioCheckSize
+        }
+
+        public static let standard = Limits(maxEntrySize: Int(UInt32.max), maxTotalSize: 8 << 30,
+                                            maxCompressionRatio: 1000, ratioCheckSize: 8 << 20)
+    }
+
     public let entries: [ZipEntry]
     private let data: Data
     private let entriesByName: [String: Int]
+    private let limits: Limits
 
-    public init(data: Data) throws {
+    public init(data: Data, limits: Limits = .standard) throws {
+        // Indices below assume the bytes start at 0 (a slice may not).
+        let data = data.startIndex == 0 ? data : Data(data)
         self.data = data
+        self.limits = limits
         // Encrypted Office files are CFB containers, not ZIPs.
         if data.count >= 8, data.prefix(8) == Data([0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
             throw ZipError.unsupported("encrypted or legacy .xls file")
@@ -177,6 +250,7 @@ public struct ZipArchiveReader {
         var parsed: [ZipEntry] = []
         var byName: [String: Int] = [:]
         var pos = cdOffset
+        var totalSize = 0
         for _ in 0..<entryCount {
             guard try u32(pos) == 0x02014b50 else { throw ZipError.corrupt("bad central directory signature") }
             let method = UInt16(try u16(pos + 10))
@@ -194,6 +268,10 @@ public struct ZipArchiveReader {
             let nameData = data.subdata(in: (pos + 46)..<(pos + 46 + nameLen))
             let name = String(data: nameData, encoding: .utf8)
                 ?? String(data: nameData, encoding: .isoLatin1) ?? ""
+            totalSize += uncompSize
+            guard totalSize <= limits.maxTotalSize else {
+                throw ZipError.tooLarge("The file’s contents would take more than \(Self.size(limits.maxTotalSize)) to open.")
+            }
             let entry = ZipEntry(name: name, compressedSize: compSize,
                                  uncompressedSize: uncompSize, crc32: crc,
                                  compressionMethod: method, localHeaderOffset: localOffset)
@@ -232,6 +310,7 @@ public struct ZipArchiveReader {
         guard start + entry.compressedSize <= data.count else {
             throw ZipError.corrupt("entry payload out of bounds")
         }
+        try checkLimits(entry)
         let payload = data.subdata(in: start..<(start + entry.compressedSize))
         let raw: Data
         switch entry.compressionMethod {
@@ -248,6 +327,24 @@ public struct ZipArchiveReader {
         return raw
     }
 
+    /// Refuse an entry before inflating it when its declared size is over
+    /// the limits, or implausible for its compressed size.
+    private func checkLimits(_ entry: ZipEntry) throws {
+        guard entry.uncompressedSize <= limits.maxEntrySize else {
+            throw ZipError.tooLarge("“\(entry.name)” would take more than \(Self.size(limits.maxEntrySize)) to open.")
+        }
+        if entry.compressionMethod == 8, entry.uncompressedSize > limits.ratioCheckSize,
+           entry.uncompressedSize / max(1, entry.compressedSize) > limits.maxCompressionRatio {
+            throw ZipError.tooLarge("“\(entry.name)” claims to expand more than \(limits.maxCompressionRatio) times, "
+                                    + "which no real workbook does; the file may be damaged or malicious.")
+        }
+    }
+
+    /// "4 GB", "512 MB".
+    static func size(_ bytes: Int) -> String {
+        bytes >= 1 << 30 ? "\((bytes + (1 << 29)) >> 30) GB" : "\((bytes + (1 << 19)) >> 20) MB"
+    }
+
     public func contents(named name: String) throws -> Data {
         guard let e = entry(named: name) else { throw ZipError.entryNotFound(name) }
         return try contents(of: e)
@@ -257,6 +354,11 @@ public struct ZipArchiveReader {
 // MARK: - Writer
 
 public struct ZipArchiveWriter {
+    /// Sizes and offsets are 32-bit and the entry count 16-bit without
+    /// ZIP64 (all-ones values would mean "see ZIP64").
+    static let maxSize = Int(UInt32.max) - 1
+    static let maxEntries = Int(UInt16.max) - 1
+
     private struct PendingEntry {
         let name: String
         let payload: Data
@@ -271,8 +373,13 @@ public struct ZipArchiveWriter {
 
     /// Add a file. Entry names use forward slashes with no leading slash.
     public mutating func addEntry(name: String, data: Data) {
+        addEntry(name: name, data: data, progress: { _ in })
+    }
+
+    /// As above; `progress` gets the fraction compressed and throws to stop.
+    mutating func addEntry(name: String, data: Data, progress: (Double) throws -> Void) rethrows {
         let crc = CRC32.checksum(data)
-        if let compressed = Deflate.compress(data) {
+        if let compressed = try Deflate.compress(data, progress: progress) {
             pending.append(PendingEntry(name: name, payload: compressed, method: 8,
                                         crc: crc, uncompressedSize: data.count))
         } else {
@@ -281,7 +388,28 @@ public struct ZipArchiveWriter {
         }
     }
 
-    public func finalize() -> Data {
+    /// The archive's bytes. Throws `ZipError.tooLarge` rather than write a
+    /// broken file when an entry, the whole archive or the entry count is
+    /// beyond what ZIP records without ZIP64 can describe.
+    public func finalize() throws -> Data {
+        try finalize(maxSize: Self.maxSize, maxEntries: Self.maxEntries)
+    }
+
+    /// `maxSize`/`maxEntries`: lowered by tests.
+    func finalize(maxSize: Int, maxEntries: Int) throws -> Data {
+        guard pending.count <= maxEntries else {
+            throw ZipError.tooLarge("The workbook has too many parts to save (\(pending.count); the limit is \(maxEntries)).")
+        }
+        for entry in pending where entry.uncompressedSize > maxSize || entry.payload.count > maxSize {
+            throw ZipError.tooLarge("“\(entry.name)” is too large to save (\(ZipArchiveReader.size(entry.uncompressedSize)); "
+                                    + "an XLSX part is limited to 4 GB). Try splitting the data across sheets.")
+        }
+        let localBytes = pending.reduce(0) { $0 + 30 + $1.name.utf8.count + $1.payload.count }
+        let directoryBytes = pending.reduce(0) { $0 + 46 + $1.name.utf8.count }
+        guard localBytes + directoryBytes <= maxSize else {
+            throw ZipError.tooLarge("The workbook is too large to save as one file (over 4 GB compressed). "
+                                    + "Try splitting the data across workbooks.")
+        }
         var out = Data()
         var centralDirectory = Data()
 

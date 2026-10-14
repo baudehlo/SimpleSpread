@@ -51,23 +51,10 @@ enum StatisticalFunctions {
             return .number(Double(count))
         },
         .eager("COUNTIF", min: 2, max: 2) { args, _ in
-            let grid = GridArg(args[0])
-            let criterion = Criterion.parse(try args[1].toScalar())
-            var count = 0
-            grid.forEach { v in
-                if criterion.matches(v) { count += 1 }
-            }
-            return .number(Double(count))
+            .number(Double(try matchingCells(criteriaPairs(args, from: 0)).count))
         },
         .eager("COUNTIFS", min: 2, max: nil) { args, _ in
-            guard args.count % 2 == 0 else { throw CellError.na }
-            var pairs: [(GridArg, Criterion)] = []
-            var i = 0
-            while i + 1 < args.count {
-                pairs.append((GridArg(args[i]), Criterion.parse(try args[i + 1].toScalar())))
-                i += 2
-            }
-            return .number(Double(try matchingIndices(criteriaPairs: pairs).count))
+            .number(Double(try matchingCells(criteriaPairs(args, from: 0)).count))
         },
         .eager("COUNTUNIQUE", min: 1, max: nil) { args, _ in
             var seen = Set<String>()
@@ -185,74 +172,33 @@ enum StatisticalFunctions {
             .number(try deviation(args, sample: false))
         },
         .eager("AVERAGEIF", min: 2, max: 3) { args, _ in
-            let range = GridArg(args[0])
-            let criterion = Criterion.parse(try args[1].toScalar())
-            let avgGrid = args.count > 2 ? GridArg(args[2]) : range
-            var total = 0.0
-            var count = 0
-            for r in 0..<range.rows {
-                for c in 0..<range.columns {
-                    let v = range.value(atRow: r, column: c)
-                    if case .error(let e) = v { throw e }
-                    guard criterion.matches(v) else { continue }
-                    let av = avgGrid.value(atRow: r, column: c)
-                    if case .error(let e) = av { throw e }
-                    if case .number(let n) = av { total += n; count += 1 }
-                }
-            }
-            guard count > 0 else { throw CellError.div0 }
-            return .number(total / Double(count))
+            let cells = try matchingCells(criteriaPairs(Array(args.prefix(2)), from: 0))
+            let nums = try criteriaNumbers(GridArg(args.count > 2 ? args[2] : args[0]), at: cells)
+            guard !nums.isEmpty else { throw CellError.div0 }
+            return .number(nums.reduce(0, +) / Double(nums.count))
         },
         .eager("AVERAGEIFS", min: 3, max: nil) { args, _ in
-            guard (args.count - 1) % 2 == 0 else { throw CellError.na }
-            let avgGrid = GridArg(args[0])
-            var pairs: [(GridArg, Criterion)] = []
-            var i = 1
-            while i + 1 < args.count {
-                pairs.append((GridArg(args[i]), Criterion.parse(try args[i + 1].toScalar())))
-                i += 2
-            }
-            guard pairs.allSatisfy({ $0.0.rows == avgGrid.rows && $0.0.columns == avgGrid.columns }) else {
-                throw CellError.value
-            }
-            var total = 0.0
-            var count = 0
-            for idx in try matchingIndices(criteriaPairs: pairs) {
-                let v = avgGrid.value(atRow: idx / avgGrid.columns, column: idx % avgGrid.columns)
-                if case .error(let e) = v { throw e }
-                if case .number(let n) = v { total += n; count += 1 }
-            }
-            guard count > 0 else { throw CellError.div0 }
-            return .number(total / Double(count))
+            let nums = try filteredNumbers(args)
+            guard !nums.isEmpty else { throw CellError.div0 }
+            return .number(nums.reduce(0, +) / Double(nums.count))
         },
     ]
 
-    /// Shared MAXIFS/MINIFS implementation.
-    private static func filteredExtreme(_ args: [EvalValue], isMax: Bool) throws -> Double {
-        guard (args.count - 1) % 2 == 0 else { throw CellError.na }
+    /// AVERAGEIFS/MAXIFS/MINIFS(values, range1, criterion1, ...): the
+    /// numbers of `values` where every criterion holds.
+    private static func filteredNumbers(_ args: [EvalValue]) throws -> [Double] {
         let grid = GridArg(args[0])
-        var pairs: [(GridArg, Criterion)] = []
-        var i = 1
-        while i + 1 < args.count {
-            pairs.append((GridArg(args[i]), Criterion.parse(try args[i + 1].toScalar())))
-            i += 2
-        }
+        let pairs = try criteriaPairs(args, from: 1)
         guard pairs.allSatisfy({ $0.0.rows == grid.rows && $0.0.columns == grid.columns }) else {
             throw CellError.value
         }
-        var result: Double?
-        for idx in try matchingIndices(criteriaPairs: pairs) {
-            let v = grid.value(atRow: idx / grid.columns, column: idx % grid.columns)
-            if case .error(let e) = v { throw e }
-            if case .number(let n) = v {
-                if let current = result {
-                    result = isMax ? Swift.max(current, n) : Swift.min(current, n)
-                } else {
-                    result = n
-                }
-            }
-        }
-        return result ?? 0
+        return try criteriaNumbers(grid, at: matchingCells(pairs))
+    }
+
+    /// Shared MAXIFS/MINIFS implementation.
+    private static func filteredExtreme(_ args: [EvalValue], isMax: Bool) throws -> Double {
+        let nums = try filteredNumbers(args)
+        return (isMax ? nums.max() : nums.min()) ?? 0
     }
 
     private static func deviation(_ args: [EvalValue], sample: Bool) throws -> Double {
@@ -269,8 +215,9 @@ enum StatisticalFunctions {
         guard !sorted.isEmpty, p >= 0, p <= 1 else { throw CellError.num }
         if sorted.count == 1 { return sorted[0] }
         let rank = p * Double(sorted.count - 1)
-        let lower = Int(rank.rounded(.down))
-        let upper = Int(rank.rounded(.up))
+        guard let lower = checkedInt(rank), let upper = checkedInt(rank, rounding: .up) else {
+            throw CellError.num
+        }
         if lower == upper { return sorted[lower] }
         let frac = rank - Double(lower)
         return sorted[lower] + (sorted[upper] - sorted[lower]) * frac

@@ -6,9 +6,8 @@ import UniformTypeIdentifiers
 /// One document window: toolbar, formula bar, grid, sheet tabs, status bar.
 public struct DocumentWindowView: View {
     @ObservedObject var document: SpreadsheetDocument
-    @State private var formulaBarText = ""
+    @StateObject private var formulaBarEditor = FormulaBarEditor()
     @State private var nameBoxText = "A1"
-    @State private var formulaBarFocused = false
     @State private var renamingSheetID: Int?
     @State private var renameText = ""
     @State private var gridRevision = 0
@@ -176,9 +175,8 @@ public struct DocumentWindowView: View {
     }
 
     private func syncFromDocument() {
-        if !formulaBarFocused {
-            formulaBarText = document.editString(at: document.selection.activeCell)
-        }
+        formulaBarEditor.document = document
+        formulaBarEditor.sync()
         let range = document.selection.range
         nameBoxText = range.isSingleCell ? document.selection.activeCell.a1 : range.a1
         gridRevision += 1
@@ -398,16 +396,15 @@ public struct DocumentWindowView: View {
     private var dataGroup: some View {
         HStack(spacing: 6) {
             Menu {
-                Button("Sort A to Z") { document.quickSort(ascending: true) }
-                Button("Sort Z to A") { document.quickSort(ascending: false) }
-                Button("Custom Sort…") { document.isSortPresented = true }
+                Button("Sort A to Z", action: command { document.quickSort(ascending: true) })
+                Button("Sort Z to A", action: command { document.quickSort(ascending: false) })
+                Button("Custom Sort…", action: command { document.isSortPresented = true })
                 Divider()
-                Button(document.activeAutoFilter == nil ? "Filter" : "Remove Filter") {
-                    document.toggleAutoFilter()
-                }
-                Button("Clear Filters") { document.clearAllFilters() }
+                Button(document.activeAutoFilter == nil ? "Filter" : "Remove Filter",
+                       action: command { document.toggleAutoFilter() })
+                Button("Clear Filters", action: command { document.clearAllFilters() })
                     .disabled(document.activeAutoFilter?.columns.isEmpty ?? true)
-                Button("Reapply Filter") { document.reapplyAutoFilter() }
+                Button("Reapply Filter", action: command { document.reapplyAutoFilter() })
                     .disabled(document.activeAutoFilter == nil)
             } label: {
                 // Menu labels drop backgrounds, so a filled icon marks a filter.
@@ -428,11 +425,12 @@ public struct DocumentWindowView: View {
     private var autoSumMenu: some View {
         Menu {
             ForEach(DocumentWindowView.autoSumFunctions, id: \.1) { name, function in
-                Button(name) { document.autoSum(function) }
+                Button(name, action: command { document.autoSum(function) })
             }
         } label: {
             Image(systemName: "sum")
         } primaryAction: {
+            document.commitPendingEdit()
             document.autoSum()
         }
         .menuStyle(.borderlessButton)
@@ -440,8 +438,17 @@ public struct DocumentWindowView: View {
         .help("AutoSum: total the numbers above or to the left (click the arrow for Average, Count, Max, Min)")
     }
 
+    /// Toolbar commands act on committed cells: write any pending typing
+    /// first (toolbar buttons do not take focus, so the editor stays open).
+    private func command(_ action: @escaping () -> Void) -> () -> Void {
+        { [document] in
+            document.commitPendingEdit()
+            action()
+        }
+    }
+
     private func styleToggle(_ icon: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button(action: command(action)) {
             Image(systemName: icon)
                 .frame(width: 22, height: 20)
                 .background(active ? Color.accentColor.opacity(0.25) : .clear)
@@ -451,7 +458,7 @@ public struct DocumentWindowView: View {
     }
 
     private func toolButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button(action: command(action)) {
             Image(systemName: icon)
                 .frame(width: 22, height: 20)
         }
@@ -461,7 +468,7 @@ public struct DocumentWindowView: View {
 
     /// The ".0 ←" / ".00 →" decimal buttons, drawn as text like Sheets.
     private func textButton(_ text: String, arrow: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        Button(action: command(action)) {
             HStack(spacing: 1) {
                 if arrow == "arrow.left" { Image(systemName: arrow).font(.system(size: 8, weight: .semibold)) }
                 Text(text).font(.system(size: 12, weight: .semibold))
@@ -480,13 +487,7 @@ public struct DocumentWindowView: View {
         .help(help)
     }
 
-    /// Common Mac fonts plus the usual Office ones, keeping only those
-    /// installed (Office fonts appear once Microsoft Office is installed).
-    static let fontChoices: [String] = [
-        CellStyle.defaultFontName, "Helvetica", "Arial", "Avenir Next", "Calibri", "Cambria",
-        "Courier New", "Georgia", "Gill Sans", "Menlo", "Palatino", "Times New Roman",
-        "Trebuchet MS", "Verdana",
-    ].filter { NSFont(name: $0, size: 12) != nil }
+    static var fontChoices: [String] { FontChoices.current }
 
     static let fontSizeChoices: [Double] = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 30, 36, 48]
 
@@ -629,15 +630,23 @@ public struct DocumentWindowView: View {
             Image(systemName: "function")
                 .foregroundStyle(.secondary)
                 .font(.system(size: 11))
-            TextField("", text: $formulaBarText, onEditingChanged: { editing in
-                formulaBarFocused = editing
+            // Typing is for the cell active at the first keystroke, and is
+            // committed there on Return or when focus leaves the bar.
+            TextField("", text: Binding(
+                get: { formulaBarEditor.text },
+                set: { formulaBarEditor.userEdited($0) }
+            ), onEditingChanged: { editing in
+                if !editing { formulaBarEditor.endEditing() }
             })
             .textFieldStyle(.plain)
             .font(.system(size: 12, design: .monospaced))
             .onSubmit {
-                document.commitInput(formulaBarText, at: document.selection.activeCell)
-                formulaBarFocused = false
+                formulaBarEditor.commitPendingEdit()
                 syncFromDocument()
+            }
+            .onExitCommand {
+                formulaBarEditor.cancel()
+                refocusGrid()
             }
         }
         .padding(.horizontal, 10)
@@ -773,5 +782,31 @@ public struct DocumentWindowView: View {
         return Text(text)
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
+    }
+}
+
+/// The toolbar's font list: common Mac fonts plus the usual Office ones,
+/// keeping only those installed (Office fonts appear once Microsoft Office
+/// is). Asking the font server about each takes 10-40 ms, so it's done in
+/// the background at launch; until it finishes the menu lists them all.
+enum FontChoices {
+    static let candidates: [String] = [
+        CellStyle.defaultFontName, "Helvetica", "Arial", "Avenir Next", "Calibri", "Cambria",
+        "Courier New", "Georgia", "Gill Sans", "Menlo", "Palatino", "Times New Roman",
+        "Trebuchet MS", "Verdana",
+    ]
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var installed: [String]?
+
+    static var current: [String] {
+        lock.withLock { installed } ?? candidates
+    }
+
+    static func prepare() {
+        DispatchQueue.global(qos: .utility).async {
+            let found = candidates.filter { NSFont(name: $0, size: 12) != nil }
+            lock.withLock { installed = found }
+        }
     }
 }

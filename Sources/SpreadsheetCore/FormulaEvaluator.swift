@@ -79,13 +79,22 @@ public struct ResolvedRange {
         return sheet.value(at: addr)
     }
 
-    /// Iterate all values in row-major order (including empties).
+    /// Iterate all values in row-major order (including empties, except in a
+    /// sparse large range, where only stored values are visited).
     public func forEachValue(_ body: (CellValue) throws -> Void) rethrows {
         guard !isEmpty else { return }
-        // For sparse large ranges, iterate storage instead of the rect.
-        if range.cellCount > 4096 && range.cellCount > sheet.cells.count * 4 {
-            for (addr, cell) in sheet.cells where range.contains(addr) {
-                try body(cell.value)
+        // For sparse large ranges, iterate storage instead of the rect, in
+        // row-major order like the rect: sums of floating-point values and
+        // the first error found must not depend on Dictionary order.
+        let cells = sheet.cells
+        if range.cellCount > 4096 && range.cellCount > cells.count * 4 {
+            var found: [(address: CellAddress, value: CellValue)] = []
+            for (addr, cell) in cells where range.contains(addr) && !cell.value.isEmpty {
+                found.append((addr, cell.value))
+            }
+            found.sort { ($0.address.row, $0.address.column) < ($1.address.row, $1.address.column) }
+            for entry in found {
+                try body(entry.value)
             }
             return
         }
@@ -161,8 +170,23 @@ public enum FormulaEvaluator {
             return .scalar(.bool(b))
         case .errorLiteral(let e):
             return .scalar(.error(e))
-        case .unknownName:
-            return .scalar(.error(.name))
+        case .unknownName(let name):
+            // Formulas the engine installed have their names expanded
+            // already; this is for an expression evaluated on its own.
+            guard let body = context.workbook.definedNameFormula(name, sheetID: context.sheetID) else {
+                return .scalar(.error(.name))
+            }
+            let expanded = body.expandingDefinedNames {
+                context.workbook.definedNameFormula($0, sheetID: context.sheetID)
+            }
+            return try evalValue(expanded, context: context)
+        case .definedName(_, let body):
+            return try evalValue(body, context: context)
+        case .missing:
+            // An empty argument reads as blank: 0, "" or FALSE, whichever
+            // the parameter wants (VLOOKUP's 4th -> FALSE, SUBSTITUTE's 3rd
+            // -> "", ROUND's 2nd -> 0).
+            return .scalar(.empty)
         case .paren(let inner):
             return try evalValue(inner, context: context)
         case .reference(let ref):
@@ -238,7 +262,10 @@ public enum FormulaEvaluator {
         }
         let fnContext = FunctionContext(eval: context)
         if fn.isLazy {
-            return try fn.evalLazy!(args, fnContext)
+            // A branch left empty (IF(c,,x), IFERROR(x,), CHOOSE(i,a,)) gives
+            // 0, as in Excel, not a blank.
+            let lazyArgs = args.contains(.missing) ? args.map { $0 == .missing ? .number(0) : $0 } : args
+            return try fn.evalLazy!(lazyArgs, fnContext)
         }
         let values = try args.map { try evalValue($0, context: context) }
         return try fn.evalEager!(values, fnContext)

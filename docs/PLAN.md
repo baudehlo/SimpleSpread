@@ -66,7 +66,7 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
 | Date system | Serial numbers, epoch 1899-12-30 = 0, **no** Lotus leap-year bug | Google Sheets' choice: exact Excel agreement for all dates ≥ Mar 1 1900; clean math |
 | Circular refs | Detect, mark #CYCLE! (exports as #REF!) | Sheets shows #REF! + message; a distinct code is clearer in-app |
 | Formula storage | Text (no '='), parsed AST cached in engine | Matches XLSX storage; AST enables reference transforms |
-| Undo | Cell-level snapshots for edits; whole-workbook XLSX snapshot for structural ops | The XLSX round-trip is the most-tested serialization in the codebase — reusing it for undo gets fidelity for free |
+| Undo | Cell-level snapshots for edits; inverse edits plus a small log for row/column insert and delete; an in-memory copy-on-write workbook snapshot (`WorkbookSnapshot`) for sheet and pivot ops | Exact (nothing the file writer can't model is lost, pivots stay editable) and cheap to take; it was an XLSX round-trip, which cost seconds per step on big sheets and was lossy |
 | CSV import safety | `=`/`+`/`@` fields import as text, never formulas | OWASP CSV-injection guidance; files are data |
 | CSV export | Machine-canonical by default (full-precision numbers, ISO dates), display-mode as option | Round-trips beat Excel's lossy "as displayed" default |
 
@@ -89,6 +89,7 @@ Sources/
     FunctionRegistry.swift    registry, GridArg, shared arg helpers
     Functions*.swift          9 category files, 157 functions
     CalculationEngine.swift   dependency graph, dirty propagation, cycles
+    RangeDependencyIndex.swift large-range dependents: per-column interval trees
     WorkbookOperations.swift  structural edits with formula rewriting
     PivotTables.swift         pivot tables/caches: typed facts + preserved XML
     PivotModel.swift          parsed cache (fields, shared items, groups, records) + definition
@@ -167,11 +168,17 @@ per cell in the engine and reused for dependency extraction and transforms.
 - **Errors are values** internally; helpers throw typed `CellError` which the
   evaluator converts back to error values at the cell boundary.
 - **Recalculation:** precedent→dependent edges (cell-level for ranges ≤ 256
-  cells, interval entries for larger), dirty-set BFS, DFS topological
-  evaluation with visiting-state cycle detection, volatile set (NOW, TODAY,
-  RAND, RANDBETWEEN, and GETPIVOTDATA — it reads pivot cells its arguments
-  don't name) recalculated on every edit. Structural edits rebuild the
-  whole graph (`rebuildAll`) — correct first, incremental later.
+  cells; a larger range is one shared graph node, found from a cell through
+  a per-sheet, per-column interval-tree index in O(log n + k)). One iterative
+  Tarjan SCC pass from the edited cells finds what to recalculate and orders
+  it; every formula in a cycle gets #CYCLE! (deterministic, whatever the walk
+  order). Volatile set (NOW, TODAY, RAND, RANDBETWEEN, and GETPIVOTDATA — it
+  reads pivot cells its arguments don't name) recalculated on every edit.
+  Formulas naming a sheet that doesn't exist yet are re-installed when it
+  appears. Sheets keep their used range up to date incrementally. Structural
+  edits rebuild the whole graph (`rebuildAll`) — correct first, incremental
+  later. `spreadsheet-bench --edits` times edits on synthetic workbooks;
+  `--undo` times a row insert with its undo and redo.
 - **Iterative solvers** (IRR/XIRR/RATE): Newton–Raphson with numeric
   derivative, bracketing-scan + bisection fallback, #NUM! on non-convergence.
 
@@ -207,8 +214,33 @@ diagonals are not modelled. Reader resolves parts via relationships
 (never hard-coded paths), infers missing `r` attributes, concatenates
 rich-text runs, expands shared formulas by reference translation, maps
 builtin/custom numFmts, and normalizes 1904-system dates (+1462 on
-date-formatted numerics). Cells with formulas we can't evaluate surface
-#NAME? after recalc — deliberate honesty over stale cached values.
+date-formatted numerics). Defined names (`<definedNames>`, including
+`_xlnm.*` print areas/titles) are read into `Workbook.definedNames`, resolved
+by the evaluator, adjusted by structural edits like any reference, and
+written back. Function prefixes Excel writes for post-2007 functions
+(`_xlfn.`, `_xlws.`) are stripped on read and added back on write. On open, a
+formula that can only give #NAME? here (a function we don't have, an
+undefined name) or that doesn't parse keeps the cached value from the file;
+once its inputs change it recalculates (to the error).
+
+Reference adjustment (insert/delete rows and columns, sheet rename/delete,
+copy, fill, sort) works on formula *tokens*, not on a parse:
+`FormulaTextRewriter` rewrites A1 references and copies every other token
+verbatim, so formulas the parser rejects (array constants, table references,
+3-D references, intersections) move too and constants keep every digit.
+Number→text has three contracts: `generalString` (grid only, ~10 digits),
+`roundTripString` (formula text, the cell editor: exact), and
+`textCoercionString` (`&`, text functions: Excel's 15 digits).
+Hidden sheets (`state`) are kept (`Sheet.isHidden`; veryHidden comes back as
+hidden). Everything else the model doesn't hold is dropped on save, so the
+reader lists it (`UnsupportedContent`: parts by content type, worksheet
+elements such as conditional formatting or print setup, rich-text runs,
+dropped pivots) and the first ⌘S over such a file asks: Save a Copy… /
+Save Anyway / Cancel (`DocumentSaving.plan`); Save As only notes it in the
+panel. Carrying unknown parts through unchanged is the longer-term fix.
+Both worksheet readers feed one `SheetCellBuilder` (row/column inference,
+shared formulas, value types, bounds on every number from the file), and a
+fuzz test checks they never trap and agree.
 
 **Pivot tables** are preserved *and* modelled. The reader keeps each pivot
 table, cache definition and records part verbatim, and also parses them into
@@ -263,7 +295,8 @@ or overlap with another pivot, asks before overwriting cells, and registers
 one undo step. Grouping edits the shared cache, so all pivots on it change.
 
 ### CSV (import/export)
-Import: BOM/UTF-16/UTF-8-validation/CP1252 decode chain; delimiter sniffing
+Import: BOM/UTF-16, then UTF-8 with only invalid bytes read as CP1252
+(per field, so one stray CP1252 byte doesn't re-decode the whole file); delimiter sniffing
 by column-count-consistency scoring; quote-aware state machine (CRLF/LF/CR,
 `""`, embedded newlines, ragged rows, unterminated-quote fail-soft);
 type inference through the shared ValueParser with leading-zero and
@@ -274,8 +307,10 @@ machine-canonical; dates ISO 8601; display-mode option.
 
 ### ZIP (under XLSX)
 Stored + raw-DEFLATE, correct CRC-32 in local + central headers, no data
-descriptors, no ZIP64; reader scans EOCD backward, trusts the central
-directory, verifies CRCs, and rejects CFB (encrypted/legacy .xls)
+descriptors, no ZIP64 (the writer throws `ZipError.tooLarge` past 4 GB or
+65,534 entries rather than truncating); reader scans EOCD backward, trusts
+the central directory within limits (4 GB per entry, 8 GB in all, no
+deflated entry over 8 MB claiming more than 1000:1), verifies CRCs, and rejects CFB (encrypted/legacy .xls)
 containers with a clear error. Inflate uses the Compression framework;
 deflate and CRC-32 use the system zlib. Deflate runs pigz-style on all
 cores: 1 MB chunks, each primed with the previous 32 KB and ended with a
@@ -286,23 +321,33 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   `make` on the main actor) behind a progress panel with Cancel
   (`FileLoading.swift`); the panel only appears after 0.25 s.
 - CSV (`CSVFastImport.swift`): bytes are scanned in place (the file is
-  memory-mapped and UTF-8 is validated as the scan goes, falling back to
-  CP1252 if needed); common fields (plain numbers, ISO dates, text that
+  memory-mapped, and each field is checked for UTF-8 as it is imported,
+  with invalid bytes read as CP1252); common fields (plain numbers, ISO dates, text that
   can't be a value, TRUE/FALSE) skip ValueParser with identical results;
   the import stops at 1,048,576 rows and reports truncation. The old
   String-based importer remains as the test reference.
 - XLSX (`XLSXSheetDataScanner.swift`): `<sheetData>` is read by a byte
-  scanner that mirrors the XMLParser delegate rule for rule; the rest of
-  the sheet still goes through XMLParser, and anything unexpected falls
-  back to XMLParser for the whole sheet. The writer builds `<sheetData>`
+  scanner (UTF-8 parts only) that shares its cell rules with the XMLParser
+  delegate and follows XML's line-end and attribute normalisation; the
+  rest of the sheet still goes through XMLParser, and anything unexpected
+  falls back to XMLParser for the whole sheet, which also reports progress
+  and stops on Cancel. The writer builds `<sheetData>`
   as bytes (`XLSXSheetDataWriter.swift`). Tests compare both directions
   with the XMLParser/String versions on every fixture.
 - Grid: `GridLayout` offsets are O(log k) over the rows/columns with
   non-default sizes (prefix sums + binary search), cached per revision;
   status-bar statistics look up the selection rather than scan the sheet.
+- Save runs in the background (`BackgroundSave.swift`): the main thread
+  takes a `Workbook.copy()` snapshot (microseconds) and the writer
+  (~4.5 s for a full sheet) runs on a queue behind the shared progress
+  panel (`ProgressPanel.swift`, after 0.25 s, with Cancel), while the
+  user keeps editing; the document is clean only if its `changeCount`
+  didn't move during the save. One save per document at a time; close
+  and quit wait for saves. CSV import/export run the same way. The first
+  edit during a save copies that sheet's cell table once (~0.2 s for a
+  full sheet). `spreadsheet-bench --save-full-sheet` measures all this.
 - Still proportional to sheet size: the first calculation (~4 s per
-  million formulas), saving (~4.5 s for a full sheet, on the main thread),
-  and Find, which scans every cell per keystroke.
+  million formulas) and Find, which scans every cell per keystroke.
 
 ## 8. Application layer
 
@@ -312,6 +357,30 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   style application, structural edits, sheet ops, clipboard, fill, file I/O.
   Every operation is one undo group (`groupsByEvent = false` + explicit
   groups so behavior is identical under tests and menus).
+- Undo of inserting and deleting rows and columns
+  (`SpreadsheetDocument+StructuralUndo.swift`): no copy of the sheet. The
+  step records the cells a delete removed, the original text of every
+  formula the edit rewrote (an edit and its opposite rewrite the same
+  formulas, so the rest needn't be kept), and the small layout tables,
+  defined names and pivot definitions. Undo runs the opposite edit and puts
+  those back; redo runs the edit again; each rebuilds the engine once. A
+  step on a full 1,048,576 × 10 sheet holds a few KB (a whole-sheet
+  snapshot would hold ~1 GB, the old XLSX snapshot 24 MB).
+- Undo of other workbook-level commands (add, delete, rename and move
+  sheet, Import CSV, every pivot edit, Delete over a pivot): `takeSnapshot()`
+  before the command, `registerSnapshotUndo` after it. The snapshot is
+  `Workbook.copy()` — every table shared copy-on-write — plus the active
+  sheet and selection. Once the command has run, cell tables it didn't
+  change are let go (each `Sheet` counts changes to its cells), so a
+  snapshot keeps only what the command replaced: a deleted sheet, tables
+  of sheets whose formulas a rename rewrote, old pivot definitions. Undo
+  puts the snapshot back in place (the engine and views keep the same
+  `Workbook`; sheet ids are kept, so cell undo records still apply),
+  registers the state it replaced as the redo, and runs `rebuildAll`
+  unless the command left every formula alone (move sheet; add sheet when
+  no formula was waiting for its name). Frozen panes stay as they are. A
+  failed command puts its snapshot back directly, never by undoing. With
+  1M formulas undo is mostly `rebuildAll`, ~3 s (release).
 - Grid: virtualized cell drawing with pinned headers; Excel's
   Ready/Enter/Edit machine — typing replaces (arrows commit+move),
   double-click/F2 edits in place (arrows move caret), Enter/Tab/Shift
@@ -330,9 +399,12 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
 - Sort and AutoFilter live in Core (`SortRows.swift`, `AutoFilter.swift`):
   Excel's sort order (numbers, text, booleans, errors; blanks last), whole-row
   moves with formulas translated like a copy, a header guess, value/condition
-  criteria with wildcards, and filter evaluation that hides rows. Merges,
-  hidden rows, frozen panes, the filter and row heights undo together as
-  `SheetLayoutState`. Unsupported criteria (top 10, dynamic, colour) are kept
+  criteria with wildcards, and filter evaluation that hides rows. A layout
+  command's undo step records only what it changed (`SheetLayoutChange`:
+  merges added/removed, rows hidden/shown, heights, the filter), so undoing
+  it leaves later changes alone. Row and column resizes are one undo step
+  per drag; frozen panes are a view setting and, as in Excel, not undoable.
+  Unsupported criteria (top 10, dynamic, colour) are kept
   as XML and written back, but hide nothing when re-applied.
 - Chrome: toolbar (undo/redo, format painter, clear formatting; $ / % /
   decimal places / number-format menu; font, size, B/I/U/S, colors, borders;
@@ -340,6 +412,12 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   split button). Larger font sizes grow short rows (never shrink) in the same
   undo step. Name box + formula bar, sheet tabs (add/rename/delete/switch), status bar
   (Sum/Avg/Count), standard menus with shortcuts.
+- Formatting a selection of up to 100,000 cells formats every cell in it.
+  A bigger one (whole columns, ⌘A on a big sheet) formats the cells inside
+  the used range — the stored ones and the blanks among them — and never
+  creates formatted blanks past the data (there are no whole-column
+  formats). Formatting undo restores styles only. Clear Formatting, Merge
+  and Sort walk the stored cells, not every address in the rectangle.
 - Windows: `WindowGroup(for: Int)` + DocumentStore registry; File→New/Open
   spawn windows; documents own their UndoManager.
 - Headless hooks: `SIMPLESPREAD_SCREENSHOT` renders the real window to PNG

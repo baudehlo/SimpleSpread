@@ -6,16 +6,19 @@ import SpreadsheetCore
 extension SpreadsheetDocument {
     // MARK: - Layout undo
 
-    /// Record the active sheet's layout (merges, frozen panes, hidden rows,
-    /// filter, row heights) so one undo step restores it.
-    func registerLayoutUndo(_ old: SheetLayoutState, sheetID: Int, actionName: String) {
+    /// Register an undo step that reverts `change` (what a command did to a
+    /// sheet's merges, hidden rows, row heights, filter or panes) and
+    /// nothing else, so later changes without undo steps of their own
+    /// survive it.
+    func registerLayoutUndo(_ change: SheetLayoutChange, sheetID: Int, actionName: String) {
+        guard !change.isEmpty else { return }
         withUndoGroup {
             undoManager.registerUndo(withTarget: self) { doc in
                 MainActor.assumeIsolated {
                     guard let sheet = doc.workbook.sheet(withID: sheetID) else { return }
-                    let redo = sheet.layoutState
-                    sheet.layoutState = old
-                    doc.registerLayoutUndo(redo, sheetID: sheetID, actionName: actionName)
+                    let undo = change.inverse
+                    undo.apply(to: sheet)
+                    doc.registerLayoutUndo(undo, sheetID: sheetID, actionName: actionName)
                     doc.markChanged()
                 }
             }
@@ -33,9 +36,8 @@ extension SpreadsheetDocument {
         body()
         withUndoGroup {
             if !snaps.isEmpty { registerCellUndo(snaps, actionName: actionName) }
-            if sheet.layoutState != oldLayout {
-                registerLayoutUndo(oldLayout, sheetID: sheet.id, actionName: actionName)
-            }
+            registerLayoutUndo(SheetLayoutChange(from: oldLayout, to: sheet.layoutState),
+                               sheetID: sheet.id, actionName: actionName)
         }
         markChanged()
     }
@@ -92,18 +94,7 @@ extension SpreadsheetDocument {
     func applyStyleToSelectionAt(_ actionName: String, _ mutate: (CellAddress, inout CellStyle) -> Void) {
         let range = selection.range
         guard !refuseIfPivot(range) else { return }
-        let addresses = range.addresses
-        let snaps = snapshot(addresses)
-        let sheet = activeSheet
-        for address in addresses {
-            var cell = sheet.cell(at: address)
-            var style = workbook.style(at: cell.styleIndex)
-            mutate(address, &style)
-            cell.styleIndex = workbook.styleIndex(for: style)
-            sheet.setCell(cell, at: address)
-        }
-        registerCellUndo(snaps, actionName: actionName)
-        markChanged()
+        applyStyle(to: range, actionName: actionName, addressDependent: true, mutate)
     }
 
     // MARK: - Merged cells
@@ -137,22 +128,31 @@ extension SpreadsheetDocument {
             targets = [range]
         }
         guard !targets.isEmpty else { return }
-        let discarded = targets.flatMap { target in
-            target.addresses.filter { $0 != target.start && !sheet.value(at: $0).isEmpty }
-        }
+        // Values other than each merge's upper-left one go. Merge Across
+        // keeps the first column of each row; the others keep range.start.
+        let discarded = storedAddresses(in: range, sheet: sheet).filter { address in
+            let keeps = kind == .mergeAcross ? address.column == range.start.column : address == range.start
+            return !keeps && !sheet.value(at: address).isEmpty
+        }.sorted()
         if !discarded.isEmpty {
             guard confirm?("Merging cells only keeps the upper-left value and discards other values.",
                            "", "Merge") == true else { return }
         }
-        changeCellsAndLayout("Merge Cells", cells: range.addresses) {
-            sheet.mergedRanges.removeAll { $0.intersects(range) }
-            sheet.mergedRanges.append(contentsOf: targets)
-            for address in discarded {
-                _ = engine.clearCell(at: AbsoluteAddress(sheetID: sheet.id, address: address))
+        withUndoGroup {
+            var centred: [StyleSnapshot] = []
+            changeCellsAndLayout("Merge Cells", cells: discarded) {
+                sheet.mergedRanges.removeAll { $0.intersects(range) }
+                sheet.mergedRanges.append(contentsOf: targets)
+                for address in discarded {
+                    _ = engine.clearCell(at: AbsoluteAddress(sheetID: sheet.id, address: address))
+                }
+                if kind == .mergeAndCenter {
+                    centred = restyle(range, addressDependent: false) { _, style in
+                        style.horizontalAlignment = .center
+                    }
+                }
             }
-            if kind == .mergeAndCenter {
-                workbook.modifyStyle(in: range, ofSheetID: sheet.id) { $0.horizontalAlignment = .center }
-            }
+            registerStyleUndo(centred, sheetID: sheet.id, actionName: "Merge Cells")
         }
         selection.select(range: range, active: range.start)
     }
@@ -251,8 +251,13 @@ extension SpreadsheetDocument {
                                     detail: "Unmerge the cells in the range, then sort again.")
             return
         }
-        let moves = WorkbookOperations.sortedCells(of: body, in: sheet, keys: keys)
-        changeCellsAndLayout("Sort", cells: body.addresses) {
+        // Rows past the data are blank and blanks sort last, so a whole-column
+        // sort only needs to order the rows down to the last stored one.
+        var sorted = body
+        sorted.end.row = min(body.end.row, max(body.start.row, sheet.usedRange?.end.row ?? body.start.row))
+        let moves = WorkbookOperations.sortedCells(of: sorted, in: sheet, keys: keys)
+        // Only the cells that move change, so only they need snapshots.
+        changeCellsAndLayout("Sort", cells: moves.map(\.0)) {
             guard !moves.isEmpty else { return }
             let snaps = moves.map { CellSnapshot(sheetID: sheet.id, address: $0.0, cell: $0.1) }
             restore(snaps)

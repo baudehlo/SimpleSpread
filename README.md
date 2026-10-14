@@ -16,8 +16,11 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
 - **XLSX native**: reads and writes OOXML SpreadsheetML interoperable with
   Excel, Numbers, and Google Sheets — including a from-scratch ZIP layer,
   shared strings, styles, number formats, formulas with cached values,
-  borders, merged ranges, frozen panes, hidden rows, AutoFilters, and
-  1904-date-system normalization on read.
+  borders, merged ranges, frozen panes, hidden rows and sheets, AutoFilters,
+  defined names, newer functions saved with Excel's `_xlfn.` prefixes, and
+  1904-date-system normalization on read. When a file holds things
+  SimpleSpread can't write back (charts, comments, conditional formatting…),
+  the first save says so and offers to save a copy instead.
 - **Pivot tables**: Insert ▸ PivotTable… and a PivotTable Fields panel
   like Excel's: drag fields into rows, columns, values and filters;
   summarize by sum/count/average/…; show values as % of total/row/column,
@@ -91,8 +94,9 @@ SimpleSpread 1.5.0 starts with a new, empty document in 0.43 s. The app is
 
 ### Large files
 
-Files open in the background with a progress bar and a Cancel button, so
-the app never stops responding. A sheet holds 1,048,576 rows, as in Excel;
+Files open and save in the background with a progress bar and a Cancel
+button, so the app never stops responding; you can keep editing while a
+big file saves. A sheet holds 1,048,576 rows, as in Excel;
 a bigger CSV opens its first 1,048,576 rows and says so. Time to read the
 file and build its sheet (release build, same Mac), against version 1.4.1:
 

@@ -219,6 +219,8 @@ enum PivotXMLParser {
                     definition.fields[definition.fields.count - 1].items.append(PivotItem(
                         kind: kind, index: a["x"].flatMap { Int($0) }, hidden: bool(a["h"], false),
                         showDetails: bool(a["sd"], true), name: a["n"]))
+                } else if path.count == 4 && path[3] == "autoSortScope", !definition.fields.isEmpty {
+                    definition.fields[definition.fields.count - 1].sortsByValue = true
                 } else if path.count >= 4 && path[3] == "extLst" {
                     if element.localName == "pivotField", bool(a["fillDownLabels"], false), !definition.fields.isEmpty {
                         definition.fields[definition.fields.count - 1].fillDownLabels = true
@@ -248,7 +250,7 @@ enum PivotXMLParser {
                 if path.count == 3 && element.localName == "filter", let field = Int(a["fld"] ?? "") {
                     definition.filters.append(PivotFilter(
                         field: field, type: a["type"] ?? "", measureField: Int(a["iMeasureFld"] ?? "") ?? 0,
-                        evalOrder: Int(a["evalOrder"] ?? "") ?? -1))
+                        evalOrder: Int(a["evalOrder"] ?? "") ?? -1, id: Int(a["id"] ?? "")))
                 } else if !definition.filters.isEmpty {
                     let last = definition.filters.count - 1
                     switch element.localName {

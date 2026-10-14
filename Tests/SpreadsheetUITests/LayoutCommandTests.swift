@@ -235,7 +235,7 @@ struct FilteredClipboardTests {
         doc.selection.select(range: r("A2:C4"))
         let payload = doc.selectionPayload()
         doc.selection.select(a("E10"))
-        doc.paste(payload: payload, sourceOrigin: a("A2"))
+        doc.paste(payload: payload)
         // Fig was in row 4 and lands in row 11: =B4*2 moves 7 rows to =F11*2.
         #expect(doc.displayString(at: a("E11")) == "Fig")
         #expect(doc.activeSheet.cell(at: a("G11")).formula == "F11*2")

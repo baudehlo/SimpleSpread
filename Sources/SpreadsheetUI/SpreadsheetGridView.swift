@@ -26,7 +26,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
     private(set) var editMode: EditMode = .ready
     private var editorField: NSTextField?
-    private var editingAddress: CellAddress?
+    /// The sheet and cell the editor was opened on. A commit writes there,
+    /// even if the active sheet or selection has changed since.
+    private var editingTarget: (sheetID: Int, address: CellAddress)?
 
     // Mouse drag state
     private enum DragMode {
@@ -240,6 +242,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let visible = pane.visible
         let rows = pane.rows
         let cols = pane.cols
+        // The rows that show: on a filtered sheet, `rows` can span a million
+        // hidden rows between the few on screen.
+        let shownRows = l.shownRows(in: rows)
         let sheet = document.activeSheet
         let selection = document.selection
         // Drawn over whole merged cells, even before a click has grown the
@@ -259,7 +264,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let merges = sheet.mergedRanges.filter { $0.intersects(paneRange) }
         var mergeOf: [CellAddress: CellRange] = [:]
         for merge in merges {
-            for row in max(merge.start.row, rows.lowerBound)...min(merge.end.row, rows.upperBound) {
+            for row in shownRows where merge.start.row <= row && row <= merge.end.row {
                 for col in max(merge.start.column, cols.lowerBound)...min(merge.end.column, cols.upperBound) {
                     mergeOf[CellAddress(row: row, column: col)] = merge
                 }
@@ -285,7 +290,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 mergeRect(merge).fill()
             }
         }
-        for row in rows where l.rowHeight(row) > 0 {
+        for row in shownRows {
             for col in cols {
                 let addr = CellAddress(row: row, column: col)
                 let rect = cellRect(addr, layout: l)
@@ -314,7 +319,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         // neighbour (Excel-style overflow) is not painted over by that
         // neighbour's fill. A spilled run hides the grid lines inside it.
         var hiddenBoundaries: [Int: Set<Int>] = [:]
-        for row in rows where l.rowHeight(row) > 0 {
+        for row in shownRows {
             for col in textSourceColumns(row: row, visible: cols, layout: l) {
                 let addr = CellAddress(row: row, column: col)
                 if mergeOf[addr] != nil { continue }
@@ -344,13 +349,16 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         // Lines inside a merged range are left out, as are the vertical
         // lines that overflowing text runs across.
         var hiddenRules: [Int: Set<Int>] = [:]   // row boundary -> columns
+        // Row boundaries drawn: the top of each shown row, and the bottom of
+        // the last. A hidden row's boundary would sit on the next one's.
+        let ruleRows = shownRows + [rows.upperBound + 1]
         for merge in merges {
-            for row in merge.start.row...merge.end.row {
+            for row in shownRows where merge.start.row <= row && row <= merge.end.row {
                 for boundary in (merge.start.column + 1)..<(merge.end.column + 1) {
                     hiddenBoundaries[row, default: []].insert(boundary)
                 }
             }
-            for boundary in (merge.start.row + 1)..<(merge.end.row + 1) {
+            for boundary in ruleRows where merge.start.row < boundary && boundary <= merge.end.row {
                 for col in merge.start.column...merge.end.column {
                     hiddenRules[boundary, default: []].insert(col)
                 }
@@ -365,12 +373,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let lineRight = min(visible.maxX, contentOrigin.x + l.totalWidth)
         // Row tops for the visible rows, so vertical lines can skip the rows
         // where overflowing text runs across a boundary.
-        var rowTops: [CGFloat] = []
-        var rowTop = contentOrigin.y + l.yOffset(ofRow: rows.lowerBound)
-        for row in rows {
-            rowTops.append(rowTop)
-            rowTop += l.rowHeight(row)
-        }
+        let rowTops = shownRows.map { contentOrigin.y + l.yOffset(ofRow: $0) }
         var x = contentOrigin.x + l.xOffset(ofColumn: cols.lowerBound)
         for col in cols.lowerBound...(cols.upperBound + 1) {
             if hiddenBoundaries.isEmpty {
@@ -378,7 +381,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 path.line(to: CGPoint(x: x, y: lineBottom))
             } else {
                 var segmentStart: CGFloat? = lineTop
-                for (index, row) in rows.enumerated() where hiddenBoundaries[row]?.contains(col) == true {
+                for (index, row) in shownRows.enumerated() where hiddenBoundaries[row]?.contains(col) == true {
                     let top = max(lineTop, rowTops[index])
                     if let start = segmentStart, top > start {
                         path.move(to: CGPoint(x: x, y: start))
@@ -399,8 +402,8 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             colLefts.append(colLeft)
             colLeft += l.columnWidth(col)
         }
-        var y = contentOrigin.y + l.yOffset(ofRow: rows.lowerBound)
-        for row in rows.lowerBound...(rows.upperBound + 1) {
+        for row in ruleRows {
+            let y = contentOrigin.y + l.yOffset(ofRow: row)
             if let hidden = hiddenRules[row] {
                 var segmentStart: CGFloat? = lineLeft
                 for (index, col) in cols.enumerated() where hidden.contains(col) {
@@ -419,7 +422,6 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 path.move(to: CGPoint(x: lineLeft, y: y))
                 path.line(to: CGPoint(x: lineRight, y: y))
             }
-            if row <= rows.upperBound { y += l.rowHeight(row) }
         }
         path.stroke()
 
@@ -490,7 +492,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let sheet = document.activeSheet
         let rowRange = max(0, rows.lowerBound - 1)...(rows.upperBound + 1)
         let colRange = max(0, cols.lowerBound - 1)...(cols.upperBound + 1)
-        for row in rowRange where l.rowHeight(row) > 0 {
+        for row in l.shownRows(in: rowRange) {
             for column in colRange {
                 let addr = CellAddress(row: row, column: column)
                 let cell = sheet.cell(at: addr)
@@ -586,7 +588,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             let lo = max(rows.lowerBound, band.location.start.row)
             let hi = min(rows.upperBound, band.location.end.row)
             if lo <= hi {
-                for row in lo...hi where band.isGrandTotalRow(row, role: role) {
+                for row in l.shownRows(in: lo...hi) where band.isGrandTotalRow(row, role: role) {
                     // Consecutive grand-total rows share one rule on top.
                     if !band.isGrandTotalRow(row - 1, role: role) { rule(atTopOf: row) }
                 }
@@ -871,7 +873,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: CGRect(x: visible.minX, y: minY, width: GridLayout.headerWidth,
                                       height: maxY - minY)).addClip()
-            for row in rows where l.rowHeight(row) > 0 {
+            for row in l.shownRows(in: rows) {
                 let y = contentOrigin.y + l.yOffset(ofRow: row) + shift
                 let rect = CGRect(x: visible.minX, y: y, width: GridLayout.headerWidth,
                                   height: l.rowHeight(row))
@@ -1008,7 +1010,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let visible = enclosingScrollView?.documentVisibleRect ?? bounds
         let l = layout
 
-        commitEditorIfNeeded()
+        document.commitPendingEdit() // the in-cell editor or the formula bar
 
         let inColumnHeader = point.y < visible.minY + GridLayout.headerHeight
         let inRowHeader = point.x < visible.minX + GridLayout.headerWidth
@@ -1234,7 +1236,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         let inRowHeader = point.x < visible.minX + GridLayout.headerWidth
         guard inColumnHeader != inRowHeader else { return nil }
 
-        commitEditorIfNeeded()
+        document.commitPendingEdit()
         let content = contentPoint(point)
         let menu = NSMenu()
 
@@ -1316,7 +1318,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             }
         }
         for (rows, shift, minY, maxY) in rowBands(layout: l, visible: visible) {
-            for row in rows where l.rowHeight(row) > 0 {
+            for row in l.shownRows(in: rows) {
                 let y = contentOrigin.y + l.yOffset(ofRow: row) + l.rowHeight(row) + shift
                 guard y >= minY, y <= maxY else { continue }
                 let rect = CGRect(x: visible.minX, y: y - 3, width: GridLayout.headerWidth, height: 6)
@@ -1440,15 +1442,39 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 super.keyDown(with: event)
                 return
             }
-            if let chars = event.characters, !chars.isEmpty,
-               let first = chars.unicodeScalars.first,
-               !CharacterSet.controlCharacters.contains(first) {
-                // Type-to-replace: begin Enter-mode editing with this character.
-                beginEditing(mode: .enter, initialText: chars)
+            if Self.startsTyping(event) {
+                // Type-to-replace: open an empty Enter-mode editor and hand
+                // it this key, so an input method (Japanese, Chinese, dead
+                // keys) composes it rather than receiving it raw.
+                beginEditing(mode: .enter, initialText: "")
+                if let fieldEditor = editorField?.currentEditor() {
+                    fieldEditor.keyDown(with: event)
+                } else {
+                    // No window, so no field editor (tests): type it in.
+                    editorField?.stringValue = event.characters ?? ""
+                }
                 return
             }
             super.keyDown(with: event)
         }
+    }
+
+    /// Whether a key (without ⌘) starts type-to-replace editing: a printable
+    /// character, or a dead key (no characters yet) for the input method to
+    /// compose. Function keys (End, Help, F1–F35…, reported as private-use
+    /// characters U+F700–U+F8FF) and control characters do not.
+    static func startsTyping(_ event: NSEvent) -> Bool {
+        if event.specialKey != nil { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags.contains(.command) || flags.contains(.control) || flags.contains(.function) {
+            return false
+        }
+        guard let characters = event.characters else { return false }
+        guard let first = characters.unicodeScalars.first else {
+            return true // a dead key: the editor's input method composes it
+        }
+        if (0xF700...0xF8FF).contains(first.value) { return false }
+        return !CharacterSet.controlCharacters.contains(first)
     }
 
     /// Arrow/Return/Tab movement. Steps out of a merged range from its far
@@ -1515,6 +1541,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
     func selectAll2() {
         guard let document else { return }
+        document.commitPendingEdit()
         let used = document.activeSheet.usedRange ?? CellRange(CellAddress(row: 0, column: 0))
         document.selection.select(range: CellRange(start: CellAddress(row: 0, column: 0),
                                                    end: used.end))
@@ -1531,6 +1558,88 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         onStateChange?()
     }
 
+    // MARK: Edit menu (responder chain)
+
+    // The standard Edit items send cut:/copy:/paste:/delete:/selectAll:/
+    // undo:/redo: to the first responder. A focused text field (the cell
+    // editor, formula bar, Find, name box, sheet rename) handles them first;
+    // they reach the grid only when it is the first responder, or (undo and
+    // redo) when the cell editor's field editor passes them up the chain.
+
+    @objc func copy(_ sender: Any?) {
+        document?.copySelectionToPasteboard()
+    }
+
+    @objc func cut(_ sender: Any?) {
+        document?.copySelectionToPasteboard(cut: true)
+        stateChanged()
+    }
+
+    @objc func paste(_ sender: Any?) {
+        document?.pasteFromPasteboard()
+        afterNavigation()
+    }
+
+    /// Edit ▸ Paste and Match Style, when the menu offers it.
+    @objc func pasteAsPlainText(_ sender: Any?) {
+        document?.pastePlainTextFromPasteboard()
+        afterNavigation()
+    }
+
+    @objc func delete(_ sender: Any?) {
+        document?.clearSelectionContents()
+        stateChanged()
+    }
+
+    @objc func undo(_ sender: Any?) {
+        if let typing = editorUndoManager {
+            typing.undo()
+            return
+        }
+        guard let document else { return }
+        document.commitPendingEdit()
+        document.undoManager.undo()
+        stateChanged()
+    }
+
+    @objc func redo(_ sender: Any?) {
+        if let typing = editorUndoManager {
+            typing.redo()
+            return
+        }
+        guard let document else { return }
+        document.commitPendingEdit()
+        document.undoManager.redo()
+        stateChanged()
+    }
+
+    /// While the in-cell editor has focus, undo/redo arrive here from its
+    /// field editor (the editor field is our subview) and belong to the
+    /// typing, which the field editor records in its own undo manager.
+    private var editorUndoManager: UndoManager? {
+        guard isEditing, let text = window?.firstResponder as? NSTextView, text.isFieldEditor,
+              text.delegate === editorField else { return nil }
+        return text.undoManager
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard let document else { return false }
+        switch menuItem.action {
+        case #selector(undo(_:)):
+            let manager = editorUndoManager ?? document.undoManager
+            menuItem.title = manager.undoMenuItemTitle
+            return manager.canUndo
+        case #selector(redo(_:)):
+            let manager = editorUndoManager ?? document.undoManager
+            menuItem.title = manager.redoMenuItemTitle
+            return manager.canRedo
+        case #selector(paste(_:)), #selector(pasteAsPlainText(_:)):
+            return SpreadsheetDocument.pasteboardHasContent
+        default:
+            return true
+        }
+    }
+
     // MARK: Cell editor
 
     /// Begin in-place editing. `.enter` = typing replaced content (arrows
@@ -1538,8 +1647,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
     func beginEditing(mode: EditMode, initialText: String?) {
         guard let document else { return }
         commitEditorIfNeeded()
+        document.commitPendingEdit() // e.g. typing left in the formula bar
         let addr = document.selection.activeCell
-        editingAddress = addr
+        editingTarget = (document.activeSheetID, addr)
         editMode = mode
 
         // Scroll first: a frozen cell's position depends on the scroll offset.
@@ -1556,44 +1666,61 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         field.backgroundColor = .textBackgroundColor
         field.drawsBackground = true
         addSubview(field)
+        editorField = field
+        document.pendingEditor = self
         window?.makeFirstResponder(field)
         // Caret at end.
         if let editor = field.currentEditor() {
-            editor.selectedRange = NSRange(location: field.stringValue.count, length: 0)
+            editor.selectedRange = NSRange(location: (field.stringValue as NSString).length, length: 0)
         }
-        editorField = field
     }
 
-    func commitEditorIfNeeded() {
-        guard let field = editorField, let addr = editingAddress else { return }
+    /// Write the editor's text to the cell it was opened on and close it.
+    /// `refocus`: give the grid keyboard focus back (not when the user has
+    /// just clicked into another control).
+    func commitEditorIfNeeded(refocus: Bool = true) {
+        guard let field = editorField, let target = editingTarget else { return }
         let text = field.stringValue
-        tearDownEditor()
-        document?.commitInput(text, at: addr)
+        tearDownEditor(refocus: refocus)
+        document?.commitInput(text, at: target.address, sheetID: target.sheetID)
         needsDisplay = true
         onStateChange?()
     }
 
     func cancelEditing() {
-        tearDownEditor()
+        tearDownEditor(refocus: true)
         needsDisplay = true
     }
 
-    private func tearDownEditor() {
-        editorField?.removeFromSuperview()
+    private func tearDownEditor(refocus: Bool) {
+        guard let field = editorField else { return }
+        // Clear the state first: taking focus away from the field ends its
+        // editing, which calls back into controlTextDidEndEditing.
         editorField = nil
-        editingAddress = nil
+        editingTarget = nil
         editMode = .ready
-        window?.makeFirstResponder(self)
+        if let document, document.pendingEditor === self { document.pendingEditor = nil }
+        if refocus, field.currentEditor() != nil { window?.makeFirstResponder(self) }
+        field.removeFromSuperview()
     }
 
     var isEditing: Bool { editorField != nil }
+    /// Focus left the cell editor for another control (the formula bar,
+    /// name box, Find field…): commit, as Numbers does, rather than leave
+    /// an orphaned editor holding typing nobody can see being lost.
+    nonisolated func controlTextDidEndEditing(_ notification: Notification) {
+        let ended = notification.object as? NSTextField
+        MainActor.assumeIsolated {
+            guard let field = editorField, ended === field else { return }
+            commitEditorIfNeeded(refocus: false)
+        }
+    }
 
     // NSTextFieldDelegate: intercept commit/cancel/arrow keys.
     nonisolated func control(_ control: NSControl, textView: NSTextView,
                              doCommandBy commandSelector: Selector) -> Bool {
         MainActor.assumeIsolated {
-            guard let document else { return false }
-            let l = layout
+            guard document != nil else { return false }
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)):
                 commitEditorIfNeeded()
@@ -1639,6 +1766,17 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         }
     }
 }
+
+/// The in-cell editor is the document's pending edit while it is open.
+extension SpreadsheetGridView: PendingEditor {
+    var hasPendingEdit: Bool { isEditing }
+
+    func commitPendingEdit() {
+        commitEditorIfNeeded()
+    }
+}
+
+extension SpreadsheetGridView: NSMenuItemValidation {}
 
 /// A menu item that runs a closure (keeps context-menu code free of @objc selectors).
 @MainActor

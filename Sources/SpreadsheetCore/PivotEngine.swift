@@ -140,7 +140,7 @@ public struct PivotEngine {
         if cache.isOLAP { return "it reads from OLAP or the Data Model" }
         if cache.hasCalculatedItems { return "it has calculated items" }
         if !cache.hasRecords { return "its cache has no saved records" }
-        if definition.fields.count != cache.fields.count { return "its fields don't match its cache" }
+        if let reason = definition.validate(against: cache) { return reason }
         for filter in definition.filters where !Self.supportsFilter(filter) {
             return "it uses a \(filter.type) filter"
         }
@@ -154,6 +154,9 @@ public struct PivotEngine {
             }
         }
         if definition.layout.subtotalHiddenItems { return "it includes hidden items in totals" }
+        // Recomputing would order the items by label and lose the sort (and
+        // a regenerated part would drop it).
+        if definition.fields.contains(where: \.sortsByValue) { return "it sorts items by their values" }
         return nil
     }
 
@@ -166,16 +169,28 @@ public struct PivotEngine {
     // MARK: Fields
 
     private func isGrouping(_ f: Int) -> Bool {
-        guard let g = cache.fields[f].group else { return false }
+        Self.isGrouping(cache, f)
+    }
+
+    static func isGrouping(_ cache: PivotCacheData, _ f: Int) -> Bool {
+        guard f >= 0, f < cache.fields.count, let g = cache.fields[f].group else { return false }
         return g.range != nil || !g.discreteMap.isEmpty
     }
 
+    /// How many items a pivot field's `<item x>` can index.
+    static func axisItemCount(_ cache: PivotCacheData, _ f: Int) -> Int {
+        guard f >= 0, f < cache.fields.count else { return 0 }
+        return isGrouping(cache, f) ? (cache.fields[f].group?.items.count ?? 0) : cache.fields[f].sharedItems.count
+    }
+
     private func axisItems(_ f: Int) -> [PivotValue] {
-        isGrouping(f) ? (cache.fields[f].group?.items ?? []) : cache.fields[f].sharedItems
+        guard f >= 0, f < cache.fields.count else { return [] }
+        return isGrouping(f) ? (cache.fields[f].group?.items ?? []) : cache.fields[f].sharedItems
     }
 
     /// The value of cache field `f` in record `r` (group fields: their group label).
     func raw(_ r: Int, _ f: Int) -> PivotValue {
+        guard f >= 0, f < columns.count else { return .missing }
         let column = columns[f]
         if column == nil, isGrouping(f) {
             guard let ix = itemIndex(r, f) else { return .missing }
@@ -187,7 +202,8 @@ public struct PivotEngine {
     }
 
     private func sharedIndex(_ r: Int, _ f: Int) -> Int? {
-        guard let column = columns[f], r < cache.records.count, column < cache.records[r].count else { return nil }
+        guard f >= 0, f < columns.count, let column = columns[f], r >= 0, r < cache.records.count,
+              column < cache.records[r].count else { return nil }
         switch cache.records[r][column] {
         case .shared(let i): return i
         case .value(let v): return sharedIndexByValue[f][v]
@@ -196,6 +212,7 @@ public struct PivotEngine {
 
     /// Index into the field's axis items (shared or group items).
     func itemIndex(_ r: Int, _ f: Int) -> Int? {
+        guard f >= 0, f < cache.fields.count else { return nil }
         if let g = cache.fields[f].group {
             let base = g.base ?? f
             if !g.discreteMap.isEmpty {
@@ -203,6 +220,8 @@ public struct PivotEngine {
                 return g.discreteMap[bi]
             }
             if let range = g.range {
+                // A grouping field's own record value never feeds itself.
+                guard base != f || columns[f] != nil else { return nil }
                 return Self.bucket(range, itemCount: g.items.count, value: raw(r, base))
             }
         }
@@ -215,11 +234,10 @@ public struct PivotEngine {
         case .number(let x), .date(let x): v = x
         default: return nil
         }
+        guard n > 0, v.isFinite else { return nil }
         if range.groupBy == .range {
-            let start = range.startNumber ?? 0, end = range.endNumber ?? 0
-            if v < start { return 0 }
-            if v > end { return n - 1 }
-            return Int(((v - start) / range.interval).rounded(.down)) + 1
+            return PivotFieldGroup.NumberRanges.bucket(v, start: range.startNumber ?? 0, end: range.endNumber ?? 0,
+                                                       interval: range.interval, itemCount: n)
         }
         if let s = range.startDate, v < s { return 0 }
         if let e = range.endDate, v > e { return n - 1 }
@@ -231,18 +249,19 @@ public struct PivotEngine {
         case .quarters: return (c.month - 1) / 3 + 1
         case .months: return c.month
         case .days:
-            let step = Int(range.interval)
+            guard let step = pivotCheckedInt(range.interval.rounded(.down)) else { return nil }
             if step <= 1 {
                 // Day of year in a leap-year calendar: 1-Jan = 1 ... 31-Dec = 366.
                 var day = c.day
                 for m in 1..<c.month { day += ExcelDate.daysInMonth(year: 2000, month: m) }
                 return day
             }
-            guard let s = range.startDate else { return nil }
-            return Int(((v - s.rounded(.down)) / Double(step)).rounded(.down)) + 1
+            guard let s = range.startDate,
+                  let k = pivotCheckedInt(((v - s.rounded(.down)) / Double(step)).rounded(.down)) else { return nil }
+            return k + 1
         case .hours: return c.hour + 1
         case .minutes: return c.minute + 1
-        case .seconds: return Int(c.second) + 1
+        case .seconds: return pivotCheckedInt(c.second.rounded(.down)).map { $0 + 1 }
         case .range: return nil
         }
     }
@@ -250,44 +269,10 @@ public struct PivotEngine {
     // MARK: Aggregation
 
     static func aggregate(_ fn: PivotSubtotal, _ values: [PivotValue]) -> CellValue? {
-        guard !values.isEmpty else { return nil }
-        var nums: [Double] = []
-        var nonBlank = 0
-        var firstError: CellError?
-        for v in values {
-            switch v {
-            case .missing: continue
-            case .number(let x), .date(let x): nums.append(x); nonBlank += 1
-            case .error(let e): if firstError == nil { firstError = e }; nonBlank += 1
-            case .string, .bool: nonBlank += 1
-            }
-        }
-        switch fn {
-        case .count: return nonBlank > 0 ? .number(Double(nonBlank)) : nil
-        case .countNums: return nonBlank > 0 ? .number(Double(nums.count)) : nil
-        default: break
-        }
-        if let firstError { return .error(firstError) }
-        if nonBlank == 0 { return nil }
-        switch fn {
-        case .sum: return .number(nums.reduce(0, +))
-        case .average: return nums.isEmpty ? .error(.div0) : .number(nums.reduce(0, +) / Double(nums.count))
-        case .max: return .number(nums.max() ?? 0)
-        case .min: return .number(nums.min() ?? 0)
-        case .product: return .number(nums.isEmpty ? 0 : nums.reduce(1, *))
-        case .stdDev, .var, .stdDevp, .varp:
-            let population = fn == .stdDevp || fn == .varp
-            let n = nums.count
-            if n == 0 || (n < 2 && !population) { return .error(.div0) }
-            let mean = nums.reduce(0, +) / Double(n)
-            let ss = nums.reduce(0) { $0 + ($1 - mean) * ($1 - mean) }
-            let variance = ss / Double(population ? n : n - 1)
-            return .number(fn == .stdDev || fn == .stdDevp ? variance.squareRoot() : variance)
-        case .count, .countNums: return nil
-        }
+        PivotAccumulator.summarizing(values).result(fn)
     }
 
-    private static func function(for kind: PivotItem.Kind) -> PivotSubtotal? {
+    static func function(for kind: PivotItem.Kind) -> PivotSubtotal? {
         switch kind {
         case .sum: return .sum
         case .countA: return .count
@@ -308,26 +293,57 @@ public struct PivotEngine {
         cache.fields.firstIndex { $0.name.caseInsensitiveCompare(name) == .orderedSame }
     }
 
-    func value(field f: Int, subtotal: PivotSubtotal, records: [Int]) -> CellValue? {
+    /// The summary of field `f` over some records, reading each source
+    /// field's running summary from `summary`. A calculated field applies its
+    /// formula to the sums of the fields it names (as Excel does).
+    func value(field f: Int, subtotal: PivotSubtotal, recordCount: Int,
+               summary: (Int) -> PivotAccumulator?, visiting: Set<Int> = []) -> CellValue? {
+        guard f >= 0, f < cache.fields.count else { return nil }
         if let formula = cache.fields[f].formula {
-            guard !records.isEmpty else { return nil }
+            guard recordCount > 0 else { return nil }
+            // A formula that leads back to itself is refused up front
+            // (validate); never recurse forever all the same.
+            guard !visiting.contains(f) else { return .error(.ref) }
             return PivotCalculatedField.evaluate(formula) { name in
                 guard let i = fieldIndex(named: name) else { return .error(.name) }
                 if cache.fields[i].formula != nil {
-                    return value(field: i, subtotal: .sum, records: records) ?? .number(0)
+                    return value(field: i, subtotal: .sum, recordCount: recordCount, summary: summary,
+                                 visiting: visiting.union([f])) ?? .number(0)
                 }
-                return Self.aggregate(.sum, records.map { raw($0, i) }) ?? .number(0)
+                return summary(i)?.result(.sum) ?? .number(0)
             }
         }
-        return Self.aggregate(subtotal, records.map { raw($0, f) })
+        return summary(f)?.result(subtotal)
+    }
+
+    /// The summary of field `f` over `records` (summing them on the spot).
+    func value(field f: Int, subtotal: PivotSubtotal, records: [Int]) -> CellValue? {
+        value(field: f, subtotal: subtotal, recordCount: records.count) { i in
+            var a = PivotAccumulator(keepValues: true)
+            for r in records { a.add(raw(r, i)) }
+            return a
+        }
+    }
+
+    /// Source fields a summary of `f` reads: itself, or the fields a
+    /// calculated field's formula names (through other calculated fields).
+    func sourceFields(of f: Int, visiting: Set<Int> = []) -> Set<Int> {
+        guard f >= 0, f < cache.fields.count, !visiting.contains(f) else { return [] }
+        guard let formula = cache.fields[f].formula else { return [f] }
+        var out = Set<Int>()
+        for case .name(let name) in PivotCalculatedField.tokenize(formula) {
+            guard let i = fieldIndex(named: name) else { continue }
+            out.formUnion(sourceFields(of: i, visiting: visiting.union([f])))
+        }
+        return out
     }
 
     // MARK: Filtering
 
     func filteredRecords() -> [Int] {
         var pageSelection: [Int: Int] = [:]
-        for page in definition.pageFields {
-            if let item = page.selectedItem, item < definition.fields[page.field].items.count,
+        for page in definition.pageFields where page.field >= 0 && page.field < definition.fields.count {
+            if let item = page.selectedItem, item >= 0, item < definition.fields[page.field].items.count,
                let x = definition.fields[page.field].items[item].index {
                 pageSelection[page.field] = x
             }
@@ -354,24 +370,30 @@ public struct PivotEngine {
     private func apply(_ filter: PivotFilter, to records: [Int]) -> [Int] {
         let f = filter.field
         if filter.type == "count" {
-            guard filter.measureField < definition.dataFields.count else { return records }
+            guard filter.measureField >= 0, filter.measureField < definition.dataFields.count else { return records }
             let dataField = definition.dataFields[filter.measureField]
+            let keys = records.map { itemIndex($0, f) }
             var byItem: [Int?: [Int]] = [:]
             var order: [Int?] = []
-            for r in records {
-                let key = itemIndex(r, f)
+            for (r, key) in zip(records, keys) {
                 if byItem[key] == nil { order.append(key) }
                 byItem[key, default: []].append(r)
             }
-            func score(_ key: Int?) -> Double {
+            // Each item's score once (not once per comparison).
+            var score: [Int?: Double] = [:]
+            for key in order {
                 if case .number(let n)? = value(field: dataField.field, subtotal: dataField.subtotal,
-                                                 records: byItem[key] ?? []) { return n }
-                return 0
+                                                 records: byItem[key] ?? []) {
+                    score[key] = n
+                } else {
+                    score[key] = 0
+                }
             }
-            let n = Int(filter.top10Value ?? 10)
-            let ranked = order.sorted { filter.top10Top ? score($0) > score($1) : score($0) < score($1) }
-            let keep = Set(ranked.prefix(n).map { $0 })
-            return records.filter { keep.contains(itemIndex($0, f)) }
+            let wanted = filter.top10Value ?? 10
+            let n = wanted >= Double(order.count) ? order.count : (wanted > 0 ? Int(wanted) : 0)
+            let ranked = order.sorted { filter.top10Top ? score[$0]! > score[$1]! : score[$0]! < score[$1]! }
+            let keep = Set(ranked.prefix(n))
+            return zip(records, keys).filter { keep.contains($0.1) }.map(\.0)
         }
         // Date filters: compare the date serial with each condition.
         return records.filter { r in
@@ -430,23 +452,26 @@ public struct PivotEngine {
         f == pivotValuesFieldIndex || definition.fields[f].items[p].showDetails
     }
 
-    func axisEntries(_ fields: [Int], records: [Int], grand: Bool, isRow: Bool) -> [AxisEntry] {
+    /// The entries of one axis. `keys[f][k]` is the item index of field `f`
+    /// in the k-th of `recordCount` filtered records.
+    func axisEntries(_ fields: [Int], keys: [Int: [Int?]], recordCount: Int, grand: Bool, isRow: Bool) -> [AxisEntry] {
         let n = fields.count
         if n == 0 { return [AxisEntry(kind: .data, tuple: [], dataField: 0)] }
         if !fields.contains(where: { $0 != pivotValuesFieldIndex }) {
             return (0..<dataFieldCount).map { AxisEntry(kind: .data, tuple: [$0], dataField: $0) }
         }
         let root = Node()
-        for r in records {
-            var keys: [Int] = []
+        let columns = fields.filter { $0 != pivotValuesFieldIndex }.map { (positions[$0], keys[$0] ?? []) }
+        for k in 0..<recordCount {
+            var path: [Int] = []
             var ok = true
-            for f in fields where f != pivotValuesFieldIndex {
-                guard let x = itemIndex(r, f), let p = positions[f][x] else { ok = false; break }
-                keys.append(p)
+            for (position, xs) in columns {
+                guard k < xs.count, let x = xs[k], let p = position[x] else { ok = false; break }
+                path.append(p)
             }
             guard ok else { continue }
             var node = root
-            for p in keys {
+            for p in path {
                 if let next = node.children[p] { node = next } else {
                     let next = Node()
                     node.children[p] = next
@@ -587,12 +612,20 @@ public struct PivotEngine {
                                      firstDataCol: 0, rowCount: 18, columnCount: 3, cells: cells,
                                      pageRows: pageRows, pageColumns: pageRows > 0 ? 1 : 0, isEmpty: true)
         }
-        let rows = axisEntries(definition.rowFields, records: records, grand: layout.rowGrandTotals, isRow: true)
-        let cols = axisEntries(definition.columnFields, records: records, grand: layout.colGrandTotals, isRow: false)
+        // Each record's item on every axis field, worked out once.
+        var keys: [Int: [Int?]] = [:]
+        for f in definition.rowFields + definition.columnFields where f != pivotValuesFieldIndex && keys[f] == nil {
+            keys[f] = records.map { itemIndex($0, f) }
+        }
+        let rows = axisEntries(definition.rowFields, keys: keys, recordCount: records.count,
+                               grand: layout.rowGrandTotals, isRow: true)
+        let cols = axisEntries(definition.columnFields, keys: keys, recordCount: records.count,
+                               grand: layout.colGrandTotals, isRow: false)
         let rowLines = Self.encode(rows), columnLines = Self.encode(cols)
         let g = geometry()
+        let table = ValueTable(self, records: records, keys: keys)
         var cells: [PivotOffset: PivotRenderedCell] = [:]
-        render(rows: rows, rowLines: rowLines, cols: cols, columnLines: columnLines, records: records,
+        render(rows: rows, rowLines: rowLines, cols: cols, columnLines: columnLines, table: table,
                geometry: g, into: &cells)
         renderPage(into: &cells)
         return PivotLayoutResult(rowLines: rowLines, columnLines: columnLines,
@@ -657,12 +690,13 @@ public struct PivotEngine {
         return definition.layout.grandTotalCaption ?? captions.grandTotal
     }
 
-    private func conditions(_ fields: [Int], _ tuple: [Int]) -> [(Int, Int)] {
-        var out: [(Int, Int)] = []
+    /// The item indices a tuple constrains (Values levels constrain nothing).
+    private func path(_ fields: [Int], _ tuple: [Int]) -> [Int] {
+        var out: [Int] = []
         for (level, p) in tuple.enumerated() {
             let f = fields[level]
             guard f != pivotValuesFieldIndex, let x = definition.fields[f].items[p].index else { continue }
-            out.append((f, x))
+            out.append(x)
         }
         return out
     }
@@ -678,36 +712,135 @@ public struct PivotEngine {
         return !(top && deeperNonValues)
     }
 
-    private func cellValue(row: AxisEntry, column: AxisEntry, records: [Int]) -> CellValue? {
+    /// Running summaries for every (row path, column path) a record reaches,
+    /// built in one pass over the records. A path is the item indices of the
+    /// leading non-Values fields of an axis; a record counts towards every
+    /// prefix of its paths (so subtotals and grand totals come for free).
+    /// A record with no item for some field still counts in the shorter
+    /// prefixes, as it would when filtering records by conditions.
+    struct ValueTable {
+        /// Children of each path node, by item index (node 0 is the root).
+        private var rowTrie: [[Int: Int]] = [[:]]
+        private var columnTrie: [[Int: Int]] = [[:]]
+        /// First accumulator of each (row node, column node) reached.
+        private var groups: [Int: Int] = [:]
+        private var accumulators: [PivotAccumulator] = []
+        /// Accumulator slot of each source field summarized.
+        private var slots: [Int: Int] = [:]
+
+        init(_ engine: PivotEngine, records: [Int], keys: [Int: [Int?]]) {
+            let definition = engine.definition
+            var fields = Set<Int>()
+            for d in definition.dataFields { fields.formUnion(engine.sourceFields(of: d.field)) }
+            let ordered = fields.sorted()
+            for (s, f) in ordered.enumerated() { slots[f] = s }
+            // Variances need every number; other summaries only running totals.
+            var kinds = definition.dataFields.map(\.subtotal)
+            for f in definition.rowFields + definition.columnFields where f >= 0 && f < definition.fields.count {
+                kinds += definition.fields[f].subtotals.compactMap(PivotEngine.function(for:))
+            }
+            let fresh = PivotAccumulator(keepValues: kinds.contains(where: \.needsValues))
+            let rowKeys = definition.rowFields.filter { $0 != pivotValuesFieldIndex }.map { keys[$0] ?? [] }
+            let columnKeys = definition.columnFields.filter { $0 != pivotValuesFieldIndex }.map { keys[$0] ?? [] }
+
+            func nodes(_ trie: inout [[Int: Int]], _ keys: [[Int?]], _ k: Int) -> [Int] {
+                var out = [0]
+                var node = 0
+                for xs in keys {
+                    guard k < xs.count, let x = xs[k] else { break }
+                    if let next = trie[node][x] {
+                        node = next
+                    } else {
+                        trie.append([:])
+                        trie[node][x] = trie.count - 1
+                        node = trie.count - 1
+                    }
+                    out.append(node)
+                }
+                return out
+            }
+
+            let width = ordered.count
+            var values = [PivotValue](repeating: .missing, count: width)
+            for (k, r) in records.enumerated() {
+                let rowNodes = nodes(&rowTrie, rowKeys, k)
+                let columnNodes = nodes(&columnTrie, columnKeys, k)
+                for (s, f) in ordered.enumerated() { values[s] = engine.raw(r, f) }
+                for rn in rowNodes {
+                    for cn in columnNodes {
+                        let key = rn << 32 | cn
+                        let first: Int
+                        if let existing = groups[key] {
+                            first = existing
+                        } else {
+                            first = accumulators.count
+                            groups[key] = first
+                            accumulators.append(contentsOf: repeatElement(fresh, count: max(1, width)))
+                        }
+                        // Every group counts its records, even with no fields to sum.
+                        if width == 0 { accumulators[first].add(.missing) }
+                        for s in 0..<width { accumulators[first + s].add(values[s]) }
+                    }
+                }
+            }
+        }
+
+        private static func node(_ trie: [[Int: Int]], _ path: [Int]) -> Int? {
+            var node = 0
+            for x in path {
+                guard let next = trie[node][x] else { return nil }
+                node = next
+            }
+            return node
+        }
+
+        /// The records under a row path and a column path, as a group; nil
+        /// when no record matches both.
+        func group(_ rowPath: [Int], _ columnPath: [Int]) -> Int? {
+            guard let rn = Self.node(rowTrie, rowPath), let cn = Self.node(columnTrie, columnPath) else { return nil }
+            return groups[rn << 32 | cn]
+        }
+
+        func recordCount(_ group: Int) -> Int { accumulators[group].records }
+
+        func summary(_ group: Int, field f: Int) -> PivotAccumulator? {
+            slots[f].map { accumulators[group + $0] }
+        }
+    }
+
+    private func value(_ table: ValueTable, _ group: Int, field f: Int, subtotal: PivotSubtotal) -> CellValue? {
+        value(field: f, subtotal: subtotal, recordCount: table.recordCount(group)) { table.summary(group, field: $0) }
+    }
+
+    private func cellValue(row: AxisEntry, column: AxisEntry, table: ValueTable) -> CellValue? {
         guard dataFieldCount > 0 else { return nil }
         var d = 0
         if definition.rowFields.contains(pivotValuesFieldIndex) { d = row.dataField }
         if definition.columnFields.contains(pivotValuesFieldIndex) { d = column.dataField }
+        guard d >= 0, d < dataFieldCount else { return nil }
         let dataField = definition.dataFields[d]
         if row.kind == .data && isBlankParent(definition.rowFields, row.tuple) { return nil }
         if column.kind == .data && isBlankParent(definition.columnFields, column.tuple) { return nil }
-        let rowConditions = row.kind == .grand ? [] : conditions(definition.rowFields, row.tuple)
-        let colConditions = column.kind == .grand ? [] : conditions(definition.columnFields, column.tuple)
-        let all = rowConditions + colConditions
+        let rowPath = row.kind == .grand ? [] : path(definition.rowFields, row.tuple)
+        let columnPath = column.kind == .grand ? [] : path(definition.columnFields, column.tuple)
         var function = dataField.subtotal
         for kind in [row.kind, column.kind] { if let fn = Self.function(for: kind) { function = fn } }
         switch dataField.showDataAs {
         case .difference, .percent, .percentDiff, .runTotal:
             return baseFieldValue(dataField, function: function, row: row, column: column,
-                                  conditions: all, records: records)
+                                  rowPath: rowPath, columnPath: columnPath, table: table)
         default:
             break
         }
-        let matching = records.filter { r in all.allSatisfy { itemIndex(r, $0.0) == $0.1 } }
-        guard !matching.isEmpty else {
+        guard let group = table.group(rowPath, columnPath) else {
             // Shown as a share or index, an empty intersection is 0 (checked in Excel).
             return dataField.showDataAs == .normal ? nil : .number(0)
         }
-        guard let v = value(field: dataField.field, subtotal: function, records: matching) else { return nil }
+        guard let v = value(table, group, field: dataField.field, subtotal: function) else { return nil }
         guard dataField.showDataAs != .normal, case .number(let n) = v else { return v }
-        func total(_ conds: [(Int, Int)]) -> Double? {
-            let recs = records.filter { r in conds.allSatisfy { itemIndex(r, $0.0) == $0.1 } }
-            guard !recs.isEmpty, case .number(let t)? = value(field: dataField.field, subtotal: function, records: recs)
+        func total(_ rowPath: [Int], _ columnPath: [Int]) -> Double? {
+            guard let group = table.group(rowPath, columnPath),
+                  case .number(let t)? = value(table, group, field: dataField.field, subtotal: function)
             else { return nil }
             return t
         }
@@ -716,11 +849,11 @@ public struct PivotEngine {
             return .number(n / t)
         }
         switch dataField.showDataAs {
-        case .percentOfTotal: return ratio(total([]))
-        case .percentOfRow: return ratio(total(rowConditions))
-        case .percentOfCol: return ratio(total(colConditions))
+        case .percentOfTotal: return ratio(total([], []))
+        case .percentOfRow: return ratio(total(rowPath, []))
+        case .percentOfCol: return ratio(total([], columnPath))
         case .index:
-            guard let grand = total([]), let rowTotal = total(rowConditions), let colTotal = total(colConditions),
+            guard let grand = total([], []), let rowTotal = total(rowPath, []), let colTotal = total([], columnPath),
                   rowTotal != 0, colTotal != 0 else { return .error(.div0) }
             return .number(n * grand / (rowTotal * colTotal))
         default:
@@ -736,25 +869,35 @@ public struct PivotEngine {
     /// visible items; running totals sum down the base field within each
     /// parent and leave parents and the grand total blank.
     private func baseFieldValue(_ dataField: PivotDataField, function: PivotSubtotal, row: AxisEntry,
-                                column: AxisEntry, conditions all: [(Int, Int)], records: [Int]) -> CellValue? {
+                                column: AxisEntry, rowPath: [Int], columnPath: [Int], table: ValueTable) -> CellValue? {
         let bf = dataField.baseField
-        let entry: AxisEntry, level: Int
+        let entry: AxisEntry, level: Int, onRows: Bool
         if let l = definition.rowFields.firstIndex(of: bf) {
-            entry = row; level = l
+            entry = row; level = l; onRows = true
         } else if let l = definition.columnFields.firstIndex(of: bf) {
-            entry = column; level = l
+            entry = column; level = l; onRows = false
         } else {
             return .error(.na)
         }
         guard entry.kind == .data, entry.tuple.count > level else { return nil }
+        let axisFields = onRows ? definition.rowFields : definition.columnFields
+        // Where the base field sits in the path (Values levels aren't in it).
+        let slot = axisFields[..<level].filter { $0 != pivotValuesFieldIndex }.count
         let items = definition.fields[bf].items
         let ordered = items.indices.filter { items[$0].kind == .data && !items[$0].hidden }
         let p = entry.tuple[level]
         func valueAt(_ q: Int) -> Double? {
             guard let x = items[q].index else { return nil }
-            let conds = all.filter { $0.0 != bf } + [(bf, x)]
-            let recs = records.filter { r in conds.allSatisfy { itemIndex(r, $0.0) == $0.1 } }
-            guard !recs.isEmpty, case .number(let n)? = value(field: dataField.field, subtotal: function, records: recs)
+            var rows = rowPath, columns = columnPath
+            if onRows {
+                guard slot < rows.count else { return nil }
+                rows[slot] = x
+            } else {
+                guard slot < columns.count else { return nil }
+                columns[slot] = x
+            }
+            guard let group = table.group(rows, columns),
+                  case .number(let n)? = value(table, group, field: dataField.field, subtotal: function)
             else { return nil }
             return n
         }
@@ -786,7 +929,7 @@ public struct PivotEngine {
     }
 
     private func render(rows: [AxisEntry], rowLines: [PivotAxisLine], cols: [AxisEntry], columnLines: [PivotAxisLine],
-                        records: [Int], geometry g: Geometry, into cells: inout [PivotOffset: PivotRenderedCell]) {
+                        table: ValueTable, geometry g: Geometry, into cells: inout [PivotOffset: PivotRenderedCell]) {
         let layout = definition.layout
         let rowFields = definition.rowFields, colFields = definition.columnFields
         let fhr = g.firstHeaderRow, fdr = g.firstDataRow, fdc = g.firstDataCol
@@ -896,7 +1039,7 @@ public struct PivotEngine {
             for (ci, column) in cols.enumerated() {
                 let d = valuesOnColumns ? column.dataField : (valuesOnRows ? entry.dataField : 0)
                 let format = dataFieldCount > 0 ? definition.dataFields[d].numberFormat : nil
-                if let v = cellValue(row: entry, column: column, records: records) {
+                if let v = cellValue(row: entry, column: column, table: table) {
                     let role: PivotCellRole
                     if entry.kind == .grand || column.kind == .grand {
                         role = .grandTotalValue

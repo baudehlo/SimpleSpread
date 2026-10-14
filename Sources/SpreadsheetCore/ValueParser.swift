@@ -63,7 +63,7 @@ public enum ValueParser {
             let body = String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces)
             if let n = parsePlainNumber(body), !shouldPreserveAsText(body) {
                 let format: NumberFormat = body.contains(".") ? .percent : .percentInteger
-                return ParsedInput(value: .number(n / 100), formulaText: nil,
+                return ParsedInput(value: .number(percentValue(body, n)), formulaText: nil,
                                    suggestedFormat: format)
             }
         }
@@ -96,6 +96,51 @@ public enum ValueParser {
         return ParsedInput(value: .string(input), formulaText: nil, suggestedFormat: nil)
     }
 
+    /// The cell editor's text for a number in a cell formatted `format`:
+    /// text that `parse` reads back as exactly `n`, so opening the editor
+    /// and pressing Return never changes a value.
+    ///
+    /// Dates and times edit as dates and times, and percentages as
+    /// percentages, when that form is exact (the displayed text first, then
+    /// a full form: "m/d/yyyy h:mm:ss AM/PM", "12.3456%"). Otherwise the
+    /// number itself, in its shortest exact form.
+    public static func editText(for n: Double, format: NumberFormat) -> String {
+        let exact = NumberFormatEngine.roundTripString(for: n)
+        guard n.isFinite, !format.isGeneral, !format.isTextFormat else { return exact }
+        var candidates: [String] = []
+        if format.isDateTime {
+            // Only real date serials (0 = 1900-01-00 ... 9999-12-31).
+            guard n >= 0, n < 2_958_466 else { return exact }
+            candidates.append(NumberFormatEngine.displayString(for: .number(n), format: format))
+            let wholeDays = n == n.rounded(.down)
+            let full = n < 1 ? NumberFormat.time
+                : wholeDays ? NumberFormat.date : NumberFormat(code: "m/d/yyyy h:mm:ss AM/PM")
+            candidates.append(NumberFormatEngine.displayString(for: .number(n), format: full))
+        } else if format.code.contains("%") {
+            candidates.append(NumberFormatEngine.displayString(for: .number(n), format: format))
+            let hundred = n * 100
+            if hundred.isFinite {
+                candidates.append(NumberFormatEngine.textCoercionString(for: hundred) + "%")
+                candidates.append(NumberFormatEngine.roundTripString(for: hundred) + "%")
+            }
+        }
+        for candidate in candidates where parse(candidate).value == .number(n) {
+            return candidate
+        }
+        return exact
+    }
+
+    /// "12.3456%" as a number: the decimal point moved two places in the
+    /// text, so it is the same double as typing 0.123456 (n / 100 can be
+    /// one bit off).
+    static func percentValue(_ body: String, _ n: Double) -> Double {
+        let plain = body.replacingOccurrences(of: ",", with: "")
+        guard !plain.lowercased().contains("e"), let shifted = Double(plain + "e-2"), shifted.isFinite else {
+            return n / 100
+        }
+        return shifted
+    }
+
     /// Leading-zero ("00501") and long-digit-string (credit card) protection:
     /// number inference is refused when re-rendering would lose information.
     static func shouldPreserveAsText(_ s: String) -> Bool {
@@ -108,6 +153,14 @@ public enum ValueParser {
         // >15 significant digits would silently lose precision.
         let digits = stripped.filter { $0.isNumber }
         if digits.count > 15, !stripped.lowercased().contains("e") {
+            // ...unless it's a decimal written exactly as the shortest form
+            // of a double (the cell editor shows 0.1+0.2 as
+            // 0.30000000000000004): that reads back without loss.
+            let unsigned = stripped.hasPrefix("+") ? String(stripped.dropFirst()) : stripped
+            if unsigned.contains("."), let n = Double(unsigned), n.isFinite,
+               NumberFormatEngine.roundTripString(for: n) == unsigned {
+                return false
+            }
             return true
         }
         return false
@@ -124,7 +177,7 @@ public enum ValueParser {
         guard !body.isEmpty else { return nil }
         // Validate grouping if commas present: 1,234,567.8
         if body.contains(",") {
-            let intPart = body.split(separator: ".", maxSplits: 1)[0]
+            let intPart = body.split(separator: ".", maxSplits: 1).first ?? ""
             let groups = intPart.split(separator: ",", omittingEmptySubsequences: false)
             guard groups.count > 1,
                   let first = groups.first, first.count >= 1, first.count <= 3,
@@ -133,7 +186,8 @@ public enum ValueParser {
                   first.allSatisfy(\.isNumber) else { return nil }
             body = body.replacingOccurrences(of: ",", with: "")
         }
-        guard let value = Coerce.strictDouble(body) else { return nil }
+        // "1e400" overflows to infinity: not a number a cell can hold.
+        guard let value = Coerce.strictDouble(body), value.isFinite else { return nil }
         return negative ? -value : value
     }
 
@@ -145,7 +199,7 @@ public enum ValueParser {
         if let n = parsePlainNumber(trimmed) { return n }
         if trimmed.hasSuffix("%"),
            let n = parsePlainNumber(String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces)) {
-            return n / 100
+            return percentValue(String(trimmed.dropLast()).trimmingCharacters(in: .whitespaces), n)
         }
         if trimmed.hasPrefix("$"), let n = parsePlainNumber(String(trimmed.dropFirst())) {
             return n
@@ -213,9 +267,8 @@ public enum ValueParser {
         var currentYear: Int { Calendar.current.component(.year, from: referenceDate) }
 
         func makeSerial(year: Int, month: Int, day: Int) -> Double? {
-            guard month >= 1, month <= 12, day >= 1,
-                  day <= ExcelDate.daysInMonth(year: year, month: month),
-                  year >= 1900, year <= 9999 else { return nil }
+            guard year >= 1900, year <= 9999, month >= 1, month <= 12, day >= 1,
+                  day <= ExcelDate.daysInMonth(year: year, month: month) else { return nil }
             return ExcelDate.serial(year: year, month: month, day: day)
         }
 
@@ -230,8 +283,9 @@ public enum ValueParser {
         let comps = s.components(separatedBy: numericSeparators)
         // ASCII digits only: `isNumber` also accepts "²" or "½", which Int() rejects.
         func isDigits(_ s: String) -> Bool { !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber } }
+        // A run of digits too long for Int (pasted IDs) is just not a date.
         if comps.count == 3, comps.allSatisfy(isDigits) {
-            let a = Int(comps[0])!, b = Int(comps[1])!, c = Int(comps[2])!
+            guard let a = Int(comps[0]), let b = Int(comps[1]), let c = Int(comps[2]) else { return nil }
             if comps[0].count == 4 {
                 // yyyy-M-d
                 return makeSerial(year: a, month: b, day: c)
@@ -242,7 +296,7 @@ public enum ValueParser {
         if comps.count == 2, comps.allSatisfy(isDigits),
            s.contains("/") {
             // M/d (current year)
-            let a = Int(comps[0])!, b = Int(comps[1])!
+            guard let a = Int(comps[0]), let b = Int(comps[1]) else { return nil }
             return makeSerial(year: currentYear, month: a, day: b)
         }
 
@@ -259,7 +313,7 @@ public enum ValueParser {
                     guard month == nil else { return nil }
                     month = m
                 } else if isDigits(token) {
-                    let n = Int(token)!
+                    guard let n = Int(token) else { return nil }
                     if token.count == 4 || n > 31 {
                         guard year == nil else { return nil }
                         year = n
