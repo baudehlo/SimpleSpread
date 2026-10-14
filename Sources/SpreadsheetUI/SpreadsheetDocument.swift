@@ -72,6 +72,10 @@ public final class SpreadsheetDocument: ObservableObject {
     @Published public private(set) var isModified = false
     /// Incremented whenever cell content/layout changes; grid views observe it.
     @Published public private(set) var revision = 0
+    /// Incremented by every change to the document's content (not by
+    /// switching sheets), so a background save knows whether the user
+    /// changed anything after its snapshot.
+    public private(set) var changeCount = 0
     /// View zoom (1.0 = 100%). Applied as NSScrollView magnification.
     @Published public var zoomLevel: CGFloat = 1.0
     /// An alert for the window to show; the window clears it on dismissal.
@@ -181,6 +185,7 @@ public final class SpreadsheetDocument: ObservableObject {
     func markChanged() {
         isModified = true
         revision += 1
+        changeCount += 1
     }
 
     struct CellSnapshot {
@@ -1410,13 +1415,57 @@ public final class SpreadsheetDocument: ObservableObject {
 
     // MARK: - File I/O
 
+    /// Save now, on this thread (tests and small documents; the app saves in
+    /// the background, see BackgroundSaver).
     public func save(to url: URL) throws {
+        let snapshot = makeSaveSnapshot()
+        try Self.write(snapshot, to: url)
+        didSave(snapshot, to: url)
+    }
+
+    /// The document as it is now, for writing on another thread while the
+    /// user carries on: the typing still in an editor is committed first,
+    /// and the workbook is copied (copy-on-write, so this is quick even for
+    /// a million cells; the first edit afterwards pays for copying the
+    /// sheet it changes).
+    public func makeSaveSnapshot() -> SaveSnapshot {
         commitPendingEdit()
-        let data = try XLSXWriter.data(for: workbook)
+        return SaveSnapshot(workbook: workbook.copy(), changeCount: changeCount)
+    }
+
+    /// Write a snapshot as .xlsx (any thread). `progress` gets the fraction
+    /// done; once `shouldContinue` says no, this throws `CancellationError`
+    /// and leaves any file at `url` as it was (the file is replaced
+    /// atomically, only once it is complete).
+    nonisolated public static func write(_ snapshot: SaveSnapshot, to url: URL,
+                                         progress: @escaping (Double) -> Void = { _ in },
+                                         shouldContinue: @escaping () -> Bool = { true }) throws {
+        let data: Data
+        do {
+            data = try XLSXWriter.data(for: snapshot.workbook) { fraction in
+                progress(fraction)
+                return shouldContinue()
+            }
+        } catch XLSXError.cancelled {
+            throw CancellationError()
+        }
+        guard shouldContinue() else { throw CancellationError() }
         try data.write(to: url, options: .atomic)
+    }
+
+    /// A snapshot is on disk at `url`: the document now saves there, and it
+    /// is unmodified unless it changed after the snapshot was taken.
+    public func didSave(_ snapshot: SaveSnapshot, to url: URL) {
+        didSave(changeCount: snapshot.changeCount, to: url)
+    }
+
+    /// As above, for the snapshot's `changeCount` (so the snapshot itself,
+    /// perhaps by now the only owner of a million cells, can be freed on
+    /// the saving thread rather than here).
+    func didSave(changeCount savedChangeCount: Int, to url: URL) {
         fileURL = url
         suggestedFileName = nil
-        isModified = false
+        isModified = changeCount != savedChangeCount
         unsupportedContentAccepted = true
     }
 
@@ -1488,13 +1537,32 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Import a CSV file as a new sheet in this document.
     public func importCSVSheet(from url: URL) throws {
-        registerWorkbookUndo(actionName: "Import CSV")
+        importCSVSheet(try Self.readCSVSheet(from: url))
+    }
+
+    /// Read and parse a CSV file for `importCSVSheet` (any thread; the
+    /// slow part). `progress` gets the fraction read; once `shouldContinue`
+    /// says no, this throws `CancellationError`.
+    nonisolated static func readCSVSheet(from url: URL,
+                                         progress: @escaping (Double) -> Void = { _ in },
+                                         shouldContinue: @escaping () -> Bool = { true }) throws -> ImportedCSV {
         let data = try Data(contentsOf: url, options: .alwaysMapped)
         var report = CSVImportReport()
         let imported = CSV.importWorkbook(data: data,
                                           sheetName: url.deletingPathExtension().lastPathComponent,
-                                          report: &report)
-        if report.truncated {
+                                          report: &report) { fraction in
+            progress(fraction)
+            return shouldContinue()
+        }
+        if report.cancelled { throw CancellationError() }
+        return ImportedCSV(workbook: imported, truncated: report.truncated)
+    }
+
+    /// Add a CSV file read by `readCSVSheet` as a new sheet (main thread).
+    func importCSVSheet(_ read: ImportedCSV) {
+        registerWorkbookUndo(actionName: "Import CSV")
+        let imported = read.workbook
+        if read.truncated {
             notice = DocumentNotice(
                 message: "This file has more rows than a sheet can hold.",
                 detail: "Only the first 1,048,576 rows were imported, as in Excel.")
@@ -1514,7 +1582,22 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func exportActiveSheetCSV(to url: URL) throws {
-        let data = CSV.export(sheet: activeSheet, workbook: workbook)
+        try Self.writeCSV(of: makeCSVExportSnapshot(), to: url)
+    }
+
+    /// The active sheet as it is now, for exporting on another thread.
+    func makeCSVExportSnapshot() -> CSVExportSnapshot {
+        commitPendingEdit()
+        let copy = workbook.copy()
+        return CSVExportSnapshot(workbook: copy, sheet: copy.sheet(withID: activeSheetID) ?? copy.sheets[0])
+    }
+
+    /// Write a sheet as CSV (any thread). Throws `CancellationError`, leaving
+    /// any file at `url` as it was, once `shouldContinue` says no.
+    nonisolated static func writeCSV(of snapshot: CSVExportSnapshot, to url: URL,
+                                     shouldContinue: () -> Bool = { true }) throws {
+        let data = CSV.export(sheet: snapshot.sheet, workbook: snapshot.workbook)
+        guard shouldContinue() else { throw CancellationError() }
         try data.write(to: url, options: .atomic)
     }
 }

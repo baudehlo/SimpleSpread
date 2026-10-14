@@ -8,12 +8,29 @@ import SpreadsheetCore
 @MainActor
 enum DocumentSaving {
     /// Save in place, or ask for a location when the document has no file
-    /// yet (or `forceAs`). `completion(true)` only once the file is written.
+    /// yet (or `forceAs`). `completion(true)` only once the file is written
+    /// (in the background: see BackgroundSaver).
+    ///
+    /// While the document is already saving, the request waits for that
+    /// save and then runs from a fresh snapshot, so two saves of one file
+    /// never run at once and nothing typed meanwhile is missed. A ⌘S that
+    /// finds nothing changed by then is done: pressing ⌘S three times
+    /// during a long save writes once more, not three times.
     static func save(_ document: SpreadsheetDocument, as forceAs: Bool = false,
                      in window: NSWindow?, completion: @escaping (Bool) -> Void = { _ in }) {
+        if BackgroundSaver.isSaving(document) {
+            BackgroundSaver.whenIdle(document) {
+                if !forceAs, !document.isModified, !document.hasPendingEdit,
+                   case .write = plan(for: document) {
+                    return completion(true)
+                }
+                save(document, as: forceAs, in: window, completion: completion)
+            }
+            return
+        }
         switch plan(for: document, as: forceAs) {
         case .write(let url):
-            completion(write(document, to: url))
+            write(document, to: url, in: window, completion: completion)
         case .choose(let note):
             choose(document, note: note, in: window, completion: completion)
         case .confirmLoss(let url, let items):
@@ -22,7 +39,7 @@ enum DocumentSaving {
                 case .alertFirstButtonReturn: // Save a Copy…
                     choose(document, note: lossNote(document, items), copy: true, in: window, completion: completion)
                 case .alertSecondButtonReturn: // Save Anyway
-                    completion(write(document, to: url))
+                    write(document, to: url, in: window, completion: completion)
                 default:
                     completion(false)
                 }
@@ -103,7 +120,7 @@ enum DocumentSaving {
         if let note { panel.message = note }
         let finish: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK, let url = panel.url else { return completion(false) }
-            completion(write(document, to: url))
+            write(document, to: url, in: window, completion: completion)
         }
         if let window {
             panel.beginSheetModal(for: window, completionHandler: finish)
@@ -112,17 +129,24 @@ enum DocumentSaving {
         }
     }
 
-    private static func write(_ document: SpreadsheetDocument, to url: URL) -> Bool {
-        do {
-            try document.save(to: url)
-            RecentFilesManager.shared.record(url)
-            return true
-        } catch {
-            let alert = NSAlert()
-            alert.messageText = "Could not save"
-            alert.informativeText = error.localizedDescription
-            alert.runModal()
-            return false
+    /// Write in the background. Cancel in the progress panel is not an
+    /// error: nothing is written and `completion(false)`.
+    private static func write(_ document: SpreadsheetDocument, to url: URL, in window: NSWindow?,
+                              completion: @escaping (Bool) -> Void) {
+        BackgroundSaver.save(document, to: url, in: window) { outcome in
+            switch outcome {
+            case .saved:
+                RecentFilesManager.shared.record(url)
+                completion(true)
+            case .cancelled:
+                completion(false)
+            case .failed(let error):
+                let alert = NSAlert()
+                alert.messageText = "Could not save"
+                alert.informativeText = error.localizedDescription
+                alert.runModal()
+                completion(false)
+            }
         }
     }
 
@@ -147,7 +171,10 @@ enum DocumentSaving {
             case .alertFirstButtonReturn:
                 // Take the alert sheet down before the save panel sheet goes up.
                 alert.window.orderOut(nil)
-                save(document, in: window, completion: completion)
+                // Saving runs in the background and the window stays
+                // usable: anything changed meanwhile isn't saved, so the
+                // window stays open rather than lose it.
+                save(document, in: window) { ok in completion(ok && !document.isModified) }
             case .alertThirdButtonReturn:
                 completion(true)
             default:
@@ -177,7 +204,16 @@ enum DocumentSaving {
     /// gets the usual save prompt; several get Finder-style "Review Changes…
     /// / Cancel / Discard Changes" first, then a prompt per document.
     static func reviewBeforeQuit(completion: @escaping (Bool) -> Void) {
+        // Saves (imports, exports) still running finish first, their panels
+        // showing why the app hasn't quit yet; then whatever is still
+        // unsaved is reviewed.
+        guard BackgroundFileTask.isIdle else {
+            BackgroundFileTask.showAllProgress()
+            BackgroundFileTask.whenAllIdle { reviewBeforeQuit(completion: completion) }
+            return
+        }
         let pending = modifiedDocumentWindows()
+        guard !pending.isEmpty else { return completion(true) }
         if pending.count > 1 {
             let alert = NSAlert()
             alert.messageText = "You have \(pending.count) SimpleSpread documents with unsaved changes. Do you want to review these changes before quitting?"
@@ -211,6 +247,8 @@ final class DocumentWindowDelegate: NSObject, NSWindowDelegate {
     nonisolated(unsafe) private weak var original: NSWindowDelegate?
     /// Set once the user has answered the prompt, so the re-issued close goes through.
     private var closeConfirmed = false
+    /// A close is waiting for the document's save to finish.
+    private var closeWaitsForSave = false
 
     init(document: SpreadsheetDocument, original: NSWindowDelegate?) {
         self.document = document
@@ -219,6 +257,20 @@ final class DocumentWindowDelegate: NSObject, NSWindowDelegate {
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         let originalAllows = original?.windowShouldClose?(sender) ?? true
+        // A save in flight would be lost with the window: show its progress
+        // and close once it is over (asking first if something is still
+        // unsaved, e.g. after Cancel or typing during the save).
+        if originalAllows, let document, BackgroundSaver.isSaving(document) {
+            BackgroundSaver.showProgress(for: document)
+            if !closeWaitsForSave {
+                closeWaitsForSave = true
+                BackgroundSaver.whenIdle(document) { [weak self] in
+                    self?.closeWaitsForSave = false
+                    sender.performClose(nil)
+                }
+            }
+            return false
+        }
         // An open cell editor counts as unsaved work: commit it so the
         // prompt below covers it.
         if originalAllows, !closeConfirmed { document?.commitPendingEdit() }

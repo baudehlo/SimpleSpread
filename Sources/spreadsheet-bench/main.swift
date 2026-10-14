@@ -6,6 +6,8 @@ import SpreadsheetFiles
 //   swift run -c release spreadsheet-bench <file.csv|file.xlsx> [--save]
 // or times editing and recalculation on synthetic workbooks built in memory:
 //   swift run -c release spreadsheet-bench --edits
+// or times saving a full synthetic sheet (snapshot, write, progress):
+//   swift run -c release spreadsheet-bench --save-full-sheet
 // Not part of the app; for measuring big-file performance.
 
 @discardableResult
@@ -129,6 +131,68 @@ func runEditBenchmarks() {
         let engine = time("engine init, 1,048,576 formulas") { CalculationEngine(workbook: wb) }
         time("edit A1") { _ = engine.setCellValue(.number(5), at: addr(sheet, 0, 0)) }
     }
+}
+
+/// Saving a full sheet (1,048,576 rows × 10 columns, one column of
+/// formulas): what the main thread pays (the snapshot) and what the
+/// background save pays, phase by phase.
+func runSaveBenchmark() throws {
+    let wb = Workbook.newDocument()
+    let sheet = wb.sheets[0]
+    let rows = CellAddress.maxRows
+    time("build 1,048,576 x 10") {
+        sheet.reserveCellCapacity(rows * 10)
+        for r in 0..<rows {
+            for c in 0..<8 {
+                sheet.setCell(Cell(value: .number(Double(r &* 31 &+ c) / 7)), at: CellAddress(row: r, column: c))
+            }
+            sheet.setCell(Cell(value: .string("item \(r % 5_000)")), at: CellAddress(row: r, column: 8))
+            sheet.setCell(Cell(value: .number(Double(r)), formula: "A\(r + 1)*2"), at: CellAddress(row: r, column: 9))
+        }
+    }
+    // The main thread's part of a background save: one snapshot.
+    var snapshot = wb
+    for _ in 0..<3 {
+        let start = Date()
+        snapshot = wb.copy()
+        print(String(format: "Workbook.copy() (main thread): %.1f µs", Date().timeIntervalSince(start) * 1e6))
+    }
+    // Editing the live sheet while the snapshot is shared copies its cell
+    // table once (the first edit after a save starts).
+    time("first edit after the snapshot (copy-on-write)") {
+        sheet.setCell(Cell(value: .number(1)), at: CellAddress(row: 0, column: 0))
+    }
+    time("second edit") { sheet.setCell(Cell(value: .number(2)), at: CellAddress(row: 1, column: 0)) }
+
+    for _ in 0..<2 {
+        _ = try time("XLSXWriter.data (no progress)") { try XLSXWriter.data(for: snapshot) }
+        _ = try time("XLSXWriter.data (progress, ignored)") { try XLSXWriter.data(for: snapshot) { _ in true } }
+    }
+    let start = Date()
+    var marks: [(Double, TimeInterval)] = []
+    var calls = 0
+    let data = try time("XLSXWriter.data (with progress)") {
+        try XLSXWriter.data(for: snapshot) { fraction in
+            calls += 1
+            if marks.isEmpty || fraction - marks.last!.0 >= 0.1 || fraction == 1 {
+                marks.append((fraction, Date().timeIntervalSince(start)))
+            }
+            return true
+        }
+    }
+    print("progress calls: \(calls)")
+    for (fraction, t) in marks { print(String(format: "  %5.1f%% at %6.3fs", fraction * 100, t)) }
+    let url = FileManager.default.temporaryDirectory.appendingPathComponent("spreadsheet-bench-save.xlsx")
+    try time("write (atomic), \(data.count / 1_000_000) MB") { try data.write(to: url, options: .atomic) }
+    try? FileManager.default.removeItem(at: url)
+    // After that edit the snapshot is the only owner of its cell table
+    // (which is why the app frees it on the saving thread).
+    time("free the snapshot") { snapshot = Workbook() }
+}
+
+if CommandLine.arguments.contains("--save-full-sheet") {
+    try runSaveBenchmark()
+    exit(0)
 }
 
 if CommandLine.arguments.contains("--edits") {

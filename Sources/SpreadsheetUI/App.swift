@@ -303,7 +303,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return .terminateNow
         }
         return MainActor.assumeIsolated {
-            if DocumentSaving.modifiedDocumentWindows().isEmpty { return .terminateNow }
+            // A save still being written counts as unsaved work.
+            if DocumentSaving.modifiedDocumentWindows().isEmpty, BackgroundFileTask.isIdle { return .terminateNow }
             DocumentSaving.reviewBeforeQuit { ok in
                 sender.reply(toApplicationShouldTerminate: ok)
             }
@@ -470,9 +471,7 @@ struct FileCommands: Commands {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.commaSeparatedText, .tabSeparatedText, .plainText]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try document.importCSVSheet(from: url)
-        } catch {
+        BackgroundCSV.importSheet(into: document, from: url, in: NSApp.keyWindow) { error in
             presentError(error, message: "Could not import CSV")
         }
     }
@@ -484,9 +483,7 @@ struct FileCommands: Commands {
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = document.activeSheet.name + ".csv"
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        do {
-            try document.exportActiveSheetCSV(to: url)
-        } catch {
+        BackgroundCSV.exportActiveSheet(of: document, to: url, in: NSApp.keyWindow) { error in
             presentError(error, message: "Could not export CSV")
         }
     }

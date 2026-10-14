@@ -5,7 +5,10 @@ import SpreadsheetCore
 /// in `worksheetXML` produce, byte for byte (tests compare the two), without
 /// building a String per cell.
 extension XLSXWriter {
-    static func appendSheetData(of sheet: Sheet, to out: inout [UInt8], strings: inout SharedStringBuilder) {
+    /// `progress` gets the fraction of the sheet done, every 64K cells; it
+    /// throws to stop (Cancel).
+    static func appendSheetData(of sheet: Sheet, to out: inout [UInt8], strings: inout SharedStringBuilder,
+                                progress: (Double) throws -> Void) rethrows {
         // Rows in order, cells in order: one sort of packed keys,
         // row * 32768 + column + 1. A row written only for its height or
         // hidden flag gets "column" 0, so it sorts first in its row.
@@ -21,10 +24,17 @@ extension XLSXWriter {
         for key in keys { extraRows.remove(key / stride) }
         for row in extraRows { keys.append(row &* stride) }
         keys.sort()
+        // Collecting and sorting the keys: about a quarter of the time.
+        let sortShare = 0.25
+        try progress(sortShare)
 
         out.append(contentsOf: "<sheetData>".utf8)
         var currentRow = Int.min
-        for key in keys {
+        let total = Double(max(1, keys.count))
+        for (index, key) in keys.enumerated() {
+            if index & 0xFFFF == 0xFFFF {
+                try progress(sortShare + (1 - sortShare) * Double(index) / total)
+            }
             let row = key / stride
             let isRowOnly = key % stride == 0
             if row != currentRow {
@@ -49,6 +59,7 @@ extension XLSXWriter {
         }
         if currentRow != Int.min { out.append(contentsOf: "</row>".utf8) }
         out.append(contentsOf: "</sheetData>".utf8)
+        try progress(1)
     }
 
     /// `cellXML` as bytes.

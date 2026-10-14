@@ -65,20 +65,38 @@ enum Deflate {
     /// the pieces join into one ordinary deflate stream. Returns nil when
     /// compression doesn't shrink the data.
     static func compress(_ data: Data) -> Data? {
+        compress(data, progress: { _ in })
+    }
+
+    /// As above, calling `progress` with the fraction of chunks done after
+    /// each batch of chunks (a few per core, so the cores stay busy); it
+    /// throws to stop.
+    static func compress(_ data: Data, batchSize: Int? = nil,
+                         progress: (Double) throws -> Void) rethrows -> Data? {
         guard !data.isEmpty else { return nil }
         let chunkSize = 1 << 20
         let chunkCount = (data.count + chunkSize - 1) / chunkSize
+        let batchSize = max(1, batchSize ?? ProcessInfo.processInfo.activeProcessorCount * 4)
         var pieces = [Data?](repeating: nil, count: chunkCount)
-        let failed = data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
+        let failed = try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
             let results = UnsafeMutableBufferPointer<Data?>.allocate(capacity: chunkCount)
             results.initialize(repeating: nil)
-            defer { results.deallocate() }
+            defer {
+                results.deinitialize()
+                results.deallocate()
+            }
             let job = ChunkJob(input: raw.bindMemory(to: Bytef.self), results: results,
                                chunkSize: chunkSize, chunkCount: chunkCount)
-            if chunkCount == 1 {
-                job.compress(chunk: 0)
-            } else {
-                DispatchQueue.concurrentPerform(iterations: chunkCount) { job.compress(chunk: $0) }
+            var next = 0
+            while next < chunkCount {
+                let first = next, count = min(batchSize, chunkCount - next)
+                if count == 1 {
+                    job.compress(chunk: first)
+                } else {
+                    DispatchQueue.concurrentPerform(iterations: count) { job.compress(chunk: first + $0) }
+                }
+                next += count
+                try progress(Double(next) / Double(chunkCount))
             }
             for i in 0..<chunkCount { pieces[i] = results[i] }
             return pieces.contains { $0 == nil }
@@ -355,8 +373,13 @@ public struct ZipArchiveWriter {
 
     /// Add a file. Entry names use forward slashes with no leading slash.
     public mutating func addEntry(name: String, data: Data) {
+        addEntry(name: name, data: data, progress: { _ in })
+    }
+
+    /// As above; `progress` gets the fraction compressed and throws to stop.
+    mutating func addEntry(name: String, data: Data, progress: (Double) throws -> Void) rethrows {
         let crc = CRC32.checksum(data)
-        if let compressed = Deflate.compress(data) {
+        if let compressed = try Deflate.compress(data, progress: progress) {
             pending.append(PendingEntry(name: name, payload: compressed, method: 8,
                                         crc: crc, uncompressedSize: data.count))
         } else {
