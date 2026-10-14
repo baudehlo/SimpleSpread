@@ -235,9 +235,6 @@ public final class Workbook {
         return sheets.remove(at: idx)
     }
 
-    /// Take over another workbook's sheets (keeping their ids), styles and
-    /// pivot tables, in place: for restoring a snapshot under objects (the
-    /// engine, undo records) that hold this instance and its sheet ids.
     /// An independent copy of the whole workbook (sheets keep their ids).
     /// Cheap, as `Sheet.copy()` is: the large tables are shared until changed.
     public func copy() -> Workbook {
@@ -252,6 +249,9 @@ public final class Workbook {
         return wb
     }
 
+    /// Take over another workbook's sheets (keeping their ids), styles and
+    /// pivot tables, in place: for restoring a snapshot under objects (the
+    /// engine, undo records) that hold this instance and its sheet ids.
     public func replaceContents(with other: Workbook) {
         sheets = other.sheets
         nextSheetID = max(nextSheetID, (sheets.map(\.id).max() ?? 0) + 1)
