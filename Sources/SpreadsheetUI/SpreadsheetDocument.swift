@@ -244,37 +244,48 @@ public final class SpreadsheetDocument: ObservableObject {
         markChanged()
     }
 
-    /// Whole-workbook snapshot for structural ops (uses the XLSX round-trip,
-    /// which is fully covered by tests).
-    func registerWorkbookUndo(actionName: String) {
-        guard let data = try? XLSXWriter.data(for: workbook) else { return }
-        let sheetIndex = workbook.indexOfSheet(withID: activeSheetID) ?? 0
+    /// What a workbook-level undo step puts back: the workbook (an
+    /// in-memory copy-on-write snapshot, see WorkbookSnapshot for what it
+    /// keeps alive), the active sheet and the selection. Unchecked
+    /// Sendable: undo handlers may be typed @Sendable in some SDKs, but
+    /// they run on the main actor, the only place a snapshot is touched.
+    struct DocumentSnapshot: @unchecked Sendable {
+        let workbook: WorkbookSnapshot
+        let activeSheetID: Int
+        let selection: SelectionState
+    }
+
+    /// Take before a command that changes the workbook's structure (rows,
+    /// columns, sheets, pivots); pass to `registerSnapshotUndo` after it.
+    func takeSnapshot() -> DocumentSnapshot {
+        DocumentSnapshot(workbook: WorkbookSnapshot(of: workbook), activeSheetID: activeSheetID, selection: selection)
+    }
+
+    /// Record what has changed since `before` was taken (one command) as
+    /// one undo step. Undo puts `before` back and registers the state it replaced as
+    /// the redo, the same way. `rebuild` re-reads every formula afterwards
+    /// (rebuildAll): needed unless the command left formulas, defined names
+    /// and the sheets formulas can name exactly as they were.
+    func registerSnapshotUndo(_ before: DocumentSnapshot, actionName: String, rebuild: Bool = true) {
+        before.workbook.releaseUnchangedCells(comparedTo: workbook)
         withUndoGroup {
             undoManager.registerUndo(withTarget: self) { doc in
                 MainActor.assumeIsolated {
-                    doc.registerWorkbookUndo(actionName: actionName)
-                    doc.restoreWorkbook(from: data, activeSheetIndex: sheetIndex)
+                    let current = doc.takeSnapshot()
+                    doc.restore(before, rebuild: rebuild)
+                    doc.registerSnapshotUndo(current, actionName: actionName, rebuild: rebuild)
                 }
             }
             undoManager.setActionName(actionName)
         }
     }
 
-    private func restoreWorkbook(from data: Data, activeSheetIndex: Int) {
-        guard let restored = try? XLSXReader.read(data: data) else { return }
-        replaceWorkbookContents(with: restored)
-        let idx = min(activeSheetIndex, workbook.sheets.count - 1)
-        activeSheetID = workbook.sheets[idx].id
-        selection = SelectionState()
+    private func restore(_ snapshot: DocumentSnapshot, rebuild: Bool) {
+        snapshot.workbook.restore(into: workbook)
+        if rebuild { engine.rebuildAll() }
+        activeSheetID = workbook.sheet(withID: snapshot.activeSheetID)?.id ?? workbook.sheets[0].id
+        selection = snapshot.selection
         markChanged()
-    }
-
-    /// Move sheets/styles/pivots from another workbook instance into ours in
-    /// place. Sheet ids are kept (the writer stores them as sheetId), so cell
-    /// undo records registered before the snapshot still find their sheets.
-    private func replaceWorkbookContents(with other: Workbook) {
-        workbook.replaceContents(with: other)
-        engine.rebuildAll()
     }
 
     // MARK: - Pivot table protection
@@ -403,7 +414,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Remove pivot tables and clear the selection, as one undoable step.
     private func removePivotTablesAndClear(_ tables: [PivotTable]) {
-        registerWorkbookUndo(actionName: "Delete")
+        let before = takeSnapshot()
         let sheetID = activeSheetID
         let names = Set(tables.map(\.name))
         workbook.removePivotTables { $0.sheetID == sheetID && names.contains($0.name)
@@ -411,6 +422,7 @@ public final class SpreadsheetDocument: ObservableObject {
         for address in selection.range.addresses where !activeSheet.cell(at: address).isDefault {
             engine.clearCell(at: AbsoluteAddress(sheetID: sheetID, address: address))
         }
+        registerSnapshotUndo(before, actionName: "Delete")
         markChanged()
     }
 
@@ -653,18 +665,20 @@ public final class SpreadsheetDocument: ObservableObject {
     public func insertRows(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: count) else { return }
-        registerWorkbookUndo(actionName: "Insert Rows")
+        let before = takeSnapshot()
         WorkbookOperations.insertRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
         engine.rebuildAll()
+        registerSnapshotUndo(before, actionName: "Insert Rows")
         markChanged()
     }
 
     public func deleteRows(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: -count) else { return }
-        registerWorkbookUndo(actionName: "Delete Rows")
+        let before = takeSnapshot()
         WorkbookOperations.deleteRows(in: workbook, sheetID: activeSheetID, at: index, count: count)
         engine.rebuildAll()
+        registerSnapshotUndo(before, actionName: "Delete Rows")
         selection.select(CellAddress(row: min(index, max(0, GridLayout(sheet: activeSheet).rowCount - 1)),
                                      column: selection.activeCell.column))
         markChanged()
@@ -673,18 +687,20 @@ public final class SpreadsheetDocument: ObservableObject {
     public func insertColumns(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: count) else { return }
-        registerWorkbookUndo(actionName: "Insert Columns")
+        let before = takeSnapshot()
         WorkbookOperations.insertColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
         engine.rebuildAll()
+        registerSnapshotUndo(before, actionName: "Insert Columns")
         markChanged()
     }
 
     public func deleteColumns(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: -count) else { return }
-        registerWorkbookUndo(actionName: "Delete Columns")
+        let before = takeSnapshot()
         WorkbookOperations.deleteColumns(in: workbook, sheetID: activeSheetID, at: index, count: count)
         engine.rebuildAll()
+        registerSnapshotUndo(before, actionName: "Delete Columns")
         selection.select(CellAddress(row: selection.activeCell.row, column: index))
         markChanged()
     }
@@ -748,32 +764,39 @@ public final class SpreadsheetDocument: ObservableObject {
 
     public func addSheet() {
         commitPendingEdit()
-        registerWorkbookUndo(actionName: "Add Sheet")
+        let before = takeSnapshot()
         let sheet = workbook.addSheet()
-        engine.sheetsDidChange() // formulas that named it before it existed
+        let resolved = engine.sheetsDidChange() // formulas that named it before it existed
         activeSheetID = sheet.id
         selection = SelectionState()
+        // Unless a formula was waiting for its name, nothing reads the new
+        // (empty) sheet: undo just takes it away again.
+        registerSnapshotUndo(before, actionName: "Add Sheet", rebuild: !resolved.isEmpty)
         markChanged()
     }
 
     public func deleteActiveSheet() {
         commitPendingEdit()
         guard workbook.sheets.count > 1 else { return }
-        registerWorkbookUndo(actionName: "Delete Sheet")
+        let before = takeSnapshot()
         let deletedIndex = workbook.indexOfSheet(withID: activeSheetID) ?? 0
         WorkbookOperations.deleteSheet(in: workbook, sheetID: activeSheetID)
         engine.rebuildAll()
         let idx = min(deletedIndex, workbook.sheets.count - 1)
         activeSheetID = workbook.sheets[idx].id
         selection = SelectionState()
+        registerSnapshotUndo(before, actionName: "Delete Sheet")
         markChanged()
     }
 
     public func renameActiveSheet(to name: String) {
         commitPendingEdit()
-        registerWorkbookUndo(actionName: "Rename Sheet")
+        // Not just the name: formulas and defined names that refer to the
+        // sheet are rewritten, so undo puts them back and rebuilds too.
+        let before = takeSnapshot()
         WorkbookOperations.renameSheet(in: workbook, sheetID: activeSheetID, to: name)
         engine.rebuildAll()
+        registerSnapshotUndo(before, actionName: "Rename Sheet")
         markChanged()
     }
 
@@ -787,8 +810,10 @@ public final class SpreadsheetDocument: ObservableObject {
 
     public func moveSheet(withID id: Int, to index: Int) {
         commitPendingEdit()
-        registerWorkbookUndo(actionName: "Reorder Sheets")
+        let before = takeSnapshot()
         workbook.moveSheet(withID: id, to: index)
+        // Only the order changed: undo puts it back without a rebuild.
+        registerSnapshotUndo(before, actionName: "Reorder Sheets", rebuild: false)
         markChanged()
     }
 
@@ -1488,8 +1513,8 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Import a CSV file as a new sheet in this document.
     public func importCSVSheet(from url: URL) throws {
-        registerWorkbookUndo(actionName: "Import CSV")
         let data = try Data(contentsOf: url, options: .alwaysMapped)
+        let before = takeSnapshot()
         var report = CSVImportReport()
         let imported = CSV.importWorkbook(data: data,
                                           sheetName: url.deletingPathExtension().lastPathComponent,
@@ -1510,6 +1535,7 @@ public final class SpreadsheetDocument: ObservableObject {
         engine.rebuildAll()
         activeSheetID = sheet.id
         selection = SelectionState()
+        registerSnapshotUndo(before, actionName: "Import CSV")
         markChanged()
     }
 
