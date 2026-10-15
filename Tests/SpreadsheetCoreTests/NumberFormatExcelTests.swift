@@ -78,7 +78,7 @@ struct NumberFormatExcelTests {
         #expect(fmt(1e20, "#,##0") == "100,000,000,000,000,000,000")
         #expect(fmt(-1e20, "#,##0") == "-100,000,000,000,000,000,000")
         // Beyond 15 significant digits Excel shows zeros.
-        #expect(fmt(123456789012345678, "0") == "123456789012346000")
+        #expect(fmt(123456789012345680, "0") == "123456789012346000")
     }
 
     @Test func displayRoundingUsesFifteenDigits() {

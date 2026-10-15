@@ -108,18 +108,18 @@ public struct DocumentWindowView: View {
             }
             .buttonStyle(.borderless)
             .disabled(document.findMatches.isEmpty)
-            .help("Previous match (⇧⌘G)")
+            .tip("Previous match (⇧⌘G)")
             Button { document.findNext() } label: {
                 Image(systemName: "chevron.down")
             }
             .buttonStyle(.borderless)
             .disabled(document.findMatches.isEmpty)
-            .help("Next match (⌘G)")
+            .tip("Next match (⌘G)")
             Button { closeFind() } label: {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.borderless)
-            .help("Close (Esc)")
+            .tip("Close (Esc)")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
@@ -212,7 +212,7 @@ public struct DocumentWindowView: View {
                 }
                 refocusGrid()
             }
-            .help("Format painter: copy this formatting, then select cells to apply it (Esc cancels)")
+            .tip("Format painter: copy this formatting, then select cells to apply it (Esc cancels)")
             toolButton("eraser", help: "Clear formatting (⌘\\)") {
                 document.clearFormattingInSelection()
             }
@@ -224,11 +224,11 @@ public struct DocumentWindowView: View {
             styleToggle("dollarsign", active: activeStyle.numberFormat == .currency) {
                 document.setNumberFormat(activeStyle.numberFormat == .currency ? .general : .currency)
             }
-            .help("Format as currency")
+            .tip("Format as currency")
             styleToggle("percent", active: activeStyle.numberFormat == .percent) {
                 document.setNumberFormat(activeStyle.numberFormat == .percent ? .general : .percent)
             }
-            .help("Format as percent")
+            .tip("Format as percent")
             textButton(".0", arrow: "arrow.left", help: "Decrease decimal places") {
                 document.adjustDecimals(by: -1)
             }
@@ -247,16 +247,16 @@ public struct DocumentWindowView: View {
             HStack(spacing: 2) {
                 styleToggle("bold", active: activeStyle.bold) { document.toggleBold() }
                     .keyboardShortcut("b", modifiers: .command)
-                    .help("Bold (⌘B)")
+                    .tip("Bold (⌘B)")
                 styleToggle("italic", active: activeStyle.italic) { document.toggleItalic() }
                     .keyboardShortcut("i", modifiers: .command)
-                    .help("Italic (⌘I)")
+                    .tip("Italic (⌘I)")
                 styleToggle("underline", active: activeStyle.underline) { document.toggleUnderline() }
                     .keyboardShortcut("u", modifiers: .command)
-                    .help("Underline (⌘U)")
+                    .tip("Underline (⌘U)")
                 styleToggle("strikethrough", active: activeStyle.strikethrough) { document.toggleStrikethrough() }
                     .keyboardShortcut("x", modifiers: [.command, .shift])
-                    .help("Strikethrough (⇧⌘X)")
+                    .tip("Strikethrough (⇧⌘X)")
             }
         }
     }
@@ -274,7 +274,7 @@ public struct DocumentWindowView: View {
                     .controlSize(.small)
                     .fixedSize()
             }
-            .help("Text color")
+            .tip("Text color")
             HStack(spacing: 3) {
                 Image(systemName: "drop.fill")
                     .font(.system(size: 11))
@@ -284,7 +284,7 @@ public struct DocumentWindowView: View {
                     .controlSize(.small)
                     .fixedSize()
             }
-            .help("Fill color")
+            .tip("Fill color")
             bordersMenu
         }
     }
@@ -310,7 +310,7 @@ public struct DocumentWindowView: View {
         }
         .toolbarMenuStyle()
         .fixedSize()
-        .help("Borders: click for a bottom border, or choose from the menu")
+        .tip("Borders: click for a bottom border, or choose from the menu")
     }
 
     private var alignmentGroup: some View {
@@ -320,7 +320,7 @@ public struct DocumentWindowView: View {
             alignButton(.right, icon: "text.alignright", help: "Align right")
             verticalAlignMenu
             styleToggle("arrow.turn.down.left", active: activeStyle.wrapText) { document.toggleWrapText() }
-                .help("Wrap text")
+                .tip("Wrap text")
             mergeMenu
         }
     }
@@ -349,7 +349,7 @@ public struct DocumentWindowView: View {
         }
         .toolbarMenuStyle()
         .fixedSize()
-        .help("Vertical alignment")
+        .tip("Vertical alignment")
     }
 
     private var mergeMenu: some View {
@@ -366,7 +366,7 @@ public struct DocumentWindowView: View {
         }
         .toolbarMenuStyle()
         .fixedSize()
-        .help("Merge & Center (click again to unmerge)")
+        .tip("Merge & Center (click again to unmerge)")
     }
 
     /// Excel's Home-tab "Sort & Filter" button: one menu, its icon filled
@@ -391,7 +391,7 @@ public struct DocumentWindowView: View {
             }
             .toolbarMenuStyle()
             .fixedSize()
-            .help("Sort & Filter")
+            .tip("Sort & Filter")
             autoSumMenu
         }
     }
@@ -413,7 +413,7 @@ public struct DocumentWindowView: View {
         }
         .toolbarMenuStyle()
         .fixedSize()
-        .help("AutoSum: total the numbers above or to the left (click the arrow for Average, Count, Max, Min)")
+        .tip("AutoSum: total the numbers above or to the left (click the arrow for Average, Count, Max, Min)")
     }
 
     /// Toolbar commands act on committed cells: write any pending typing
@@ -433,6 +433,7 @@ public struct DocumentWindowView: View {
                 .cornerRadius(4)
         }
         .buttonStyle(.borderless)
+        .accessibilityAddTraits(active ? .isSelected : [])
     }
 
     private func toolButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
@@ -441,7 +442,7 @@ public struct DocumentWindowView: View {
                 .frame(width: 22, height: 20)
         }
         .buttonStyle(.borderless)
-        .help(help)
+        .tip(help)
     }
 
     /// The ".0 ←" / ".00 →" decimal buttons, drawn as text like Sheets.
@@ -455,14 +456,14 @@ public struct DocumentWindowView: View {
             .frame(minWidth: 30, minHeight: 20)
         }
         .buttonStyle(.borderless)
-        .help(help)
+        .tip(help)
     }
 
     private func alignButton(_ alignment: TextAlignmentH, icon: String, help: String) -> some View {
         styleToggle(icon, active: activeStyle.horizontalAlignment == alignment) {
             document.setHorizontalAlignment(alignment)
         }
-        .help(help)
+        .tip(help)
     }
 
     static var fontChoices: [String] { FontChoices.current }
@@ -490,7 +491,8 @@ public struct DocumentWindowView: View {
         }
         .toolbarMenuStyle()
         .fixedSize()
-        .help("Font")
+        .tip("Font")
+        .accessibilityValue(current)
     }
 
     private var fontSizeMenu: some View {
@@ -514,7 +516,8 @@ public struct DocumentWindowView: View {
         }
         .toolbarMenuStyle()
         .fixedSize()
-        .help("Font size")
+        .tip("Font size")
+        .accessibilityValue(NumberFormatEngine.generalString(for: current))
     }
 
     static let formatChoices: [(String, NumberFormat)] = [
@@ -548,7 +551,8 @@ public struct DocumentWindowView: View {
         }
         .toolbarMenuStyle()
         .fixedSize()
-        .help("Number format")
+        .tip("Number format")
+        .accessibilityValue(currentFormatName)
     }
 
     private var currentFormatName: String {
@@ -651,7 +655,7 @@ public struct DocumentWindowView: View {
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 8)
-            .help("Add sheet")
+            .tip("Add sheet")
 
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 1) {
@@ -678,7 +682,7 @@ public struct DocumentWindowView: View {
                 Image(systemName: "minus.magnifyingglass")
             }
             .buttonStyle(.borderless)
-            .help("Zoom out (⌘-)")
+            .tip("Zoom out (⌘-)")
 
             Menu {
                 ForEach(SpreadsheetDocument.zoomPresets, id: \.self) { preset in
@@ -694,7 +698,8 @@ public struct DocumentWindowView: View {
             }
             .toolbarMenuStyle()
             .fixedSize()
-            .help("Zoom level")
+            .tip("Zoom level")
+        .accessibilityValue("\(Int((document.zoomLevel * 100).rounded()))%")
 
             Button {
                 document.zoomIn()
@@ -702,7 +707,7 @@ public struct DocumentWindowView: View {
                 Image(systemName: "plus.magnifyingglass")
             }
             .buttonStyle(.borderless)
-            .help("Zoom in (⌘+)")
+            .tip("Zoom in (⌘+)")
         }
     }
 

@@ -89,11 +89,16 @@ jobs:
           print(ipads[0]["udid"])')
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
+      # The screenshot tests (ReviewTests, testScreenshots) take pictures
+      # for a person to look over; they cost a minute and check little, so
+      # they run by hand (docs/IPAD.md), not on every push.
       - name: Test
         working-directory: iOS
         run: |
           xcodebuild test -project SimpleSpread.xcodeproj -scheme SimpleSpread \
             -destination "id=${{ steps.sim.outputs.udid }}" \
+            -skip-testing:SimpleSpreadUITests/ReviewTests \
+            -skip-testing:SimpleSpreadUITests/SimpleSpreadUITests/testScreenshots \
             -resultBundlePath "$RUNNER_TEMP/ipad.xcresult"
 
       - name: Upload test results

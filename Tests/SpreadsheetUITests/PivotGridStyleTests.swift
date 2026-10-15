@@ -76,3 +76,12 @@ struct CellTextColourTests {
         #expect(!RGBAColor(red: 0xC0, green: 0x00, blue: 0x00).isLight) // dark red: white text
     }
 }
+
+@Suite("Spoken labels")
+struct SpokenLabelTests {
+    @Test func tipsShortenToTheirName() {
+        #expect(spokenLabel("Bold (⌘B)") == "Bold")
+        #expect(spokenLabel("AutoSum: total the numbers above (click the arrow…)") == "AutoSum")
+        #expect(spokenLabel("Text color") == "Text color")
+    }
+}

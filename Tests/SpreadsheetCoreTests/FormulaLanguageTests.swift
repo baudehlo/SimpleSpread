@@ -23,7 +23,7 @@ struct NumberTextTests {
     @Test func roundTripStringReadsBackExactly() throws {
         var rng = SystemRandomNumberGenerator()
         var values: [Double] = [.pi, -.pi, 1 / 3, 2 / 3, 1e300, -1e-300, .leastNormalMagnitude,
-                                .greatestFiniteMagnitude, 9007199254740993, 45306.65636574074]
+                                .greatestFiniteMagnitude, 9007199254740992, 45306.65636574074]
         for _ in 0..<2000 {
             let magnitude = Double.random(in: -30...30, using: &rng)
             values.append(Double.random(in: -1...1, using: &rng) * pow(10, magnitude))
@@ -40,7 +40,7 @@ struct NumberTextTests {
     @Test func textCoercionKeepsFifteenDigits() {
         let cases: [(Double, String)] = [
             (1234567.891234, "1234567.891234"), (1.0 / 3, "0.333333333333333"),
-            (0.1 + 0.2, "0.3"), (123456789012345678, "1.23456789012346E+17"),
+            (0.1 + 0.2, "0.3"), (123456789012345680, "1.23456789012346E+17"),
             (999999999999999, "999999999999999"), (1e15, "1E+15"), (1e-10, "1E-10"),
             (45306.123456789, "45306.123456789"), (-12.5, "-12.5"), (2, "2"),
         ]

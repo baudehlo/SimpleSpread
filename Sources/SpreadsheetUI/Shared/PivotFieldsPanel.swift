@@ -55,14 +55,14 @@ struct PivotFieldsPanel: View {
             } label: {
                 Image(systemName: "arrow.clockwise")
             }
-            .help("Refresh from the source data")
+            .tip("Refresh from the source data")
             .disabled(document.pivotEditBlocker(index) != nil)
             Button {
                 document.isPivotPanelVisible = false
             } label: {
                 Image(systemName: "sidebar.trailing")
             }
-            .help("Hide the PivotTable Fields panel")
+            .tip("Hide the PivotTable Fields panel")
         }
         .buttonStyle(.borderless)
         .padding(12)
@@ -165,7 +165,7 @@ struct PivotFieldsPanel: View {
             if f >= 0, area != .values, d.fields[f].items.contains(where: \.hidden) {
                 Image(systemName: "line.3.horizontal.decrease.circle.fill")
                     .foregroundStyle(.secondary)
-                    .help("Some items are filtered out")
+                    .tip("Some items are filtered out")
             }
             Menu {
                 chipMenu(area: area, position: position, field: f, d, cache)

@@ -173,6 +173,14 @@ extension View {
         #endif
     }
 
+    /// A tooltip that is also the control's VoiceOver label. Toolbar
+    /// buttons are icons, so without this VoiceOver read their symbol names
+    /// ("dollarsign"). The label is the tip up to its first ":" or " ("
+    /// ("Bold (⌘B)" says "Bold").
+    func tip(_ text: String) -> some View {
+        help(text).accessibilityLabel(spokenLabel(text))
+    }
+
     /// The window subtitle ("— Edited"); iPad windows have none.
     @ViewBuilder func windowSubtitle(_ text: String) -> some View {
         #if os(macOS)
@@ -202,3 +210,11 @@ struct CheckboxToggleStyle: ToggleStyle {
     }
 }
 #endif
+
+/// A tooltip's short form, for VoiceOver: up to the first ":" or " (".
+func spokenLabel(_ tip: String) -> String {
+    var label = Substring(tip)
+    if let colon = label.firstIndex(of: ":") { label = label[..<colon] }
+    if let paren = label.range(of: " (") { label = label[..<paren.lowerBound] }
+    return String(label)
+}
