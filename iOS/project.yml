@@ -1,0 +1,109 @@
+# The iPad app. Generate the Xcode project with `xcodegen` in this folder
+# (iOS/SimpleSpread.xcodeproj is not checked in, as the Mac app has none:
+# the code lives in the Swift package one level up). See docs/IPAD.md.
+#
+# Signing: set SIMPLESPREAD_TEAM_ID in the environment before generating,
+# or pick the team in Xcode.
+name: SimpleSpread
+options:
+  bundleIdPrefix: com.kikiplan
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+settings:
+  base:
+    MARKETING_VERSION: "1.8.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "6.0"
+    DEVELOPMENT_TEAM: ${SIMPLESPREAD_TEAM_ID}
+packages:
+  SimpleSpread:
+    path: ..
+targets:
+  # Not "SimpleSpread": the package's Mac executable has that name.
+  SimpleSpreadiPad:
+    type: application
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: SimpleSpread
+    dependencies:
+      - package: SimpleSpread
+        product: SpreadsheetUI
+    settings:
+      base:
+        # The same bundle ID as the Mac app: one App Store record, bought
+        # once for both (Universal Purchase).
+        PRODUCT_BUNDLE_IDENTIFIER: com.kikiplan.simplespread
+        PRODUCT_NAME: SimpleSpread
+        TARGETED_DEVICE_FAMILY: "2"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: SimpleSpread/SimpleSpread.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Macs get the native Mac app, not this one.
+        SUPPORTS_MACCATALYST: NO
+        SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+        ENABLE_USER_SCRIPT_SANDBOXING: YES
+    info:
+      path: SimpleSpread/Info.plist
+      properties:
+        CFBundleDisplayName: SimpleSpread
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen:
+          UIColorName: ""
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # Files: open spreadsheets where they are (iCloud Drive, other
+        # providers), and keep SimpleSpread's own in On My iPad.
+        UISupportsDocumentBrowser: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UIFileSharingEnabled: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Excel Workbook
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Default
+            LSItemContentTypes: [org.openxmlformats.spreadsheetml.sheet]
+          - CFBundleTypeName: CSV Document
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.comma-separated-values-text, public.tab-separated-values-text]
+        # No encryption beyond what iOS itself provides.
+        ITSAppUsesNonExemptEncryption: false
+  SimpleSpreadUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: SimpleSpreadUITests
+    dependencies:
+      - target: SimpleSpreadiPad
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kikiplan.simplespread.uitests
+        TARGETED_DEVICE_FAMILY: "2"
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGN_STYLE: Automatic
+schemes:
+  SimpleSpread:
+    build:
+      targets:
+        SimpleSpreadiPad: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - SimpleSpreadUITests
+        - package: SimpleSpread/SpreadsheetCoreTests
+        - package: SimpleSpread/SpreadsheetFilesTests
+        - package: SimpleSpread/SpreadsheetUITests
+    archive:
+      config: Release

@@ -38,7 +38,7 @@ struct PivotFieldsPanel: View {
             }
         }
         .frame(width: 290)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(Color.windowBackground)
     }
 
     // MARK: Header
@@ -77,7 +77,7 @@ struct PivotFieldsPanel: View {
                 Toggle(isOn: Binding(get: { used }, set: { toggleField(f, on: $0, cache: cache) })) {
                     Text(cache.fields[f].name)
                 }
-                .toggleStyle(.checkbox)
+                .checkboxToggleStyle()
                 .draggable(PivotDragItem.field(f).payload)
             }
         }
@@ -130,7 +130,7 @@ struct PivotFieldsPanel: View {
                 let entries = Array(d.fields(in: area).enumerated())
                 ForEach(entries, id: \.offset) { position, f in
                     chip(area: area, position: position, field: f, d, cache)
-                        .dropDestination(for: String.self) { items, _ in
+                        .dropDestination(for: String.self) { items, _ -> Bool in
                             drop(items, into: area, at: position, cache: cache)
                         }
                 }
@@ -141,9 +141,9 @@ struct PivotFieldsPanel: View {
             }
             .frame(maxWidth: .infinity, minHeight: 70, alignment: .top)
             .padding(5)
-            .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor)))
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color(nsColor: .separatorColor)))
-            .dropDestination(for: String.self) { items, _ in
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.controlBackground))
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.separator))
+            .dropDestination(for: String.self) { items, _ -> Bool in
                 drop(items, into: area, at: nil, cache: cache)
             }
         }
@@ -172,7 +172,7 @@ struct PivotFieldsPanel: View {
             } label: {
                 Image(systemName: "chevron.down.circle")
             }
-            .menuStyle(.borderlessButton)
+            .toolbarMenuStyle()
             .menuIndicator(.hidden)
             .fixedSize()
         }
@@ -436,7 +436,7 @@ struct PivotFieldsPanel: View {
                 get: { d.layout.colGrandTotals },
                 set: { on in document.editPivot(index, actionName: "Grand Totals") { d, _ in d.layout.colGrandTotals = on } }))
         }
-        .toggleStyle(.checkbox)
+        .checkboxToggleStyle()
         .font(.callout)
         .padding(12)
     }
@@ -529,12 +529,12 @@ struct PivotItemFilter: View {
                 Button("Select All") { visible = Set(items.map(\.position)) }
                 Button("Clear") { visible = [] }
             }
-            .buttonStyle(.link)
+            .linkButtonStyle()
             List(items, id: \.position) { item in
                 Toggle(item.label, isOn: Binding(
                     get: { visible.contains(item.position) },
                     set: { on in if on { visible.insert(item.position) } else { visible.remove(item.position) } }))
-                .toggleStyle(.checkbox)
+                .checkboxToggleStyle()
             }
             .frame(width: 240, height: min(300, CGFloat(items.count) * 24 + 12))
             HStack {
@@ -564,6 +564,9 @@ struct InsertPivotSheet: View {
     @State private var newSheet = true
     @State private var cellText = ""
     @State private var error: String?
+    /// Pivot tables when the sheet opened: one more means it was made, even
+    /// after `create` returned (an iPad confirmation answered later).
+    @State private var pivotCount = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -574,7 +577,7 @@ struct InsertPivotSheet: View {
                     Text("A new sheet").tag(true)
                     Text("This sheet").tag(false)
                 }
-                .pickerStyle(.radioGroup)
+                .radioGroupPickerStyle()
                 if !newSheet {
                     TextField("At cell:", text: $cellText, prompt: Text("F3"))
                 }
@@ -590,7 +593,11 @@ struct InsertPivotSheet: View {
         }
         .padding(20)
         .frame(width: 380)
+        .onReceive(document.$revision) { _ in
+            if document.workbook.pivotTables.count > pivotCount { created() }
+        }
         .onAppear {
+            pivotCount = document.workbook.pivotTables.count
             rangeText = document.suggestedPivotSource()?.a1 ?? ""
             cellText = CellAddress(row: document.selection.range.start.row,
                                    column: document.selection.range.end.column + 2).a1
@@ -612,12 +619,16 @@ struct InsertPivotSheet: View {
             destination = .existing(sheetID: document.activeSheetID, at: cell)
         }
         if document.insertPivotTable(source: range, destination: destination) {
-            document.isPivotPanelVisible = true
-            dismiss()
+            created()
         } else if let notice = document.notice {
             error = notice.message + " " + notice.detail
             document.notice = nil
         }
+    }
+
+    private func created() {
+        document.isPivotPanelVisible = true
+        dismiss()
     }
 }
 

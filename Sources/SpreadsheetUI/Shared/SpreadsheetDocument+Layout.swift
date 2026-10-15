@@ -135,8 +135,12 @@ extension SpreadsheetDocument {
             return !keeps && !sheet.value(at: address).isEmpty
         }.sorted()
         if !discarded.isEmpty {
-            guard confirm?("Merging cells only keeps the upper-left value and discards other values.",
-                           "", "Merge") == true else { return }
+            let selection = self.selection
+            guard askToConfirm("Merging cells only keeps the upper-left value and discards other values.",
+                               "", "Merge", retry: { [weak self] in
+                                   self?.selection = selection
+                                   self?.mergeSelection(kind)
+                               }) else { return }
         }
         withUndoGroup {
             var centred: [StyleSnapshot] = []

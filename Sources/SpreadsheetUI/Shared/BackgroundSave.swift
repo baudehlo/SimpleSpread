@@ -1,4 +1,4 @@
-import AppKit
+import Foundation
 import SpreadsheetCore
 import SpreadsheetFiles
 
@@ -67,7 +67,7 @@ enum BackgroundFileTask {
     /// Cancel closes the panel at once.
     @discardableResult
     static func run<T: Sendable>(title: String, panelTitle: String, fileName: String,
-                                 window: NSWindow?, determinate: Bool = true,
+                                 window: HostWindow?, determinate: Bool = true,
                                  work: @escaping @Sendable (_ progress: @escaping @Sendable (Double?) -> Void,
                                                             _ shouldContinue: @escaping @Sendable () -> Bool) throws -> T,
                                  completion: @escaping (Result<T, any Error>) -> Void) -> Handle {
@@ -148,7 +148,7 @@ enum BackgroundSaver {
     /// Write `document` to `url` in the background; `completion` gets the
     /// outcome on the main thread. If the document is already saving, this
     /// save starts once that one is over.
-    static func save(_ document: SpreadsheetDocument, to url: URL, in window: NSWindow?,
+    static func save(_ document: SpreadsheetDocument, to url: URL, in window: HostWindow?,
                      completion: @escaping (SaveOutcome) -> Void) {
         let key = ObjectIdentifier(document)
         if jobs[key] != nil {
@@ -205,7 +205,7 @@ enum BackgroundCSV {
     /// Read and parse `url` off the main thread, then add it to `document`
     /// as a new sheet (on the main thread, as one undoable step). Errors
     /// go to `failed`; Cancel adds nothing.
-    static func importSheet(into document: SpreadsheetDocument, from url: URL, in window: NSWindow?,
+    static func importSheet(into document: SpreadsheetDocument, from url: URL, in window: HostWindow?,
                             failed: @escaping (any Error) -> Void) {
         let fileName = url.lastPathComponent
         BackgroundFileTask.run(
@@ -228,8 +228,9 @@ enum BackgroundCSV {
 
     /// Write `document`'s active sheet, as it is now, to `url` off the main
     /// thread. Errors go to `failed`; Cancel leaves any file at `url` as it
-    /// was.
-    static func exportActiveSheet(of document: SpreadsheetDocument, to url: URL, in window: NSWindow?,
+    /// was. `done` runs once the file is written.
+    static func exportActiveSheet(of document: SpreadsheetDocument, to url: URL, in window: HostWindow?,
+                                  done: @escaping () -> Void = {},
                                   failed: @escaping (any Error) -> Void) {
         let snapshot = document.makeCSVExportSnapshot()
         BackgroundFileTask.run(
@@ -239,7 +240,11 @@ enum BackgroundCSV {
                 try SpreadsheetDocument.writeCSV(of: snapshot, to: url, shouldContinue: shouldContinue)
             },
             completion: { result in
-                if case .failure(let error) = result, !(error is CancellationError) { failed(error) }
+                switch result {
+                case .success: done()
+                case .failure(let error) where error is CancellationError: break
+                case .failure(let error): failed(error)
+                }
             })
     }
 }

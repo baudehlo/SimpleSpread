@@ -15,3 +15,8 @@ DerivedData/
 /.playwright-mcp/
 /.claude/worktrees/
 /.claude/scheduled_tasks.lock
+# The iPad app's Xcode project and Info.plist are generated from
+# iOS/project.yml by XcodeGen (see docs/IPAD.md).
+/iOS/SimpleSpread.xcodeproj
+/iOS/SimpleSpread/Info.plist
+/build

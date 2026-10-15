@@ -65,6 +65,44 @@ struct PivotEditingDocumentTests {
         #expect(doc.workbook.pivotTables.isEmpty)
     }
 
+    /// iPad: the question can't block, so the insert is refused, asked, and
+    /// run again (once, already answered) if the user agrees.
+    @Test func confirmLaterRunsTheCommandAgainOnceAgreed() {
+        let doc = document()
+        let sheet = doc.activeSheetID
+        doc.commitInput("keep", at: a("E10"))
+        var proceed: (() -> Void)?
+        doc.confirmLater = { message, _, button, go in
+            #expect(message.contains("Replace it?") && button == "Replace")
+            proceed = go
+        }
+        #expect(!doc.insertPivotTable(source: CellRange(a1: "A1:B5")!, destination: .existing(sheetID: sheet, at: a("D1"))))
+        #expect(text(doc, "E10") == "keep" && doc.workbook.pivotTables.isEmpty)
+        proceed?()
+        #expect(doc.workbook.pivotTables.count == 1)
+        #expect(text(doc, "E10") == "")
+        // The answer was for that one command: the next one asks again.
+        proceed = nil
+        doc.commitInput("again", at: CellAddress(row: 40, column: 4))
+        #expect(!doc.insertPivotTable(source: CellRange(a1: "A1:B5")!, destination: .existing(sheetID: sheet, at: a("D30"))))
+        #expect(proceed != nil)
+    }
+
+    @Test func confirmLaterMergesTheSelectionItWasAskedAbout() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("a", at: a("A1"))
+        doc.commitInput("b", at: a("B1"))
+        var proceed: (() -> Void)?
+        doc.confirmLater = { _, _, _, go in proceed = go }
+        doc.selection.select(range: CellRange(a1: "A1:B1")!)
+        doc.mergeSelection(.merge)
+        #expect(doc.activeSheet.mergedRanges.isEmpty)
+        doc.selection.select(a("D4")) // must not change what is merged
+        proceed?()
+        #expect(doc.activeSheet.mergedRanges == [CellRange(a1: "A1:B1")!])
+        #expect(text(doc, "B1") == "")
+    }
+
     @Test func insertingOverItsOwnDataIsRefused() {
         let doc = document()
         let sheet = doc.activeSheetID

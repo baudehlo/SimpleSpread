@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Foundation
 import Testing
@@ -218,3 +219,4 @@ struct GridEditingTests {
         #expect(grid.validateMenuItem(copyItem))
     }
 }
+#endif

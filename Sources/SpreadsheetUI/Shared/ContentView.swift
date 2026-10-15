@@ -1,5 +1,4 @@
 import SwiftUI
-import AppKit
 import SpreadsheetCore
 import UniformTypeIdentifiers
 
@@ -35,16 +34,9 @@ public struct DocumentWindowView: View {
         .onAppear { installConfirmation() }
     }
 
-    /// Confirmations (e.g. a pivot growing over data) as window alerts.
+    /// Confirmations (e.g. a pivot growing over data) as alerts.
     private func installConfirmation() {
-        document.confirm = { message, detail, button in
-            let alert = NSAlert()
-            alert.messageText = message
-            alert.informativeText = detail
-            alert.addButton(withTitle: button)
-            alert.addButton(withTitle: "Cancel")
-            return alert.runModal() == .alertFirstButtonReturn
-        }
+        Alerts.installConfirmation(on: document)
     }
 
     private var mainColumn: some View {
@@ -87,7 +79,7 @@ public struct DocumentWindowView: View {
         .background(DocumentWindowHook(document: document))
         .focusedSceneValue(\.spreadsheetDocument, document)
         .navigationTitle(document.displayName)
-        .navigationSubtitle(document.isModified ? "— Edited" : "")
+        .windowSubtitle(document.isModified ? "— Edited" : "")
     }
 
     // MARK: Find bar
@@ -132,9 +124,9 @@ public struct DocumentWindowView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color(NSColor.separatorColor)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.separator))
         .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
-        .onExitCommand { closeFind() }
+        .onEscape { closeFind() }
     }
 
     private func closeFind() {
@@ -157,21 +149,7 @@ public struct DocumentWindowView: View {
     /// `unlessTyping`: leave focus alone if the user has since clicked into a
     /// text field (the formula bar or name box).
     private func focusGridNow(unlessTyping: Bool) {
-        guard let window = NSApp.keyWindow else { return }
-        if window.firstResponder is SpreadsheetGridView { return }
-        if unlessTyping, let editor = window.firstResponder as? NSTextView, editor.isFieldEditor {
-            return
-        }
-        func findGrid(_ view: NSView) -> SpreadsheetGridView? {
-            if let grid = view as? SpreadsheetGridView { return grid }
-            for sub in view.subviews {
-                if let g = findGrid(sub) { return g }
-            }
-            return nil
-        }
-        if let content = window.contentView, let grid = findGrid(content) {
-            window.makeFirstResponder(grid)
-        }
+        GridFocus.focusGrid(unlessTyping: unlessTyping)
     }
 
     private func syncFromDocument() {
@@ -330,7 +308,7 @@ public struct DocumentWindowView: View {
         } primaryAction: {
             document.applyBorders(.bottom)
         }
-        .menuStyle(.borderlessButton)
+        .toolbarMenuStyle()
         .fixedSize()
         .help("Borders: click for a bottom border, or choose from the menu")
     }
@@ -369,7 +347,7 @@ public struct DocumentWindowView: View {
         } label: {
             Image(systemName: icon)
         }
-        .menuStyle(.borderlessButton)
+        .toolbarMenuStyle()
         .fixedSize()
         .help("Vertical alignment")
     }
@@ -386,7 +364,7 @@ public struct DocumentWindowView: View {
         } primaryAction: {
             document.toggleMergeAndCenter()
         }
-        .menuStyle(.borderlessButton)
+        .toolbarMenuStyle()
         .fixedSize()
         .help("Merge & Center (click again to unmerge)")
     }
@@ -411,7 +389,7 @@ public struct DocumentWindowView: View {
                 Image(systemName: document.activeAutoFilter != nil
                       ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
             }
-            .menuStyle(.borderlessButton)
+            .toolbarMenuStyle()
             .fixedSize()
             .help("Sort & Filter")
             autoSumMenu
@@ -433,7 +411,7 @@ public struct DocumentWindowView: View {
             document.commitPendingEdit()
             document.autoSum()
         }
-        .menuStyle(.borderlessButton)
+        .toolbarMenuStyle()
         .fixedSize()
         .help("AutoSum: total the numbers above or to the left (click the arrow for Average, Count, Max, Min)")
     }
@@ -510,7 +488,7 @@ public struct DocumentWindowView: View {
                 .lineLimit(1)
                 .frame(width: 90, alignment: .leading)
         }
-        .menuStyle(.borderlessButton)
+        .toolbarMenuStyle()
         .fixedSize()
         .help("Font")
     }
@@ -534,7 +512,7 @@ public struct DocumentWindowView: View {
                 .monospacedDigit()
                 .frame(minWidth: 20)
         }
-        .menuStyle(.borderlessButton)
+        .toolbarMenuStyle()
         .fixedSize()
         .help("Font size")
     }
@@ -568,7 +546,7 @@ public struct DocumentWindowView: View {
             Text(currentFormatName)
                 .frame(minWidth: 70)
         }
-        .menuStyle(.borderlessButton)
+        .toolbarMenuStyle()
         .fixedSize()
         .help("Number format")
     }
@@ -584,7 +562,7 @@ public struct DocumentWindowView: View {
 
     private var textColorBinding: Binding<Color> {
         Binding {
-            colorFrom(activeStyle.textColor) ?? Color(NSColor.textColor)
+            colorFrom(activeStyle.textColor) ?? Color.text
         } set: { newColor in
             let rgba = rgbaFrom(newColor)
             document.applyStyleToSelection("Text Color") { $0.textColor = rgba }
@@ -593,7 +571,7 @@ public struct DocumentWindowView: View {
 
     private var fillColorBinding: Binding<Color> {
         Binding {
-            colorFrom(activeStyle.fillColor) ?? Color(NSColor.textBackgroundColor)
+            colorFrom(activeStyle.fillColor) ?? Color.textBackground
         } set: { newColor in
             let rgba = rgbaFrom(newColor)
             document.applyStyleToSelection("Fill Color") { $0.fillColor = rgba }
@@ -607,11 +585,7 @@ public struct DocumentWindowView: View {
     }
 
     private func rgbaFrom(_ color: Color) -> RGBAColor? {
-        guard let ns = NSColor(color).usingColorSpace(.sRGB) else { return nil }
-        return RGBAColor(red: UInt8(ns.redComponent * 255),
-                         green: UInt8(ns.greenComponent * 255),
-                         blue: UInt8(ns.blueComponent * 255),
-                         alpha: UInt8(ns.alphaComponent * 255))
+        RGBAColor(color)
     }
 
     // MARK: Formula bar
@@ -624,8 +598,10 @@ public struct DocumentWindowView: View {
                 .frame(width: 76)
                 .multilineTextAlignment(.center)
                 .onSubmit { navigateToNameBox() }
+                .accessibilityIdentifier("nameBox")
+                .accessibilityLabel("Cell reference")
                 .padding(.vertical, 3)
-                .background(Color(NSColor.controlBackgroundColor))
+                .background(Color.controlBackground)
                 .cornerRadius(4)
             Image(systemName: "function")
                 .foregroundStyle(.secondary)
@@ -640,11 +616,13 @@ public struct DocumentWindowView: View {
             })
             .textFieldStyle(.plain)
             .font(.system(size: 12, design: .monospaced))
+            .accessibilityIdentifier("formulaBar")
+            .accessibilityLabel("Formula")
             .onSubmit {
                 formulaBarEditor.commitPendingEdit()
                 syncFromDocument()
             }
-            .onExitCommand {
+            .onEscape {
                 formulaBarEditor.cancel()
                 refocusGrid()
             }
@@ -689,7 +667,7 @@ public struct DocumentWindowView: View {
                 .padding(.trailing, 10)
         }
         .frame(height: 28)
-        .background(Color(NSColor.windowBackgroundColor))
+        .background(Color.windowBackground)
     }
 
     private var zoomControl: some View {
@@ -714,7 +692,7 @@ public struct DocumentWindowView: View {
                     .monospacedDigit()
                     .frame(minWidth: 38)
             }
-            .menuStyle(.borderlessButton)
+            .toolbarMenuStyle()
             .fixedSize()
             .help("Zoom level")
 
@@ -734,7 +712,7 @@ public struct DocumentWindowView: View {
             .font(.system(size: 11.5, weight: isActive ? .semibold : .regular))
             .padding(.horizontal, 12)
             .padding(.vertical, 5)
-            .background(isActive ? Color(NSColor.textBackgroundColor) : .clear)
+            .background(isActive ? Color.textBackground : .clear)
             .contentShape(Rectangle())
             .onTapGesture {
                 document.selectSheet(withID: sheet.id)
@@ -805,7 +783,7 @@ enum FontChoices {
 
     static func prepare() {
         DispatchQueue.global(qos: .utility).async {
-            let found = candidates.filter { NSFont(name: $0, size: 12) != nil }
+            let found = candidates.filter { PlatformFont(name: $0, size: 12) != nil }
             lock.withLock { installed = found }
         }
     }

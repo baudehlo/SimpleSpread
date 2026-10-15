@@ -1,5 +1,4 @@
 import SwiftUI
-import AppKit
 import SpreadsheetCore
 
 /// The conditions the filter popover offers, mapped onto Excel's stored
@@ -124,7 +123,7 @@ struct FilterPopoverView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .buttonStyle(.link)
+            .linkButtonStyle()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     ForEach(shownValues, id: \.self) { value in
@@ -132,20 +131,20 @@ struct FilterPopoverView: View {
                             get: { checked.contains(value) },
                             set: { if $0 { checked.insert(value) } else { checked.remove(value) } }
                         ))
-                        .toggleStyle(.checkbox)
+                        .checkboxToggleStyle()
                         .lineLimit(1)
                     }
                     if hasBlanks, search.isEmpty || Self.blanksLabel.localizedCaseInsensitiveContains(search) {
                         Toggle(Self.blanksLabel, isOn: $blanksChecked)
-                            .toggleStyle(.checkbox)
+                            .checkboxToggleStyle()
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(6)
             }
             .frame(height: 180)
-            .background(Color(NSColor.textBackgroundColor))
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color(NSColor.separatorColor)))
+            .background(Color.textBackground)
+            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.separator))
 
             HStack {
                 Button("Clear Filter") {
@@ -212,21 +211,5 @@ struct FilterPopoverView: View {
                       keys: [SortKey(column: filter.range.start.column + columnOffset, ascending: ascending)],
                       hasHeader: true)
         close()
-    }
-}
-
-extension SpreadsheetGridView {
-    /// Open a filter column's popover under its header cell.
-    func showFilterPopover(columnOffset: Int, from rect: CGRect) {
-        guard let document else { return }
-        let popover = NSPopover()
-        popover.behavior = .transient
-        let view = FilterPopoverView(document: document, columnOffset: columnOffset) { [weak popover, weak self] in
-            popover?.performClose(nil)
-            self?.window?.makeFirstResponder(self)
-            self?.needsDisplay = true
-        }
-        popover.contentViewController = NSHostingController(rootView: view)
-        popover.show(relativeTo: rect, of: self, preferredEdge: .maxY)
     }
 }

@@ -84,8 +84,10 @@ extension SpreadsheetDocument {
                 return false
             }
             if !conflicts.cells.isEmpty {
-                guard confirm?("There’s already data where the pivot table needs to go. Replace it?",
-                               Self.overwriteDetail(conflicts.cells), "Replace") == true else { return false }
+                guard askToConfirm("There’s already data where the pivot table needs to go. Replace it?",
+                                   Self.overwriteDetail(conflicts.cells), "Replace", retry: { [weak self] in
+                                       self?.insertPivotTable(source: source, destination: destination)
+                                   }) else { return false }
             }
         }
 
@@ -129,7 +131,7 @@ extension SpreadsheetDocument {
     /// Group or ungroup a field: `change` edits the shared cache, so every
     /// pivot table using it is redrawn.
     @discardableResult
-    public func regroupPivot(_ index: Int, actionName: String, _ change: (Workbook) throws -> Void) -> Bool {
+    public func regroupPivot(_ index: Int, actionName: String, _ change: @escaping (Workbook) throws -> Void) -> Bool {
         guard workbook.pivotTables.indices.contains(index) else { return false }
         let cacheID = workbook.pivotTables[index].cacheID
         let tables = workbook.pivotTables.indices.filter { workbook.pivotTables[$0].cacheID == cacheID }
@@ -139,7 +141,9 @@ extension SpreadsheetDocument {
                                     detail: "Pivot table\(other) \(pivotEditBlocker(blocked)!). It’s kept intact for Excel.")
             return false
         }
-        let changed = transaction(actionName: actionName, tables: tables) { try change(workbook) }
+        let changed = transaction(actionName: actionName, tables: tables, retry: { [weak self] in
+            self?.regroupPivot(index, actionName: actionName, change)
+        }) { try change(self.workbook) }
         if !changed, let detail = notice?.detail, notice?.message == "Couldn’t update the pivot table." {
             notice = DocumentNotice(message: "Couldn’t group the field.", detail: detail)
         }
@@ -149,14 +153,16 @@ extension SpreadsheetDocument {
     /// Change a pivot table's definition and redraw it.
     @discardableResult
     public func editPivot(_ index: Int, actionName: String,
-                          _ change: (inout PivotDefinition, PivotCacheData) -> Void) -> Bool {
+                          _ change: @escaping (inout PivotDefinition, PivotCacheData) -> Void) -> Bool {
         guard workbook.pivotTables.indices.contains(index) else { return false }
         if let blocker = pivotEditBlocker(index) {
             notice = DocumentNotice(message: "This pivot table can’t be changed in SimpleSpread.",
                                     detail: "It came from Excel, and \(blocker). It’s kept intact for Excel.")
             return false
         }
-        return transaction(actionName: actionName, tables: [index]) {
+        return transaction(actionName: actionName, tables: [index], retry: { [weak self] in
+            self?.editPivot(index, actionName: actionName, change)
+        }) {
             let table = workbook.pivotTables[index]
             guard var definition = table.definition, let data = workbook.pivotCache(withID: table.cacheID)?.data else { return }
             change(&definition, data)
@@ -195,7 +201,9 @@ extension SpreadsheetDocument {
             return false
         }
         var failure: Error?
-        let done = transaction(actionName: "Refresh", tables: tables) {
+        let done = transaction(actionName: "Refresh", tables: tables, retry: { [weak self] in
+            _ = self?.refresh(cacheIDs: cacheIDs)
+        }) {
             do {
                 for id in cacheIDs.sorted() { try workbook.refreshPivotCache(withID: id) }
             } catch {
@@ -211,7 +219,9 @@ extension SpreadsheetDocument {
     /// Run a pivot change as one undoable step: apply it, lay out `tables`,
     /// ask before overwriting cells, then redraw. Cancelled or failed changes
     /// leave the workbook untouched.
-    private func transaction(actionName: String, tables: [Int], _ change: () throws -> Void) -> Bool {
+    /// `retry` runs the whole command again (see `askToConfirm`).
+    private func transaction(actionName: String, tables: [Int], retry: @escaping () -> Void,
+                             _ change: () throws -> Void) -> Bool {
         let before = takeSnapshot()
         let savedCaches = workbook.pivotCaches, savedTables = workbook.pivotTables
         func rollBack() {
@@ -255,8 +265,8 @@ extension SpreadsheetDocument {
             return false
         }
         if !cells.isEmpty {
-            guard confirm?("There’s already data where the pivot table needs to go. Replace it?",
-                           Self.overwriteDetail(cells), "Replace") == true else {
+            guard askToConfirm("There’s already data where the pivot table needs to go. Replace it?",
+                               Self.overwriteDetail(cells), "Replace", retry: retry) else {
                 rollBack()
                 return false
             }

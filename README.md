@@ -1,15 +1,21 @@
 # SimpleSpread
 
-A native macOS spreadsheet app written entirely in Swift. Native file format
+A native spreadsheet app for the Mac and iPad, written entirely in Swift. Native file format
 is XLSX; CSV imports and exports. The formula engine covers Google Sheets'
 core feature set — 157 functions, real coercion semantics, incremental
 recalculation. The spreadsheet stack (model, formula engine, XLSX/ZIP/CSV I/O,
 grid) is built from scratch with no third-party libraries; the sole external
-dependency is [Sparkle](https://sparkle-project.org) for software updates.
+dependency is [Sparkle](https://sparkle-project.org) for software updates
+on the Mac (not in the App Store builds).
 
 ![CI](https://github.com/baudehlo/SimpleSpread/actions/workflows/ci.yml/badge.svg)
 
 ![SimpleSpread](docs/screenshot.png)
+
+**On iPad** the same app opens files from iCloud Drive and other places in
+the Files browser, edits them in place, and saves as you go. It works by
+touch, with a trackpad or mouse, and with a hardware keyboard. See
+[docs/IPAD.md](docs/IPAD.md).
 
 ## Features
 
@@ -116,13 +122,16 @@ Saving that full sheet takes 4.5 s (11.8 s in 1.4.1), at the same file size.
 
 ## Building
 
-Requires Xcode 16+ on macOS 14+.
+Requires Xcode 16+ on macOS 14+ for the Mac app; Xcode 26 and
+[XcodeGen](https://github.com/yonaskolb/XcodeGen) for the iPad app.
 
 ```bash
 swift build            # debug build
-swift test             # 636 tests
+swift test             # 900+ tests
 swift run SimpleSpread # run the app directly
 ./scripts/build-app.sh # assemble SimpleSpread.app + DMG (ad-hoc signed)
+./scripts/build-app-store.sh 1.9.0 1  # Mac App Store build (no Sparkle), signed .pkg
+cd iOS && xcodegen && open SimpleSpread.xcodeproj  # the iPad app
 ```
 
 ## Documentation
@@ -135,6 +144,8 @@ swift run SimpleSpread # run the app directly
   notes and known deviations.
 - [docs/PIVOTS.md](docs/PIVOTS.md) — using pivot tables: creating, the
   Fields panel, grouping, refreshing, and Excel features not supported.
+- [docs/IPAD.md](docs/IPAD.md) — the iPad app: how the code is shared,
+  building, testing, and the App Store.
 
 ## CI & releases
 
@@ -147,6 +158,11 @@ swift run SimpleSpread # run the app directly
   the repository secrets `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
   `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, and
   `APPLE_TEAM_ID`; without them the DMG is ad-hoc signed.
+- **iPad** (`ci.yml`, job "iPad Build & Test"): on macOS 26 with Xcode 26,
+  the shared tests and UI tests that drive the app on an iPad simulator.
+  **iPad Release** (`.github/workflows/ipad-release.yml`): manual dispatch →
+  archive → upload to App Store Connect / TestFlight. See
+  [docs/IPAD.md](docs/IPAD.md).
 
 ## Debug hooks
 

@@ -1,16 +1,7 @@
+#if os(macOS) && !APP_STORE // the App Store updates the App Store build
 import Foundation
 import Combine
 import Sparkle
-
-/// App identity used by the updater and elsewhere.
-public enum AppInfo {
-    public static let repository = "baudehlo/SimpleSpread"
-
-    public static var currentVersion: String {
-        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
-            .flatMap { $0.isEmpty ? nil : $0 } ?? "0.0.0"
-    }
-}
 
 /// Thin wrapper around Sparkle's standard updater controller.
 ///
@@ -63,3 +54,4 @@ public final class SparkleUpdater: ObservableObject {
         set { controller.updater.automaticallyChecksForUpdates = newValue }
     }
 }
+#endif
