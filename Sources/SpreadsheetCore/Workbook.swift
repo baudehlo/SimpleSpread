@@ -51,6 +51,14 @@ public final class Sheet {
     public var mergedRanges: [CellRange] = []
     /// Rows hidden by hand or by the AutoFilter (XLSX `row@hidden`).
     public var hiddenRows: Set<Int> = []
+    /// Columns hidden by hand (XLSX `col@hidden`).
+    public var hiddenColumns: Set<Int> = []
+    /// Formats of whole rows and columns, as style indexes (XLSX
+    /// `row@s` and `col@style`). A cell with no style of its own (index 0,
+    /// stored or not) shows its row's format, or else its column's, as in
+    /// Excel; see `styleIndex(at:)`.
+    public var rowStyles: [Int: Int] = [:]
+    public var columnStyles: [Int: Int] = [:]
     public var autoFilter: AutoFilter?
     /// Hidden in Excel (XLSX `sheet@state` "hidden" or "veryHidden"); kept
     /// so a save writes it back.
@@ -111,6 +119,22 @@ public final class Sheet {
         storage[address]?.value ?? .empty
     }
 
+    /// The style a cell with no style of its own shows here: its row's,
+    /// else its column's, else the default (0).
+    public func inheritedStyleIndex(at address: CellAddress) -> Int {
+        guard !rowStyles.isEmpty || !columnStyles.isEmpty else { return 0 }
+        return rowStyles[address.row] ?? columnStyles[address.column] ?? 0
+    }
+
+    /// The style the cell at `address` shows: its own, or what it inherits.
+    public func styleIndex(at address: CellAddress) -> Int {
+        let own = storage[address]?.styleIndex ?? 0
+        return own != 0 ? own : inheritedStyleIndex(at: address)
+    }
+
+    /// True when the sheet formats whole rows or columns.
+    public var hasRowOrColumnStyles: Bool { !rowStyles.isEmpty || !columnStyles.isEmpty }
+
     /// Bounding range of all non-default cells, or nil for an empty sheet.
     /// Kept up to date by `setCell`; a rescan happens only after a cell on the
     /// edge is removed or the storage is replaced, and then once.
@@ -161,6 +185,9 @@ public final class Sheet {
         frozenColumns = other.frozenColumns
         mergedRanges = other.mergedRanges
         hiddenRows = other.hiddenRows
+        hiddenColumns = other.hiddenColumns
+        rowStyles = other.rowStyles
+        columnStyles = other.columnStyles
         autoFilter = other.autoFilter
         isHidden = other.isHidden
     }
@@ -341,6 +368,17 @@ public final class Workbook {
 
     public func styleIndex(for style: CellStyle) -> Int {
         styles.index(for: style)
+    }
+
+    /// The style index to store on the cell at `address` so it shows the
+    /// style at `index`. What the cell would inherit anyway is stored as 0;
+    /// the default style where it would inherit something else is stored
+    /// as the plain style (the default under another index).
+    public func storableStyleIndex(_ index: Int, at address: CellAddress, in sheet: Sheet) -> Int {
+        guard sheet.hasRowOrColumnStyles else { return styles[index] == .default ? 0 : index }
+        let inherited = sheet.inheritedStyleIndex(at: address)
+        if styles[index] == styles[inherited] { return 0 }
+        return styles[index] == .default ? styles.plainIndex() : index
     }
 
     /// Apply a mutation to the style of every cell in a range (creating cells

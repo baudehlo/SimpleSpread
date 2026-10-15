@@ -332,7 +332,7 @@ public enum CSV {
                 for c in range.start.column...range.end.column {
                     let addr = CellAddress(row: r, column: c)
                     let cell = sheet.cell(at: addr)
-                    let style = workbook.style(at: cell.styleIndex)
+                    let style = workbook.style(at: sheet.styleIndex(at: addr))
                     fields.append(exportField(value: cell.value, style: style, options: options))
                 }
                 out += fields.map { quoteField($0, delimiter: options.delimiter) }

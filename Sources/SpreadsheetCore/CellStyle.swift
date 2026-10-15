@@ -184,6 +184,18 @@ public struct StyleTable: Sendable {
         (index >= 0 && index < styles.count) ? styles[index] : .default
     }
 
+    /// The default style under an index of its own, for a cell that is
+    /// plain where its row or column is formatted (index 0 would inherit
+    /// their format). Added on first use.
+    public mutating func plainIndex() -> Int {
+        if let plain = plainStyleIndex { return plain }
+        styles.append(.default)
+        plainStyleIndex = styles.count - 1
+        return styles.count - 1
+    }
+
+    private var plainStyleIndex: Int?
+
     /// Return the index for a style, interning it if new.
     public mutating func index(for style: CellStyle) -> Int {
         if let existing = indexByStyle[style] { return existing }

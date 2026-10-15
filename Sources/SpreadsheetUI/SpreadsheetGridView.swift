@@ -284,7 +284,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
         // --- Cell backgrounds ---
         for merge in merges {
-            let style = document.workbook.style(at: sheet.cell(at: merge.start).styleIndex)
+            let style = document.workbook.style(at: sheet.styleIndex(at: merge.start))
             if let fill = style.fillColor {
                 nsColor(fill).setFill()
                 mergeRect(merge).fill()
@@ -296,8 +296,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 let rect = cellRect(addr, layout: l)
                 guard rect.intersects(visible) else { continue }
                 if mergeOf[addr] == nil {
-                    let cell = sheet.cell(at: addr)
-                    let style = document.workbook.style(at: cell.styleIndex)
+                    let style = document.workbook.style(at: sheet.styleIndex(at: addr))
                     if let fill = style.fillColor {
                         nsColor(fill).setFill()
                         rect.fill()
@@ -326,7 +325,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 let cell = sheet.cell(at: addr)
                 guard !cell.value.isEmpty else { continue }
                 if !cols.contains(col), sheet.mergedRange(containing: addr) != nil { continue }
-                var style = document.workbook.style(at: cell.styleIndex)
+                var style = document.workbook.style(at: sheet.styleIndex(at: addr))
                 if !bands.isEmpty, let r = role(addr), PivotBands.isBold(r) { style.bold = true }
                 let span = drawCellText(cell: cell, style: style, at: addr, layout: l,
                                         reserveButton: hasFilterButton(addr))
@@ -340,7 +339,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         for merge in merges {
             let cell = sheet.cell(at: merge.start)
             guard !cell.value.isEmpty else { continue }
-            let style = document.workbook.style(at: cell.styleIndex)
+            let style = document.workbook.style(at: sheet.styleIndex(at: merge.start))
             drawCellText(cell: cell, style: style, at: merge.start, layout: l,
                          reserveButton: hasFilterButton(merge.start), in: mergeRect(merge))
         }
@@ -495,9 +494,9 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         for row in l.shownRows(in: rowRange) {
             for column in colRange {
                 let addr = CellAddress(row: row, column: column)
-                let cell = sheet.cell(at: addr)
-                guard cell.styleIndex != 0 else { continue }
-                let borders = document.workbook.style(at: cell.styleIndex).borders
+                let styleIndex = sheet.styleIndex(at: addr)
+                guard styleIndex != 0 else { continue }
+                let borders = document.workbook.style(at: styleIndex).borders
                 guard !borders.isEmpty else { continue }
                 let rect = cellRect(addr, layout: l)
                 let merge = sheet.mergedRange(containing: addr)
@@ -839,7 +838,8 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
             NSGraphicsContext.saveGraphicsState()
             NSBezierPath(rect: CGRect(x: minX, y: visible.minY, width: maxX - minX,
                                       height: GridLayout.headerHeight)).addClip()
-            for col in cols {
+            // A hidden column has no width and no label.
+            for col in cols where l.columnWidth(col) > 0 {
                 let x = contentOrigin.x + l.xOffset(ofColumn: col) + shift
                 let rect = CGRect(x: x, y: visible.minY, width: l.columnWidth(col),
                                   height: GridLayout.headerHeight)
@@ -1300,6 +1300,20 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
                 self?.document?.deleteColumns(at: start, count: count)
                 self?.stateChanged()
             })
+            menu.addItem(.separator())
+            menu.addItem(ActionMenuItem("Hide \(noun)") { [weak self] in
+                self?.document?.hideColumns(start...end)
+                self?.refreshSize()
+                self?.stateChanged()
+            })
+            // Unhide covers the columns around a gap: select B–E to show C–D.
+            if document.activeSheet.hiddenColumns.contains(where: (start...end).contains) {
+                menu.addItem(ActionMenuItem("Unhide Columns") { [weak self] in
+                    self?.document?.unhideColumns(start...end)
+                    self?.refreshSize()
+                    self?.stateChanged()
+                })
+            }
         }
         return menu
     }
@@ -1352,7 +1366,7 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         guard let document else { return }
         var maxWidth: CGFloat = 30
         for (addr, cell) in document.activeSheet.cells where addr.column == column {
-            let style = document.workbook.style(at: cell.styleIndex)
+            let style = document.workbook.style(at: document.activeSheet.styleIndex(at: addr))
             let text = NumberFormatEngine.displayString(for: cell.value, format: style.numberFormat)
             let font = NSFont(name: style.fontName ?? CellStyle.defaultFontName,
                               size: style.fontSize ?? CellStyle.defaultFontSize)

@@ -213,6 +213,21 @@ extension SpreadsheetDocument {
         }
     }
 
+    // MARK: - Hidden columns
+
+    public func hideColumns(_ columns: ClosedRange<Int>) {
+        changeCellsAndLayout(columns.count == 1 ? "Hide Column" : "Hide Columns", cells: []) {
+            activeSheet.hiddenColumns.formUnion(columns)
+        }
+    }
+
+    public func unhideColumns(_ columns: ClosedRange<Int>) {
+        guard activeSheet.hiddenColumns.contains(where: columns.contains) else { return }
+        changeCellsAndLayout("Unhide Columns", cells: []) {
+            activeSheet.hiddenColumns.subtract(columns)
+        }
+    }
+
     // MARK: - Sorting
 
     /// What a sort with no dialog acts on: the filter's rows when the cursor

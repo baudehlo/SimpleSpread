@@ -9,6 +9,9 @@ public struct SheetLayoutState: Equatable, Sendable {
     public var hiddenRows: Set<Int>
     public var autoFilter: AutoFilter?
     public var rowHeights: [Int: CGFloat]
+    public var hiddenColumns: Set<Int> = []
+    public var rowStyles: [Int: Int] = [:]
+    public var columnStyles: [Int: Int] = [:]
 }
 
 /// What one command changed in a sheet's layout, for undo. Applying it (or
@@ -21,6 +24,11 @@ public struct SheetLayoutChange: Sendable {
     public var mergesRemoved: [CellRange] = []
     public var hiddenAdded: Set<Int> = []
     public var hiddenRemoved: Set<Int> = []
+    public var hiddenColumnsAdded: Set<Int> = []
+    public var hiddenColumnsRemoved: Set<Int> = []
+    /// Row or column -> (old, new) style index.
+    public var rowStyles: [Int: (old: Int?, new: Int?)] = [:]
+    public var columnStyles: [Int: (old: Int?, new: Int?)] = [:]
     /// Row -> (old, new) explicit height.
     public var rowHeights: [Int: (old: CGFloat?, new: CGFloat?)] = [:]
     public var frozen: (old: (rows: Int, columns: Int), new: (rows: Int, columns: Int))?
@@ -33,6 +41,18 @@ public struct SheetLayoutChange: Sendable {
             hiddenAdded = new.hiddenRows.subtracting(old.hiddenRows)
             hiddenRemoved = old.hiddenRows.subtracting(new.hiddenRows)
         }
+        if old.hiddenColumns != new.hiddenColumns {
+            hiddenColumnsAdded = new.hiddenColumns.subtracting(old.hiddenColumns)
+            hiddenColumnsRemoved = old.hiddenColumns.subtracting(new.hiddenColumns)
+        }
+        func changes(_ a: [Int: Int], _ b: [Int: Int]) -> [Int: (old: Int?, new: Int?)] {
+            guard a != b else { return [:] }
+            var result: [Int: (old: Int?, new: Int?)] = [:]
+            for key in Set(a.keys).union(b.keys) where a[key] != b[key] { result[key] = (a[key], b[key]) }
+            return result
+        }
+        rowStyles = changes(old.rowStyles, new.rowStyles)
+        columnStyles = changes(old.columnStyles, new.columnStyles)
         if old.rowHeights != new.rowHeights {
             for row in Set(old.rowHeights.keys).union(new.rowHeights.keys)
             where old.rowHeights[row] != new.rowHeights[row] {
@@ -49,7 +69,8 @@ public struct SheetLayoutChange: Sendable {
 
     public var isEmpty: Bool {
         mergesAdded.isEmpty && mergesRemoved.isEmpty && hiddenAdded.isEmpty && hiddenRemoved.isEmpty
-            && rowHeights.isEmpty && frozen == nil && autoFilter == nil
+            && hiddenColumnsAdded.isEmpty && hiddenColumnsRemoved.isEmpty && rowStyles.isEmpty
+            && columnStyles.isEmpty && rowHeights.isEmpty && frozen == nil && autoFilter == nil
     }
 
     /// The change that undoes this one.
@@ -59,6 +80,10 @@ public struct SheetLayoutChange: Sendable {
         result.mergesRemoved = mergesAdded
         result.hiddenAdded = hiddenRemoved
         result.hiddenRemoved = hiddenAdded
+        result.hiddenColumnsAdded = hiddenColumnsRemoved
+        result.hiddenColumnsRemoved = hiddenColumnsAdded
+        result.rowStyles = rowStyles.mapValues { ($0.new, $0.old) }
+        result.columnStyles = columnStyles.mapValues { ($0.new, $0.old) }
         result.rowHeights = rowHeights.mapValues { ($0.new, $0.old) }
         result.frozen = frozen.map { ($0.new, $0.old) }
         result.autoFilter = autoFilter.map { ($0.new, $0.old) }
@@ -72,6 +97,10 @@ public struct SheetLayoutChange: Sendable {
         sheet.mergedRanges.append(contentsOf: mergesAdded.filter { !sheet.mergedRanges.contains($0) })
         sheet.hiddenRows.subtract(hiddenRemoved)
         sheet.hiddenRows.formUnion(hiddenAdded)
+        sheet.hiddenColumns.subtract(hiddenColumnsRemoved)
+        sheet.hiddenColumns.formUnion(hiddenColumnsAdded)
+        for (row, style) in rowStyles { sheet.rowStyles[row] = style.new }
+        for (column, style) in columnStyles { sheet.columnStyles[column] = style.new }
         for (row, height) in rowHeights {
             sheet.rowHeights[row] = height.new
         }
@@ -90,7 +119,8 @@ extension Sheet {
         get {
             SheetLayoutState(mergedRanges: mergedRanges, frozenRows: frozenRows,
                              frozenColumns: frozenColumns, hiddenRows: hiddenRows,
-                             autoFilter: autoFilter, rowHeights: rowHeights)
+                             autoFilter: autoFilter, rowHeights: rowHeights, hiddenColumns: hiddenColumns,
+                             rowStyles: rowStyles, columnStyles: columnStyles)
         }
         set {
             mergedRanges = newValue.mergedRanges
@@ -99,6 +129,9 @@ extension Sheet {
             hiddenRows = newValue.hiddenRows
             autoFilter = newValue.autoFilter
             rowHeights = newValue.rowHeights
+            hiddenColumns = newValue.hiddenColumns
+            rowStyles = newValue.rowStyles
+            columnStyles = newValue.columnStyles
         }
     }
 

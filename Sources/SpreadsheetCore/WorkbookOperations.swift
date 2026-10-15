@@ -63,8 +63,11 @@ public enum WorkbookOperations {
         // 2. Remap sizing metadata.
         if axisIsRow {
             sheet.rowHeights = remapIndexMap(sheet.rowHeights, change)
+            sheet.rowStyles = remapIndexMap(sheet.rowStyles, change)
         } else {
             sheet.columnWidths = remapIndexMap(sheet.columnWidths, change)
+            sheet.columnStyles = remapIndexMap(sheet.columnStyles, change)
+            sheet.hiddenColumns = Set(sheet.hiddenColumns.compactMap { change.position(after: $0) })
         }
 
         // 3. Remap merged ranges, hidden rows and the AutoFilter.
@@ -211,8 +214,8 @@ public enum WorkbookOperations {
         return newRef.text
     }
 
-    private static func remapIndexMap(_ map: [Int: CGFloat], _ change: StructuralChange) -> [Int: CGFloat] {
-        var out: [Int: CGFloat] = [:]
+    private static func remapIndexMap<Value>(_ map: [Int: Value], _ change: StructuralChange) -> [Int: Value] {
+        var out: [Int: Value] = [:]
         for (pos, size) in map {
             if let newPos = change.position(after: pos) { out[newPos] = size }
         }

@@ -320,16 +320,7 @@ public enum XLSXWriter {
         // The reader scales Excel's 15pt default to our 22pt; scale back.
         s += "<sheetFormatPr defaultRowHeight=\"\(trimNumber(Double(sheet.defaultRowHeight) * 15.0 / 22.0))\"/>"
 
-        // cols (character-width units; px = width*7 + 5, pt = px * 0.75)
-        if !sheet.columnWidths.isEmpty {
-            s += "<cols>"
-            for (col, points) in sheet.columnWidths.sorted(by: { $0.key < $1.key }) {
-                let px = Double(points) / 0.75
-                let width = max(0, (px - 5) / 7)
-                s += "<col min=\"\(col + 1)\" max=\"\(col + 1)\" width=\"\(trimNumber(width))\" customWidth=\"1\"/>"
-            }
-            s += "</cols>"
-        }
+        s += colsXML(sheet)
 
         // sheetData (rows carrying only a custom height or hidden still get written)
         var head = Data()
@@ -352,8 +343,14 @@ public enum XLSXWriter {
             for row in sheet.hiddenRows where rows[row] == nil && row >= 0 && row < CellAddress.maxRows {
                 rows[row] = []
             }
+            for row in sheet.rowStyles.keys where rows[row] == nil && row >= 0 && row < CellAddress.maxRows {
+                rows[row] = []
+            }
             for row in rows.keys.sorted() {
                 var rowAttrs = " r=\"\(row + 1)\""
+                if let style = sheet.rowStyles[row] {
+                    rowAttrs += " s=\"\(style)\" customFormat=\"1\""
+                }
                 if let height = sheet.rowHeights[row] {
                     rowAttrs += " ht=\"\(trimNumber(height))\" customHeight=\"1\""
                 }
@@ -362,8 +359,9 @@ public enum XLSXWriter {
                 }
                 s += "<row\(rowAttrs)>"
                 for (col, cell) in rows[row]!.sorted(by: { $0.0 < $1.0 }) {
-                    s += cellXML(cell, at: CellAddress(row: row, column: col),
-                                 styles: styles, strings: &strings)
+                    let address = CellAddress(row: row, column: col)
+                    s += cellXML(cell, styleIndex: cell.styleIndex != 0 ? cell.styleIndex : sheet.inheritedStyleIndex(at: address),
+                                 at: address, styles: styles, strings: &strings)
                 }
                 s += "</row>"
             }
@@ -430,9 +428,47 @@ public enum XLSXWriter {
         return columns.isEmpty ? "<autoFilter ref=\"\(ref)\"/>" : "<autoFilter ref=\"\(ref)\">" + columns + "</autoFilter>"
     }
 
-    static func cellXML(_ cell: Cell, at addr: CellAddress,
+    /// `<cols>`: widths, formats and hidden flags, one `<col>` per run of
+    /// columns that share them ("" when no column has any).
+    static func colsXML(_ sheet: Sheet) -> String {
+        let columns = Set(sheet.columnWidths.keys).union(sheet.columnStyles.keys).union(sheet.hiddenColumns)
+            .filter { $0 >= 0 && $0 < CellAddress.maxColumns }.sorted()
+        guard !columns.isEmpty else { return "" }
+        // (character-width units; px = width*7 + 5, pt = px * 0.75)
+        func attributes(_ col: Int) -> String {
+            var a = ""
+            if let points = sheet.columnWidths[col] {
+                let px = Double(points) / 0.75
+                a += " width=\"\(trimNumber(max(0, (px - 5) / 7)))\" customWidth=\"1\""
+            } else if sheet.columnStyles[col] != nil || sheet.hiddenColumns.contains(col) {
+                // Excel wants a width on every <col>.
+                let px = Double(sheet.defaultColumnWidth) / 0.75
+                a += " width=\"\(trimNumber(max(0, (px - 5) / 7)))\""
+            }
+            if let style = sheet.columnStyles[col] { a += " style=\"\(style)\"" }
+            if sheet.hiddenColumns.contains(col) { a += " hidden=\"1\"" }
+            return a
+        }
+        var s = "<cols>"
+        var i = 0
+        while i < columns.count {
+            let first = columns[i], attrs = attributes(first)
+            var last = first
+            while i + 1 < columns.count, columns[i + 1] == last + 1, attributes(columns[i + 1]) == attrs {
+                i += 1
+                last = columns[i]
+            }
+            s += "<col min=\"\(first + 1)\" max=\"\(last + 1)\"\(attrs)/>"
+            i += 1
+        }
+        return s + "</cols>"
+    }
+
+    /// A cell; `styleIndex` is the style it shows (its own or inherited).
+    static func cellXML(_ cell: Cell, styleIndex: Int? = nil, at addr: CellAddress,
                         styles: StyleParts, strings: inout SharedStringBuilder) -> String {
-        let styleAttr = cell.styleIndex > 0 ? " s=\"\(cell.styleIndex)\"" : ""
+        let shown = styleIndex ?? cell.styleIndex
+        let styleAttr = shown > 0 ? " s=\"\(shown)\"" : ""
         var typeAttr = ""
         var body = ""
 

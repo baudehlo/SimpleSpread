@@ -21,6 +21,7 @@ extension XLSXWriter {
         var extraRows = Set<Int>()
         for row in sheet.rowHeights.keys where row >= 0 { extraRows.insert(row) }
         for row in sheet.hiddenRows where row >= 0 && row < CellAddress.maxRows { extraRows.insert(row) }
+        for row in sheet.rowStyles.keys where row >= 0 && row < CellAddress.maxRows { extraRows.insert(row) }
         for key in keys { extraRows.remove(key / stride) }
         for row in extraRows { keys.append(row &* stride) }
         keys.sort()
@@ -29,6 +30,7 @@ extension XLSXWriter {
         try progress(sortShare)
 
         out.append(contentsOf: "<sheetData>".utf8)
+        let inherits = sheet.hasRowOrColumnStyles
         var currentRow = Int.min
         let total = Double(max(1, keys.count))
         for (index, key) in keys.enumerated() {
@@ -43,6 +45,11 @@ extension XLSXWriter {
                 out.append(contentsOf: "<row r=\"".utf8)
                 appendInt(row + 1, to: &out)
                 out.append(0x22)
+                if let style = sheet.rowStyles[row] {
+                    out.append(contentsOf: " s=\"".utf8)
+                    appendInt(style, to: &out)
+                    out.append(contentsOf: "\" customFormat=\"1\"".utf8)
+                }
                 if let height = sheet.rowHeights[row] {
                     out.append(contentsOf: " ht=\"\(trimNumber(height))\" customHeight=\"1\"".utf8)
                 }
@@ -54,7 +61,10 @@ extension XLSXWriter {
             if isRowOnly { continue }
             let address = CellAddress(row: row, column: key % stride - 1)
             if let cell = sheet.cells[address] {
-                appendCell(cell, at: address, to: &out, strings: &strings)
+                // A cell with no style of its own is written with what it
+                // inherits: in the file, a cell without s is plain.
+                let style = cell.styleIndex != 0 || !inherits ? cell.styleIndex : sheet.inheritedStyleIndex(at: address)
+                appendCell(cell, styleIndex: style, at: address, to: &out, strings: &strings)
             }
         }
         if currentRow != Int.min { out.append(contentsOf: "</row>".utf8) }
@@ -63,7 +73,7 @@ extension XLSXWriter {
     }
 
     /// `cellXML` as bytes.
-    static func appendCell(_ cell: Cell, at address: CellAddress, to out: inout [UInt8],
+    static func appendCell(_ cell: Cell, styleIndex: Int, at address: CellAddress, to out: inout [UInt8],
                            strings: inout SharedStringBuilder) {
         let hasFormula = cell.formula != nil
         // The type attribute and <v> body depend on the value.
@@ -84,15 +94,15 @@ extension XLSXWriter {
                 body = .int(strings.index(for: text))
             }
         }
-        if case .none = body, !hasFormula, cell.styleIndex <= 0 { return }
+        if case .none = body, !hasFormula, styleIndex <= 0 { return }
 
         out.append(contentsOf: "<c r=\"".utf8)
         appendColumnName(address.column, to: &out)
         appendInt(address.row + 1, to: &out)
         out.append(0x22)
-        if cell.styleIndex > 0 {
+        if styleIndex > 0 {
             out.append(contentsOf: " s=\"".utf8)
-            appendInt(cell.styleIndex, to: &out)
+            appendInt(styleIndex, to: &out)
             out.append(0x22)
         }
         if let type {

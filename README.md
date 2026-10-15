@@ -16,7 +16,8 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
 - **XLSX native**: reads and writes OOXML SpreadsheetML interoperable with
   Excel, Numbers, and Google Sheets — including a from-scratch ZIP layer,
   shared strings, styles, number formats, formulas with cached values,
-  borders, merged ranges, frozen panes, hidden rows and sheets, AutoFilters,
+  borders, merged ranges, frozen panes, whole-row and whole-column formats,
+  hidden rows, columns and sheets, AutoFilters,
   defined names, newer functions saved with Excel's `_xlfn.` prefixes, and
   1904-date-system normalization on read. Charts, images, comments, tables,
   conditional formatting, data validation, hyperlinks, sparklines and print
