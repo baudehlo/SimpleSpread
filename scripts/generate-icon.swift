@@ -1,11 +1,15 @@
 #!/usr/bin/env swift
 // Generates icon.png (1024x1024) — a spreadsheet grid glyph.
-// Usage: swift scripts/generate-icon.swift [output.png]
+// Usage: swift scripts/generate-icon.swift [--full-bleed] [output.png]
+//   --full-bleed: the iPad's icon — the same art filling an opaque square
+//   (no alpha, no rounded corners: iOS rounds it and rejects transparency).
 
 import AppKit
 
 let size: CGFloat = 1024
-let output = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "icon.png"
+let fullBleed = CommandLine.arguments.contains("--full-bleed")
+let paths = CommandLine.arguments.dropFirst().filter { $0 != "--full-bleed" }
+let output = paths.first ?? "icon.png"
 
 let image = NSImage(size: NSSize(width: size, height: size))
 image.lockFocus()
@@ -15,8 +19,16 @@ guard let ctx = NSGraphicsContext.current?.cgContext else { fatalError("no conte
 // Background: rounded rect, deep green gradient.
 let inset: CGFloat = 80
 let bgRect = CGRect(x: inset, y: inset, width: size - 2 * inset, height: size - 2 * inset)
-let bgPath = NSBezierPath(roundedRect: bgRect, xRadius: 180, yRadius: 180)
-bgPath.addClip()
+if fullBleed {
+    // Scale the Mac art up so its rounded square fills the canvas.
+    let scale = size / bgRect.width
+    ctx.translateBy(x: size / 2, y: size / 2)
+    ctx.scaleBy(x: scale, y: scale)
+    ctx.translateBy(x: -size / 2, y: -size / 2)
+} else {
+    let bgPath = NSBezierPath(roundedRect: bgRect, xRadius: 180, yRadius: 180)
+    bgPath.addClip()
+}
 
 let gradient = NSGradient(
     starting: NSColor(srgbRed: 0.09, green: 0.55, blue: 0.35, alpha: 1),
@@ -72,8 +84,21 @@ ctx.flush()
 image.unlockFocus()
 
 guard let tiff = image.tiffRepresentation,
-      let rep = NSBitmapImageRep(data: tiff),
-      let png = rep.representation(using: .png, properties: [:]) else {
+      var rep = NSBitmapImageRep(data: tiff) else {
+    fatalError("could not render PNG")
+}
+if fullBleed {
+    // Redraw into an opaque bitmap: App Store icons may not have alpha.
+    guard let cg = rep.cgImage,
+          let opaque = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8,
+                                 bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                 bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else {
+        fatalError("could not render PNG")
+    }
+    opaque.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+    rep = NSBitmapImageRep(cgImage: opaque.makeImage()!)
+}
+guard let png = rep.representation(using: .png, properties: [:]) else {
     fatalError("could not render PNG")
 }
 try! png.write(to: URL(fileURLWithPath: output))

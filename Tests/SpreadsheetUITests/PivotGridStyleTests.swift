@@ -65,3 +65,14 @@ struct PivotBandsTests {
         #expect(!PivotBands.isBold(.filterValue))
     }
 }
+
+@Suite("Cell text colour")
+struct CellTextColourTests {
+    @Test func automaticTextContrastsWithTheFill() {
+        #expect(RGBAColor(red: 0xFF, green: 0xF4, blue: 0xCC).isLight)   // pale yellow
+        #expect(RGBAColor(red: 0xFF, green: 0xFF, blue: 0xFF).isLight)
+        #expect(!RGBAColor(red: 0x1F, green: 0x4E, blue: 0x79).isLight)  // dark blue
+        #expect(!RGBAColor(red: 0, green: 0, blue: 0).isLight)
+        #expect(!RGBAColor(red: 0xC0, green: 0x00, blue: 0x00).isLight) // dark red: white text
+    }
+}

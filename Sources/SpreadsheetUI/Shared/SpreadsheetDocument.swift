@@ -89,6 +89,13 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Asks the user to confirm (message, detail, button title); nil
     /// refuses. The app installs an alert; tests install a closure.
     public var confirm: ((String, String, String) -> Bool)?
+    /// Where the answer can't be waited for (iPad alerts don't block), the
+    /// app installs this instead: the command is refused, the question shown
+    /// (message, detail, button title), and `proceed` runs the command again,
+    /// already answered, if the user agrees.
+    public var confirmLater: ((String, String, String, _ proceed: @escaping () -> Void) -> Void)?
+    /// The question the user has just agreed to (see `askToConfirm`).
+    private var agreedQuestion: String?
     /// The editor holding typing not yet written to its cell (the grid's
     /// in-cell editor or the formula bar), if any. See `commitPendingEdit`.
     weak var pendingEditor: PendingEditor?
@@ -337,6 +344,25 @@ public final class SpreadsheetDocument: ObservableObject {
     /// True while an editor holds typing that is not in its cell yet. An
     /// open editor counts as unsaved work.
     public var hasPendingEdit: Bool { pendingEditor?.hasPendingEdit ?? false }
+
+    /// Ask the user to confirm (`confirm`, or `confirmLater`). With
+    /// `confirmLater` this returns false, and if the user agrees `retry`
+    /// runs the command again, which then finds its answer here.
+    func askToConfirm(_ message: String, _ detail: String, _ button: String,
+                      retry: @escaping () -> Void) -> Bool {
+        if agreedQuestion == message {
+            agreedQuestion = nil
+            return true
+        }
+        if let confirm { return confirm(message, detail, button) }
+        guard let confirmLater else { return false }
+        confirmLater(message, detail, button) { [weak self] in
+            self?.agreedQuestion = message
+            retry()
+            self?.agreedQuestion = nil
+        }
+        return false
+    }
 
     /// The one choke point for typing that is still in an editor: write it
     /// to the cell it was typed for (which may be on another sheet by now)
@@ -1464,8 +1490,12 @@ public final class SpreadsheetDocument: ObservableObject {
     /// and the workbook is copied (copy-on-write, so this is quick even for
     /// a million cells; the first edit afterwards pays for copying the
     /// sheet it changes).
-    public func makeSaveSnapshot() -> SaveSnapshot {
-        commitPendingEdit()
+    ///
+    /// `committingPendingEdit: false` (iPad autosave) leaves typing in an
+    /// open editor alone: the user is still typing, and closing the editor
+    /// under them would be worse than saving it next time.
+    public func makeSaveSnapshot(committingPendingEdit: Bool = true) -> SaveSnapshot {
+        if committingPendingEdit { commitPendingEdit() }
         return SaveSnapshot(workbook: workbook.copy(), changeCount: changeCount)
     }
 

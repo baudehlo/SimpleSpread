@@ -1,5 +1,4 @@
-import AppKit
-import SwiftUI
+import Foundation
 import SpreadsheetCore
 
 /// A file read off the main thread, ready to become a document.
@@ -103,10 +102,7 @@ enum FileLoader {
             completion(SpreadsheetDocument.make(from: loaded, url: url))
         case .failure(let error):
             if error is CancellationError { return }
-            let alert = NSAlert()
-            alert.messageText = "Could not open \(url.lastPathComponent)"
-            alert.informativeText = error.localizedDescription
-            alert.runModal()
+            Alerts.show("Could not open \(url.lastPathComponent)", detail: error.localizedDescription)
         }
     }
 }

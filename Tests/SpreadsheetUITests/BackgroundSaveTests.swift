@@ -210,6 +210,7 @@ struct BackgroundSaveTests {
         #expect(doc.fileURL == nil)
     }
 
+    #if os(macOS) // DocumentSaving.save is the Mac's ⌘S (the iPad autosaves)
     @Test func repeatedSavesWaitTheirTurnAndFoldIntoOne() async throws {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -241,6 +242,7 @@ struct BackgroundSaveTests {
         #expect(!BackgroundSaver.isSaving(doc))
         #expect(try SpreadsheetDocument.open(url: url).workbook.sheets[1].value(at: a("A1")) == .number(2))
     }
+    #endif
 
     // MARK: CSV
 

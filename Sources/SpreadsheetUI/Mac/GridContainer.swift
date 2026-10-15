@@ -1,3 +1,4 @@
+#if os(macOS)
 import SwiftUI
 import AppKit
 import SpreadsheetCore
@@ -85,19 +86,4 @@ struct GridContainer: NSViewRepresentable {
         }
     }
 }
-
-/// Focused-value plumbing so menu commands reach the active window's document.
-struct DocumentFocusKey: FocusedValueKey {
-    typealias Value = SpreadsheetDocument
-}
-
-// Menu commands reach a pending cell edit through the document
-// (SpreadsheetDocument.commitPendingEdit), and the standard Edit items
-// (cut/copy/paste/undo) reach the grid through the responder chain.
-
-extension FocusedValues {
-    var spreadsheetDocument: SpreadsheetDocument? {
-        get { self[DocumentFocusKey.self] }
-        set { self[DocumentFocusKey.self] = newValue }
-    }
-}
+#endif

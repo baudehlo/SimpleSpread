@@ -116,23 +116,36 @@ Sources/
     CSVFastImport.swift       byte-level CSV import (row limit, progress)
     XLSXSheetDataScanner.swift  byte-level <sheetData> reader
     XLSXSheetDataWriter.swift   byte-level <sheetData> writer
-  SpreadsheetUI/
-    SelectionState.swift      selection model + data-edge navigation + GridLayout
-    SpreadsheetDocument.swift document view-model (edit/undo/clipboard/files)
-    SpreadsheetGridView.swift AppKit grid (draw, mouse, keyboard, editor)
-    GridContainer.swift       NSViewRepresentable + focused values
-    Clipboard.swift           NSPasteboard integration
-    ContentView.swift         window chrome (format bar, formula bar, tabs)
-    App.swift                 App scene, DocumentStore, menu commands
-    SpreadsheetDocument+Pivots.swift  insert/edit/group/refresh with one undo step each
-    PivotFieldsPanel.swift    the PivotTable Fields panel + Insert PivotTable sheet
-    PivotGridStyle.swift      Excel-style pivot drawing (bands, bold totals, field buttons)
+  SpreadsheetUI/               (see docs/IPAD.md: one module, three folders)
+    Shared/                    builds for Mac and iPad
+      SelectionState.swift      selection model + data-edge navigation + GridLayout
+      SpreadsheetDocument.swift document view-model (edit/undo/clipboard/files)
+      SpreadsheetDocument+Pivots.swift  insert/edit/group/refresh with one undo step each
+      GridGeometry.swift        grid coordinates: panes, hit testing, scroll targets
+      GridRenderer.swift        draws the grid (Core Graphics, both platforms)
+      GridController.swift      grid behaviour: edit modes, selection, fill, resize, keys, menus
+      Clipboard.swift           pasteboard integration (NSPasteboard / UIPasteboard)
+      ContentView.swift         window chrome (format bar, formula bar, tabs)
+      App.swift                 DocumentStore, shared menu commands
+      PivotFieldsPanel.swift    the PivotTable Fields panel + Insert PivotTable sheet
+      PivotGridStyle.swift      Excel-style pivot banding rules
+      Platform.swift            the few AppKit/UIKit naming differences
+    Mac/                       AppKit shell (#if os(macOS))
+      SpreadsheetGridView.swift NSView grid: events → GridController, NSTextField editor
+      GridContainer.swift       NSViewRepresentable
+      MacApp.swift              App scene, app delegate, File menu, Sparkle menu
+      SavePrompt.swift          save panels and "save changes?" prompts
+    iOS/                       UIKit shell (#if os(iOS))
+      GridView.swift            UIScrollView grid: touch/pointer/keys → GridController
+      SpreadsheetFile.swift     UIDocument: coordinated, autosaving file access
+      IOSApp.swift              App scene, document browser, editor screen, File menu
   SimpleSpread/
     main.swift                calls SimpleSpreadApp.run()
 ```
 
 **Dependency rule:** Core knows nothing of Files or UI. Files depends only on
-Core. UI depends on both. Tests mirror the split (312 tests).
+Core. UI depends on both; its Shared code never names AppKit or UIKit
+directly (Platform.swift and the pasteboard calls in Clipboard.swift aside). Tests mirror the split.
 
 ## 4. Data model
 

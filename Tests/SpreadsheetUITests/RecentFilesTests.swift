@@ -47,6 +47,7 @@ struct RecentFilesListTests {
     }
 }
 
+#if os(macOS)
 @MainActor
 @Suite("Recent files manager")
 struct RecentFilesManagerTests {
@@ -119,3 +120,4 @@ struct RecentFilesManagerTests {
         #expect(mgr.entries.first?.exists == false)
     }
 }
+#endif

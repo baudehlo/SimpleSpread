@@ -1,0 +1,78 @@
+name: iPad Release
+
+# Archives the iPad app and uploads it to App Store Connect (then
+# TestFlight, and App Review when submitted there). Run by hand.
+#
+# Secrets (App Store Connect › Users and Access › Integrations › Keys,
+# an "App Manager" key):
+#   APP_STORE_CONNECT_KEY_ID     the key's ID
+#   APP_STORE_CONNECT_ISSUER_ID  the issuer ID shown above the keys
+#   APP_STORE_CONNECT_KEY        the .p8 file's contents
+#   APPLE_TEAM_ID                (already set for the Mac release)
+# Signing is automatic: Xcode makes the distribution certificate and
+# profile through the key.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version (e.g. 1.9.0), as on the Mac'
+        required: true
+
+jobs:
+  upload:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Generate the Xcode project
+        working-directory: iOS
+        env:
+          SIMPLESPREAD_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          brew install xcodegen
+          xcodegen
+
+      - name: Install the App Store Connect key
+        env:
+          KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/keys"
+          printf '%s' "$KEY" > "$RUNNER_TEMP/keys/AuthKey.p8"
+
+      - name: Archive
+        working-directory: iOS
+        run: |
+          xcodebuild archive -project SimpleSpread.xcodeproj -scheme SimpleSpread \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$RUNNER_TEMP/SimpleSpread.xcarchive" \
+            MARKETING_VERSION="${{ inputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ github.run_number }}" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey.p8" \
+            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}"
+
+      - name: Upload to App Store Connect
+        working-directory: iOS
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/SimpleSpread.xcarchive" \
+            -exportOptionsPlist ExportOptions.plist \
+            -exportPath "$RUNNER_TEMP/export" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$RUNNER_TEMP/keys/AuthKey.p8" \
+            -authenticationKeyID "${{ secrets.APP_STORE_CONNECT_KEY_ID }}" \
+            -authenticationKeyIssuerID "${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}"
+
+      - name: Remove the key
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/keys"

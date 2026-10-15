@@ -582,6 +582,7 @@ struct ClipboardFillTests {
     }
 }
 
+#if os(macOS)
 @MainActor
 @Suite("Open requests")
 struct OpenRequestTests {
@@ -601,3 +602,4 @@ struct OpenRequestTests {
         #expect(opened == 1)
     }
 }
+#endif
