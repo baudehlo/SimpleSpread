@@ -78,7 +78,7 @@ jobs:
           brew install xcodegen
           xcodegen
 
-      - name: Pick an iPad simulator
+      - name: Pick and boot an iPad simulator
         id: sim
         run: |
           UDID=$(xcrun simctl list devices available -j | python3 -c '
@@ -88,18 +88,42 @@ jobs:
           ipads.sort(key=lambda d: ("13-inch" not in d["name"], "Pro" not in d["name"]))
           print(ipads[0]["udid"])')
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          # Booted and settled before the tests: a simulator still booting
+          # when XCUITest launches the app fails with "Failed to launch".
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
 
+      - name: Build for testing
+        working-directory: iOS
+        run: |
+          xcodebuild build-for-testing -project SimpleSpread.xcodeproj -scheme SimpleSpread \
+            -destination "id=${{ steps.sim.outputs.udid }}" -derivedDataPath "$RUNNER_TEMP/dd"
+
+      - name: Shared tests on iPad
+        working-directory: iOS
+        run: |
+          xcodebuild test-without-building -project SimpleSpread.xcodeproj -scheme SimpleSpread \
+            -destination "id=${{ steps.sim.outputs.udid }}" -derivedDataPath "$RUNNER_TEMP/dd" \
+            -skip-testing:SimpleSpreadUITests \
+            -resultBundlePath "$RUNNER_TEMP/ipad-unit.xcresult"
+
+      # UI tests drive the app in the simulator. On a loaded CI runner the
+      # simulator now and then fails to launch the app or keep it running
+      # ("Failed to get background assertion"), so a failed test is retried
+      # (up to three runs); a real failure fails all three.
       # The screenshot tests (ReviewTests, testScreenshots) take pictures
       # for a person to look over; they cost a minute and check little, so
       # they run by hand (docs/IPAD.md), not on every push.
-      - name: Test
+      - name: UI tests on iPad
         working-directory: iOS
         run: |
-          xcodebuild test -project SimpleSpread.xcodeproj -scheme SimpleSpread \
-            -destination "id=${{ steps.sim.outputs.udid }}" \
+          xcodebuild test-without-building -project SimpleSpread.xcodeproj -scheme SimpleSpread \
+            -destination "id=${{ steps.sim.outputs.udid }}" -derivedDataPath "$RUNNER_TEMP/dd" \
+            -only-testing:SimpleSpreadUITests \
             -skip-testing:SimpleSpreadUITests/ReviewTests \
             -skip-testing:SimpleSpreadUITests/SimpleSpreadUITests/testScreenshots \
-            -resultBundlePath "$RUNNER_TEMP/ipad.xcresult"
+            -retry-tests-on-failure -test-iterations 3 \
+            -resultBundlePath "$RUNNER_TEMP/ipad-ui.xcresult"
 
       - name: Upload test results
         if: always()
@@ -107,5 +131,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ipad-test-results
-          path: ${{ runner.temp }}/ipad.xcresult
+          path: |
+            ${{ runner.temp }}/ipad-unit.xcresult
+            ${{ runner.temp }}/ipad-ui.xcresult
 
