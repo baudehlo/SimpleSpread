@@ -175,10 +175,19 @@ struct EditCommands: Commands {
 
 struct ViewCommands: Commands {
     @FocusedValue(\.spreadsheetDocument) var document
+    @ObservedObject private var appearance = AppearanceSetting.shared
 
     var body: some Commands {
         // .toolbar placement lands these in the standard View menu.
         CommandGroup(before: .toolbar) {
+            Picker("Appearance", selection: $appearance.choice) {
+                ForEach(AppearanceChoice.allCases) { choice in
+                    Text(choice.title).tag(choice)
+                }
+            }
+
+            Divider()
+
             Button("Zoom In") {
                 perform(document) { $0.zoomIn() }
             }

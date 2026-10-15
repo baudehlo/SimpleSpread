@@ -251,6 +251,8 @@ struct DocumentBrowserScreen: View {
             }
             .onOpenURL { model.openExternal($0) }
             .overlay { ProgressOverlay() }
+            // A new window takes the app's appearance choice.
+            .onAppear { AppearanceSetting.shared.apply() }
     }
 }
 

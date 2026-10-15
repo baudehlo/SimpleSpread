@@ -73,6 +73,24 @@ extension UIResponder {
     }
 }
 
+/// Light or dark for every window, whatever the system uses.
+@MainActor
+enum AppearanceApplier {
+    static func apply(_ choice: AppearanceChoice) {
+        let style: UIUserInterfaceStyle
+        switch choice {
+        case .system: style = .unspecified
+        case .light: style = .light
+        case .dark: style = .dark
+        }
+        for scene in UIApplication.shared.connectedScenes {
+            for window in (scene as? UIWindowScene)?.windows ?? [] {
+                window.overrideUserInterfaceStyle = style
+            }
+        }
+    }
+}
+
 extension View {
     /// Refresh's F5 shortcut is the Mac's; iPad keyboards rarely have one.
     func refreshShortcut(_ modifiers: EventModifiers) -> some View {

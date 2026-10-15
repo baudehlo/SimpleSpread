@@ -51,6 +51,20 @@ enum GridFocus {
     }
 }
 
+/// Light or dark for the whole app, whatever the system uses.
+@MainActor
+enum AppearanceApplier {
+    static func apply(_ choice: AppearanceChoice) {
+        // No NSApp in unit tests: nothing to apply to.
+        guard let app = NSApp else { return }
+        switch choice {
+        case .system: app.appearance = nil
+        case .light: app.appearance = NSAppearance(named: .aqua)
+        case .dark: app.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
 extension View {
     /// Refresh's F5 shortcut (Excel's), with `modifiers`.
     func refreshShortcut(_ modifiers: EventModifiers) -> some View {

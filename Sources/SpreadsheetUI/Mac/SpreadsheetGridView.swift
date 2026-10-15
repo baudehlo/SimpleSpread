@@ -57,6 +57,13 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         renderer.draw(in: ctx, dirtyRect: dirtyRect)
     }
 
+    /// Light/dark changed (the system, or View ▸ Appearance): the grid's
+    /// colours resolve differently.
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        needsDisplay = true
+    }
+
     // MARK: Scrolling
 
     override func viewDidMoveToSuperview() {

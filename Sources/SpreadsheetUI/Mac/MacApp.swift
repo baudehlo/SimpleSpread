@@ -103,6 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         FontChoices.prepare()
+        MainActor.assumeIsolated { AppearanceSetting.shared.apply() }
         // Running as a bare SwiftPM binary (no bundle): become a regular app.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)

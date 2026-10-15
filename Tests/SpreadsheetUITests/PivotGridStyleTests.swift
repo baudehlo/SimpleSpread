@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import Testing
 @testable import SpreadsheetCore
 @testable import SpreadsheetUI
@@ -83,5 +84,18 @@ struct SpokenLabelTests {
         #expect(spokenLabel("Bold (⌘B)") == "Bold")
         #expect(spokenLabel("AutoSum: total the numbers above (click the arrow…)") == "AutoSum")
         #expect(spokenLabel("Text color") == "Text color")
+    }
+}
+
+@MainActor
+@Suite("Appearance setting")
+struct AppearanceSettingTests {
+    @Test func theChoiceIsRememberedAndDefaultsToTheSystem() {
+        let defaults = UserDefaults(suiteName: "simplespread-appearance-\(UUID().uuidString)")!
+        #expect(AppearanceSetting(defaults: defaults).choice == .system)
+        AppearanceSetting(defaults: defaults).choice = .light
+        #expect(AppearanceSetting(defaults: defaults).choice == .light)
+        defaults.set("sepia", forKey: AppearanceSetting.defaultsKey)
+        #expect(AppearanceSetting(defaults: defaults).choice == .system)
     }
 }
