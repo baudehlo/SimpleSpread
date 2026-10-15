@@ -47,8 +47,7 @@ struct SheetCellBuilder {
         }
     }
 
-    /// Row formatting and outline levels seen (neither is kept).
-    private(set) var sawRowFormatting = false
+    /// Outline levels seen (not kept).
     private(set) var sawOutline = false
 
     /// 0-based row of the `<row>` being read; `CellAddress.maxRows` once past the end.
@@ -85,7 +84,11 @@ struct SheetCellBuilder {
         if hidden {
             sheet.hiddenRows.insert(currentRow)
         }
-        if customFormat, let style, (styleIndexMap[style] ?? 0) != 0 { sawRowFormatting = true }
+        // A row's s counts only with customFormat; the reader settles
+        // what its cells inherit once the whole sheet is in.
+        if customFormat, let style, let index = styleIndexMap[style], index != 0 {
+            sheet.rowStyles[currentRow] = index
+        }
         if let outlineLevel, outlineLevel > 0 { sawOutline = true }
     }
 

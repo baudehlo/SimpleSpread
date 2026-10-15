@@ -124,9 +124,8 @@ struct UnsupportedContentTests {
         <pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/><pageSetup orientation="landscape"/>\
         <extLst><ext uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:sparklineGroups/></ext></extLst>
         """
-        #expect(try Self.unsupported(Self.package(sheets: [("S", nil, sheet)])) == [
-            "hidden columns", "grouped rows or columns",
-        ])
+        // Hidden columns are kept now; outline levels aren't.
+        #expect(try Self.unsupported(Self.package(sheets: [("S", nil, sheet)])) == ["grouped rows or columns"])
         // A sheet in the Strict namespaces isn't carried (so all of it is named).
         let strict = Self.header + "<worksheet xmlns=\"http://purl.oclc.org/ooxml/spreadsheetml/main\">" + sheet + "</worksheet>"
         #expect(XLSXReader.carriedSheet(Data(strict.utf8)) == nil)
@@ -149,13 +148,17 @@ struct UnsupportedContentTests {
         #expect(try Self.unsupported(Self.package(sheets: [("S", nil, gridlines)])) == [])
     }
 
-    @Test func rowFormattingIsSeenByBothReaders() throws {
-        let sheet = "<sheetData><row r=\"1\" s=\"1\" customFormat=\"1\"><c r=\"A1\"><v>1</v></c></row></sheetData>"
+    @Test func rowFormattingIsReadByBothReaders() throws {
+        let sheet = "<sheetData><row r=\"1\" s=\"1\" customFormat=\"1\"><c r=\"A1\"><v>1</v></c></row>"
+            + "<row r=\"2\" s=\"1\"><c r=\"A2\"><v>1</v></c></row></sheetData>"
         let data = Data((Self.header + "<worksheet xmlns=\"\(Self.main)\">" + sheet + "</worksheet>").utf8)
         for fast in [true, false] {
-            let found = try XLSXReader.parseWorksheet(data, into: Sheet(id: 1, name: "S"), sharedStrings: [],
+            let target = Sheet(id: 1, name: "S")
+            let found = try XLSXReader.parseWorksheet(data, into: target, sharedStrings: [],
                                                       styleIndexMap: [0: 0, 1: 3], fastSheetData: fast)
-            #expect(found == [.rowFormatting], "fast: \(fast)")
+            #expect(found.isEmpty, "fast: \(fast)")
+            // A row's s counts only with customFormat.
+            #expect(target.rowStyles == [0: 3], "fast: \(fast)")
         }
     }
 

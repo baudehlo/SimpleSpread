@@ -123,10 +123,10 @@ extension WorkbookOperations {
         }
         let boldHeader = columns.allSatisfy { column in
             let addr = CellAddress(row: first, column: column)
-            return sheet.value(at: addr).isEmpty || workbook.style(at: sheet.cell(at: addr).styleIndex).bold
+            return sheet.value(at: addr).isEmpty || workbook.style(at: sheet.styleIndex(at: addr)).bold
         }
         let boldBelow = columns.contains { column in
-            workbook.style(at: sheet.cell(at: CellAddress(row: first + 1, column: column)).styleIndex).bold
+            workbook.style(at: sheet.styleIndex(at: CellAddress(row: first + 1, column: column))).bold
         }
         return boldHeader && !boldBelow
     }

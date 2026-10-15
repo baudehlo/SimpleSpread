@@ -144,7 +144,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// What the grid shows for a cell.
     public func displayString(at address: CellAddress) -> String {
         let cell = activeSheet.cell(at: address)
-        let style = workbook.style(at: cell.styleIndex)
+        let style = workbook.style(at: activeSheet.styleIndex(at: address))
         return NumberFormatEngine.displayString(for: cell.value, format: style.numberFormat)
     }
 
@@ -156,7 +156,7 @@ public final class SpreadsheetDocument: ObservableObject {
         if let formula = cell.formula {
             return "=" + formula
         }
-        let style = workbook.style(at: cell.styleIndex)
+        let style = workbook.style(at: sheet.styleIndex(at: address))
         switch cell.value {
         case .empty:
             return ""
@@ -177,7 +177,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func style(at address: CellAddress) -> CellStyle {
-        workbook.style(at: activeSheet.cell(at: address).styleIndex)
+        workbook.style(at: activeSheet.styleIndex(at: address))
     }
 
     // MARK: - Change plumbing
@@ -365,7 +365,7 @@ public final class SpreadsheetDocument: ObservableObject {
         // Committing the editor's text unchanged is not an edit: no write,
         // no undo step, no "modified" (and nothing to re-parse lossily).
         guard text != editString(at: address, sheetID: sheetID) else { return }
-        let currentStyle = workbook.style(at: sheet.cell(at: address).styleIndex)
+        let currentStyle = workbook.style(at: sheet.styleIndex(at: address))
         let parsed = ValueParser.parse(text, textFormat: currentStyle.numberFormat.isTextFormat)
         let snaps = snapshot([address], sheetID: sheetID)
         let abs = AbsoluteAddress(sheetID: sheetID, address: address)
@@ -379,7 +379,7 @@ public final class SpreadsheetDocument: ObservableObject {
             var newStyle = currentStyle
             newStyle.numberFormat = suggested
             var cell = sheet.cell(at: address)
-            cell.styleIndex = workbook.styleIndex(for: newStyle)
+            cell.styleIndex = workbook.storableStyleIndex(workbook.styleIndex(for: newStyle), at: address, in: sheet)
             sheet.setCell(cell, at: address)
         }
         registerCellUndo(snaps, actionName: "Typing")
@@ -658,7 +658,7 @@ public final class SpreadsheetDocument: ObservableObject {
             var cell = activeSheet.cell(at: address)
             var target = painted
             target.pivotButton = workbook.style(at: cell.styleIndex).pivotButton
-            cell.styleIndex = workbook.styleIndex(for: target)
+            cell.styleIndex = workbook.storableStyleIndex(workbook.styleIndex(for: target), at: address, in: activeSheet)
             activeSheet.setCell(cell, at: address)
         }
         registerCellUndo(snaps, actionName: "Paste Formatting")
@@ -929,7 +929,7 @@ public final class SpreadsheetDocument: ObservableObject {
                 let cell = activeSheet.cell(at: addr)
                 guard !cell.isDefault else { continue }
                 // A pivot field button belongs to its pivot table, not the value.
-                var style = workbook.style(at: cell.styleIndex)
+                var style = workbook.style(at: activeSheet.styleIndex(at: addr))
                 style.pivotButton = false
                 let sourceRow = row - range.start.row
                 entries.append(ClipboardPayload.Entry(
@@ -991,7 +991,7 @@ public final class SpreadsheetDocument: ObservableObject {
         engine.setCells(entries)
         for (addr, write) in writes {
             var cell = activeSheet.cell(at: addr)
-            cell.styleIndex = workbook.styleIndex(for: write.style)
+            cell.styleIndex = workbook.storableStyleIndex(workbook.styleIndex(for: write.style), at: addr, in: activeSheet)
             activeSheet.setCell(cell, at: addr)
         }
         registerCellUndo(snaps, actionName: "Paste")
@@ -1034,7 +1034,7 @@ public final class SpreadsheetDocument: ObservableObject {
                     var newStyle = currentStyle
                     newStyle.numberFormat = suggested
                     var cell = activeSheet.cell(at: addr)
-                    cell.styleIndex = workbook.styleIndex(for: newStyle)
+                    cell.styleIndex = workbook.storableStyleIndex(workbook.styleIndex(for: newStyle), at: addr, in: activeSheet)
                     activeSheet.setCell(cell, at: addr)
                 }
             }
@@ -1074,7 +1074,7 @@ public final class SpreadsheetDocument: ObservableObject {
             writes.append((AbsoluteAddress(sheetID: activeSheetID, address: addr),
                            srcCell.value, formula))
             // Destinations are outside pivots (refused above): no field button.
-            var styleIndex = srcCell.styleIndex
+            var styleIndex = activeSheet.styleIndex(at: srcAddr)
             if workbook.style(at: styleIndex).pivotButton {
                 var style = workbook.style(at: styleIndex)
                 style.pivotButton = false
@@ -1086,7 +1086,7 @@ public final class SpreadsheetDocument: ObservableObject {
         engine.setCells(writes)
         for (addr, styleIndex) in styleWrites {
             var cell = activeSheet.cell(at: addr)
-            cell.styleIndex = styleIndex
+            cell.styleIndex = workbook.storableStyleIndex(styleIndex, at: addr, in: activeSheet)
             activeSheet.setCell(cell, at: addr)
         }
         registerCellUndo(snaps, actionName: "Fill")
@@ -1117,14 +1117,26 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Clear Formatting (⌘\): reset every selected cell to the default style,
     /// leaving values and formulas intact.
     public func clearFormattingInSelection() {
-        // Only stored cells can carry formatting.
+        // Whole columns or rows: their own formats go too.
+        if let lines = wholeLines(of: selection.range) {
+            restyle(lines, actionName: "Clear Formatting") { style in
+                style = CellStyle(pivotButton: style.pivotButton)
+            }
+            return
+        }
+        // Only stored cells carry formatting of their own; under formatted
+        // rows or columns, a blank in a small selection becomes plain too.
         let sheet = activeSheet
         var snaps: [StyleSnapshot] = []
-        for addr in storedAddresses(in: selection.range, sheet: sheet) {
+        let range = selection.range
+        let targets = sheet.hasRowOrColumnStyles && range.cellCount <= Self.formatEveryCellLimit
+            ? range.addresses : storedAddresses(in: range, sheet: sheet)
+        for addr in targets {
             var cell = sheet.cell(at: addr)
             // A pivot's field buttons belong to the pivot, not the formatting.
             let target = workbook.style(at: cell.styleIndex).pivotButton
-                ? workbook.styleIndex(for: CellStyle(pivotButton: true)) : 0
+                ? workbook.styleIndex(for: CellStyle(pivotButton: true))
+                : workbook.storableStyleIndex(0, at: addr, in: sheet)
             if cell.styleIndex != target {
                 snaps.append(StyleSnapshot(address: addr, styleIndex: cell.styleIndex))
                 cell.styleIndex = target
@@ -1224,6 +1236,9 @@ public final class SpreadsheetDocument: ObservableObject {
         var query: String
         var cells: [CellAddress: Cell]
         var styles: StyleTable
+        /// Row and column formats (cells without a style show them).
+        var rowStyles: [Int: Int] = [:]
+        var columnStyles: [Int: Int] = [:]
         /// Only these addresses can match (the previous query's matches,
         /// when this query contains it); nil searches every cell.
         var candidates: [CellAddress]?
@@ -1285,7 +1300,8 @@ public final class SpreadsheetDocument: ObservableObject {
             candidates = last.matches
         }
         return FindInput(sheetID: sheet.id, revision: revision, query: query, cells: sheet.cells,
-                         styles: workbook.styles, candidates: candidates)
+                         styles: workbook.styles, rowStyles: sheet.rowStyles, columnStyles: sheet.columnStyles,
+                         candidates: candidates)
     }
 
     /// The matches for `input`, row-major; nil if the task was cancelled.
@@ -1295,7 +1311,9 @@ public final class SpreadsheetDocument: ObservableObject {
         func check(_ address: CellAddress, _ cell: Cell) -> Bool {
             checked += 1
             if checked % 4096 == 0, Task.isCancelled { return false }
-            if cellMatchesFind(cell, query: input.query, styles: input.styles) { results.append(address) }
+            let style = cell.styleIndex != 0 ? cell.styleIndex
+                : input.rowStyles[address.row] ?? input.columnStyles[address.column] ?? 0
+            if cellMatchesFind(cell, styleIndex: style, query: input.query, styles: input.styles) { results.append(address) }
             return true
         }
         if let candidates = input.candidates {
@@ -1337,8 +1355,9 @@ public final class SpreadsheetDocument: ObservableObject {
         selectCurrentMatch()
     }
 
-    nonisolated private static func cellMatchesFind(_ cell: Cell, query: String, styles: StyleTable) -> Bool {
-        let format = styles[cell.styleIndex].numberFormat
+    nonisolated private static func cellMatchesFind(_ cell: Cell, styleIndex: Int, query: String,
+                                                    styles: StyleTable) -> Bool {
+        let format = styles[styleIndex].numberFormat
         if NumberFormatEngine.displayString(for: cell.value, format: format)
             .lowercased().contains(query) {
             return true

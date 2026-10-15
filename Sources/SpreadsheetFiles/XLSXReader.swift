@@ -124,6 +124,7 @@ public enum XLSXReader {
                                            progress: sheetProgress, fastSheetData: fastSheetData)
             sheetFindings[sheet.id, default: []].formUnion(found)
             carriedSheets[sheet.id] = carriedSheet(partData)
+            settleInheritedStyles(sheet, in: workbook)
             sheetParts.append(SheetPart(sheetID: sheet.id, sheetIndex: sheetIndex, path: rel.target))
         }
 
@@ -173,7 +174,7 @@ public enum XLSXReader {
             for sheet in workbook.sheets {
                 for (addr, cell) in sheet.cells {
                     guard case .number(let n) = cell.value else { continue }
-                    let style = workbook.style(at: cell.styleIndex)
+                    let style = workbook.style(at: sheet.styleIndex(at: addr))
                     if style.numberFormat.isDateTime {
                         var updated = cell
                         updated.value = .number(n + ExcelDate.date1904Offset)
@@ -183,6 +184,25 @@ public enum XLSXReader {
             }
         }
         return workbook
+    }
+
+    /// With row and column formats known (`<cols>` comes after the cells
+    /// for the byte scanner), store each cell's style relative to them: a
+    /// cell styled as it would inherit stores 0, so a later format of the
+    /// whole column doesn't have to touch it; a cell with no style (xf 0)
+    /// under a formatted row or column stays plain.
+    static func settleInheritedStyles(_ sheet: Sheet, in workbook: Workbook) {
+        guard sheet.hasRowOrColumnStyles else { return }
+        var changes: [(CellAddress, Int)] = []
+        for (address, cell) in sheet.cells {
+            let stored = workbook.storableStyleIndex(cell.styleIndex, at: address, in: sheet)
+            if stored != cell.styleIndex { changes.append((address, stored)) }
+        }
+        for (address, index) in changes {
+            var cell = sheet.cell(at: address)
+            cell.styleIndex = index
+            sheet.setCell(cell, at: address)
+        }
     }
 
     /// The model's defined names: sheet scopes by sheet id, formulas
@@ -661,7 +681,6 @@ public enum XLSXReader {
                 rest = data.subdata(in: 0..<span.outer.lowerBound)
                 rest.append(data.subdata(in: span.outer.upperBound..<data.count))
                 cellsRead = true
-                if scanner.builder.sawRowFormatting { found.insert(.rowFormatting) }
                 if scanner.builder.sawOutline { found.insert(.outlines) }
             } catch XLSXError.invalidXML {
                 sheet.removeAllCells()
@@ -892,13 +911,28 @@ public enum XLSXReader {
                 case "t":
                     if inIS { inIST = true }
                 case "col":
+                    if let minCol = Int(attributes["min"] ?? ""), let maxCol = Int(attributes["max"] ?? "") {
+                        let first = max(1, minCol), last = min(maxCol, CellAddress.maxColumns)
+                        let hidden = boolAttr(attributes["hidden"], default: false)
+                        let style = Int(attributes["style"] ?? "").flatMap { styleIndexMap[$0] } ?? 0
+                        if first <= last, hidden || style != 0 {
+                            for col in first...last {
+                                if hidden { sheet.hiddenColumns.insert(col - 1) }
+                                if style != 0 { sheet.columnStyles[col - 1] = style }
+                            }
+                        }
+                    }
+                    // A width the writer puts on a column only for its format
+                    // or hidden flag (Excel wants one on every <col>) isn't one.
+                    let defaultWidth = (Double(sheet.defaultColumnWidth) / 0.75 - 5) / 7
                     if let minCol = Int(attributes["min"] ?? ""), let maxCol = Int(attributes["max"] ?? ""),
-                       let width = Double(attributes["width"] ?? ""), width.isFinite, width >= 0 {
+                       let width = Double(attributes["width"] ?? ""), width.isFinite, width >= 0,
+                       boolAttr(attributes["customWidth"], default: false) || abs(width - defaultWidth) > 0.001 {
                         // width chars -> px -> points (Excel's limit is 255 characters)
                         let px = min(width, 255) * 7 + 5
                         let points = CGFloat(px * 0.75)
                         let first = min(max(1, minCol), CellAddress.maxColumns + 1)
-                        let last = min(maxCol, first + 4096, CellAddress.maxColumns)
+                        let last = min(maxCol, CellAddress.maxColumns)
                         if first <= last {
                             for col in first...last {
                                 sheet.columnWidths[col - 1] = points
@@ -956,10 +990,6 @@ public enum XLSXReader {
                     case ("sheetPr", "pageSetUpPr"):
                         if boolAttr(attributes["fitToPage"], default: false) { found.insert(.printSettings) }
                     case ("cols", "col"):
-                        if boolAttr(attributes["hidden"], default: false) { found.insert(.hiddenColumns) }
-                        if let style = Int(attributes["style"] ?? ""), (styleIndexMap[style] ?? 0) != 0 {
-                            found.insert(.columnFormatting)
-                        }
                         if let level = Int(attributes["outlineLevel"] ?? ""), level > 0 { found.insert(.outlines) }
                     default: break
                     }
@@ -1048,7 +1078,6 @@ public enum XLSXReader {
             throw error
         }
         var found = delegate.found
-        if delegate.cells.sawRowFormatting { found.insert(.rowFormatting) }
         if delegate.cells.sawOutline { found.insert(.outlines) }
 
         guard var filter = delegate.autoFilter else { return found }

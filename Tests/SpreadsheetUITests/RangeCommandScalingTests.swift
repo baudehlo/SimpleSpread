@@ -59,14 +59,15 @@ struct RangeCommandScalingTests {
         let cellCount = doc.activeSheet.cells.count
         doc.selection.select(range: wholeColumns(doc, 0...3))
         doc.toggleItalic()
-        // Blank cells past the data are left alone: the sheet keeps its size.
+        // The columns take the format: no cell is added, blanks show it.
         #expect(doc.activeSheet.usedRange == used)
-        #expect(doc.style(at: a("B60000")).italic)
-        // A blank among the data is formatted, as Excel would.
-        #expect(doc.style(at: a("A5")).italic)
-        #expect(doc.activeSheet.cells.count == cellCount + 1)
-        doc.undoManager.undo()
         #expect(doc.activeSheet.cells.count == cellCount)
+        #expect(doc.activeSheet.columnStyles.count == 4)
+        #expect(doc.style(at: a("B60000")).italic)
+        #expect(doc.style(at: a("A5")).italic)
+        #expect(doc.style(at: a("D900000")).italic)
+        doc.undoManager.undo()
+        #expect(doc.activeSheet.columnStyles.isEmpty)
         #expect(!doc.style(at: a("B1")).italic)
     }
 

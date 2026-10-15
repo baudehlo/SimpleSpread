@@ -138,12 +138,14 @@ public struct GridLayout {
         var rowSizes = sheet.rowHeights.filter { $0.key >= 0 && !sheet.hiddenRows.contains($0.key) }
         for row in sheet.hiddenRows where row >= 0 { rowSizes[row] = 0 }
         rows = AxisSizes(defaultSize: sheet.defaultRowHeight, sizes: rowSizes)
-        columns = AxisSizes(defaultSize: sheet.defaultColumnWidth,
-                            sizes: sheet.columnWidths.filter { $0.key >= 0 })
+        var columnSizes = sheet.columnWidths.filter { $0.key >= 0 && !sheet.hiddenColumns.contains($0.key) }
+        for column in sheet.hiddenColumns where column >= 0 { columnSizes[column] = 0 }
+        columns = AxisSizes(defaultSize: sheet.defaultColumnWidth, sizes: columnSizes)
     }
 
+    /// Hidden columns take no space.
     public func columnWidth(_ column: Int) -> CGFloat {
-        sheet.columnWidth(column)
+        sheet.hiddenColumns.contains(column) ? 0 : sheet.columnWidth(column)
     }
 
     /// Hidden rows (by hand or by the AutoFilter) take no space.

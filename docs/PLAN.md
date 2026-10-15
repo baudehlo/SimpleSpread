@@ -143,6 +143,23 @@ Core. UI depends on both. Tests mirror the split (312 tests).
 - `CellStyle` is a value type deduplicated through `StyleTable` (index 0 =
   default) — mirrors XLSX `cellXfs`, and cell `s=` attributes are written
   straight from style indices.
+- Rows and columns have formats of their own (`Sheet.rowStyles`,
+  `columnStyles`; XLSX `row@s` with `customFormat`, `col@style`), and
+  columns can be hidden (`hiddenColumns`). A cell with no style of its own
+  (index 0, stored or not) shows its row's format, else its column's, as in
+  Excel (`Sheet.styleIndex(at:)`); everything that shows, copies or saves
+  a style uses that. In the file a cell without `s` is plain, so the writer
+  writes what each cell shows, and the reader stores a cell styled as it
+  would inherit as 0; a plain cell under a formatted row or column gets
+  `StyleTable.plainIndex()` (the default under another index;
+  `Workbook.storableStyleIndex` applies both rules). Formatting a selection
+  of whole columns or rows sets their format, restyles only the cells with
+  a style of their own (and the crossings of formatted rows and columns,
+  which take both), and undoes from the old row and column formats plus
+  those cells: Bold over 1,048,576 × 10 numbers takes 0.3 s (debug), not 7.
+  Formats that depend on a cell's place in the selection (borders) still go
+  cell by cell. Inserted rows and columns don't copy their neighbour's
+  format yet, and outline levels (grouping) aren't kept.
 - `Sheet` has a stable integer `id` that survives rename/reorder; formulas
   reference sheets by *name*, and rename rewrites formula text (Sheets
   behavior).
@@ -276,8 +293,7 @@ a dangling link. Not carried, and still reported: chart sheets (they open as
 empty sheets; their chart is carried on them), macros, slicers and
 timelines, data connections, query tables and the Data Model, linked data
 types, change history, signatures, add-ins, Strict-namespace sheets, plus
-what the model rewrites itself (hidden columns, column and row formatting,
-outlines, rich text).
+what the model rewrites itself (outlines, rich text).
 
 Edits keep carried content lined up with the cells. Every row and column
 insert or delete (the same `StructuralChange` that moves cells), sheet

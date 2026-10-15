@@ -185,7 +185,7 @@ extension Workbook {
     /// The text a cell shows, which value filters match against.
     public func displayText(of sheet: Sheet, at address: CellAddress) -> String {
         let cell = sheet.cell(at: address)
-        return NumberFormatEngine.displayString(for: cell.value, format: style(at: cell.styleIndex).numberFormat)
+        return NumberFormatEngine.displayString(for: cell.value, format: style(at: sheet.styleIndex(at: address)).numberFormat)
     }
 
     /// Re-run a sheet's AutoFilter: extend it over rows added directly below
