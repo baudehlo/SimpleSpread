@@ -8,8 +8,8 @@ import SpreadsheetFiles
 //   swift run -c release spreadsheet-bench --edits
 // or times saving a full synthetic sheet (snapshot, write, progress):
 //   swift run -c release spreadsheet-bench --save-full-sheet
-// or times a row insert with its undo and redo, as the document does them
-// (in-memory snapshots), against the XLSX round-trip undo used before:
+// or times a row insert with its undo and redo, as the document does them,
+// against the full engine rebuild they used to need:
 //   swift run -c release spreadsheet-bench --undo
 // Not part of the app; for measuring big-file performance.
 
@@ -199,8 +199,10 @@ if CommandLine.arguments.contains("--save-full-sheet") {
 }
 
 /// Insert a row, undo, redo on a 1,048,576 x 10 sheet of values and on
-/// 1,048,576 formulas, the way SpreadsheetDocument does it (WorkbookSnapshot
-/// plus rebuildAll), and the XLSX snapshot undo it replaced.
+/// 1,048,575 formulas, the way SpreadsheetDocument does them
+/// (WorkbookOperations.apply, StructuralEditResult.undo and
+/// CalculationEngine.apply), near the top (every formula moves) and near
+/// the bottom; and the full rebuild (rebuildAll) the engine used to do.
 func runUndoBenchmarks() throws {
     func valuesWorkbook() -> Workbook {
         let wb = Workbook.newDocument()
@@ -224,31 +226,19 @@ func runUndoBenchmarks() throws {
         let wb = make()
         let engine = CalculationEngine(workbook: wb)
         let id = wb.sheets[0].id
-        // In memory: what SpreadsheetDocument.insertRows and undo/redo do.
-        let before = time("\(name): snapshot + insert row") { () -> WorkbookSnapshot in
-            let before = WorkbookSnapshot(of: wb)
-            WorkbookOperations.insertRows(in: wb, sheetID: id, at: 5, count: 1)
-            engine.rebuildAll()
-            before.releaseUnchangedCells(comparedTo: wb)
-            return before
+        for (place, row) in [("row 5", 4), ("row 1,000,000", 999_999)] {
+            let change = StructuralChange(sheetID: id, axisIsRow: true, index: row, count: 1)
+            let edit = time("\(name): insert at \(place)") { () -> StructuralEditResult in
+                let edit = WorkbookOperations.apply(change, to: wb)!
+                engine.apply(edit)
+                return edit
+            }
+            time("\(name): undo") { engine.apply(edit.undo(in: wb)!) }
+            time("\(name): redo") { engine.apply(WorkbookOperations.apply(change, to: wb)!) }
+            time("\(name): delete it again") { engine.apply(WorkbookOperations.apply(change.inverse, to: wb)!) }
         }
-        let after = time("\(name): undo") { () -> WorkbookSnapshot in
-            let after = WorkbookSnapshot(of: wb)
-            before.restore(into: wb)
-            engine.rebuildAll()
-            after.releaseUnchangedCells(comparedTo: wb)
-            return after
-        }
-        time("\(name): redo") {
-            after.restore(into: wb)
-            engine.rebuildAll()
-        }
-        // The XLSX snapshot undo this replaced: write before, read + rebuild + write on undo.
-        let data = try time("\(name): XLSX undo: snapshot (write)") { try XLSXWriter.data(for: wb) }
-        print("\(name): XLSX snapshot is \(data.count / 1_048_576) MB")
-        try time("\(name): XLSX undo: undo (read, rebuild, write)") {
-            _ = try XLSXWriter.data(for: wb)
-            wb.replaceContents(with: try XLSXReader.read(data: data))
+        time("\(name): before: insert at row 5 + rebuildAll") {
+            WorkbookOperations.insertRows(in: wb, sheetID: id, at: 4, count: 1)
             engine.rebuildAll()
         }
     }

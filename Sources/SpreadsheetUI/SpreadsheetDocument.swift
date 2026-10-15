@@ -670,16 +670,16 @@ public final class SpreadsheetDocument: ObservableObject {
     public func insertRows(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: count) else { return }
-        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: true, index: index,
-                                             count: count, isInsert: true))
+        performStructuralEdit(StructuralChange(sheetID: activeSheetID, axisIsRow: true, index: index,
+                                               count: count))
         markChanged()
     }
 
     public func deleteRows(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: -count) else { return }
-        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: true, index: index,
-                                             count: count, isInsert: false))
+        performStructuralEdit(StructuralChange(sheetID: activeSheetID, axisIsRow: true, index: index,
+                                               count: -count))
         selection.select(CellAddress(row: min(index, max(0, GridLayout(sheet: activeSheet).rowCount - 1)),
                                      column: selection.activeCell.column))
         markChanged()
@@ -688,16 +688,16 @@ public final class SpreadsheetDocument: ObservableObject {
     public func insertColumns(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: count) else { return }
-        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: false, index: index,
-                                             count: count, isInsert: true))
+        performStructuralEdit(StructuralChange(sheetID: activeSheetID, axisIsRow: false, index: index,
+                                               count: count))
         markChanged()
     }
 
     public func deleteColumns(at index: Int, count: Int = 1) {
         commitPendingEdit()
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: -count) else { return }
-        performStructuralEdit(StructuralEdit(sheetID: activeSheetID, axisIsRow: false, index: index,
-                                             count: count, isInsert: false))
+        performStructuralEdit(StructuralChange(sheetID: activeSheetID, axisIsRow: false, index: index,
+                                               count: -count))
         selection.select(CellAddress(row: selection.activeCell.row, column: index))
         markChanged()
     }

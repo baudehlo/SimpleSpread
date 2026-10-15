@@ -12,24 +12,24 @@ import Foundation
 /// each of its columns; wider ones (whole rows, big blocks) share one bucket
 /// and are filtered by column after the row lookup. Each bucket answers row
 /// lookups with an interval tree, rebuilt lazily after its ranges change.
-struct RangeDependencyIndex {
-    struct Entry {
+struct RangeDependencyIndex: Sendable {
+    struct Entry: Sendable {
         let sheetID: Int
         let range: CellRange
         var dependents: Set<AbsoluteAddress>
     }
 
-    private struct Key: Hashable {
+    private struct Key: Hashable, Sendable {
         let sheetID: Int
         let range: CellRange
     }
 
-    private struct Bucket {
+    private struct Bucket: Sendable {
         var members: Set<Int> = []
         var tree: IntervalTree?
     }
 
-    private struct SheetIndex {
+    private struct SheetIndex: Sendable {
         var columns: [Int: Bucket] = [:]
         var wide = Bucket()
     }
@@ -144,14 +144,14 @@ struct RangeDependencyIndex {
 /// A static centred interval tree: built once from closed intervals, then
 /// answers "which intervals contain x?" in O(log n + k). Depth is O(log n), so
 /// the recursive build can't run deep.
-struct IntervalTree {
-    struct Interval {
+struct IntervalTree: Sendable {
+    struct Interval: Sendable {
         let low: Int
         let high: Int
         let id: Int
     }
 
-    private struct Node {
+    private struct Node: Sendable {
         let center: Int
         /// Intervals containing `center`, by ascending `low` ...
         let byLow: [Interval]

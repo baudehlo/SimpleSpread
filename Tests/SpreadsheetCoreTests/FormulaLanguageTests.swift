@@ -137,6 +137,11 @@ struct FormulaTextRewriterTests {
         #expect(insertRow("[1]Sheet1!A1+A1") == "[1]Sheet1!A1+A2")  // another workbook: untouched
         #expect(insertRow("Other!A1+A1") == "Other!A1+A2")          // another sheet: untouched
         #expect(insertRow("LOG10(A1)+ISO.CEILING(A1)") == "LOG10(A2)+ISO.CEILING(A2)")
+        // Column letters are A-Z only: an accented letter makes a name.
+        #expect(insertRow("\u{E9}A1+A1") == "\u{E9}A1+A2")
+        #expect(insertRow("e\u{301}A1+A1") == "e\u{301}A1+A2")
+        #expect(insertRow("Gr\u{F6}\u{DF}e+'Donn\u{E9}es'!A1+Donn\u{E9}es!B1", at: 0)
+            == "Gr\u{F6}\u{DF}e+'Donn\u{E9}es'!A1+Donn\u{E9}es!B1")
     }
 
     @Test func deletedReferencesBecomeRefErrors() {

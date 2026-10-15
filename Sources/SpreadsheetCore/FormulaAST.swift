@@ -174,6 +174,13 @@ public struct ReferenceExpr: Hashable, Sendable {
         return ref
     }
 
+    /// True when both ends are inside the sheet's grid.
+    public var isOnGrid: Bool {
+        [start, end ?? start].allSatisfy {
+            ($0.row ?? 0) < CellAddress.maxRows && ($0.column ?? 0) < CellAddress.maxColumns
+        }
+    }
+
     public var isWholeColumn: Bool { start.row == nil }
     public var isWholeRow: Bool { start.column == nil }
 }
@@ -260,14 +267,9 @@ public indirect enum FormulaExpr: Hashable, Sendable {
 
     /// All references in the expression.
     public var references: [ReferenceExpr] {
-        switch self {
-        case .reference(let r): return [r]
-        case .unary(_, let e), .percent(let e), .paren(let e): return e.references
-        case .binary(_, let l, let r): return l.references + r.references
-        case .function(_, let args): return args.flatMap(\.references)
-        case .definedName(_, let e): return e.references
-        default: return []
-        }
+        var refs: [ReferenceExpr] = []
+        forEachReference { refs.append($0) }
+        return refs
     }
 
     /// Rewrite every reference via `transform`; returning nil turns that
@@ -328,6 +330,49 @@ public indirect enum FormulaExpr: Hashable, Sendable {
                 ref.sheetName = newName
             }
             return ref
+        }
+    }
+
+    /// Call `body` with every reference, including those inside expanded
+    /// defined names.
+    public func forEachReference(_ body: (ReferenceExpr) -> Void) {
+        switch self {
+        case .reference(let r): body(r)
+        case .unary(_, let e), .percent(let e), .paren(let e), .definedName(_, let e): e.forEachReference(body)
+        case .binary(_, let l, let r):
+            l.forEachReference(body)
+            r.forEachReference(body)
+        case .function(_, let args):
+            for arg in args { arg.forEachReference(body) }
+        default:
+            break
+        }
+    }
+
+    /// True if the expression contains a name: a defined name expanded, or
+    /// one nothing defines (yet).
+    public var usesNames: Bool {
+        switch self {
+        case .definedName, .unknownName: return true
+        case .unary(_, let e), .percent(let e), .paren(let e): return e.usesNames
+        case .binary(_, let l, let r): return l.usesNames || r.usesNames
+        case .function(_, let args): return args.contains { $0.usesNames }
+        default: return false
+        }
+    }
+
+    /// True if the expression calls one of `names` (upper-case, as the
+    /// parser writes function names).
+    public func calls(anyOf names: Set<String>) -> Bool {
+        switch self {
+        case .function(let name, let args):
+            return names.contains(name) || args.contains { $0.calls(anyOf: names) }
+        case .unary(_, let e), .percent(let e), .paren(let e), .definedName(_, let e):
+            return e.calls(anyOf: names)
+        case .binary(_, let l, let r):
+            return l.calls(anyOf: names) || r.calls(anyOf: names)
+        default:
+            return false
         }
     }
 
