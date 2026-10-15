@@ -46,7 +46,10 @@ final class SimpleSpreadUITests: XCTestCase {
 
     func testCreateTypeCloseAndReopen() throws {
         app.launch()
-        let create = app.buttons["New Spreadsheet"].firstMatch
+        // The browser's create button: our title, or the system's default
+        // where the browser service hasn't taken ours yet (slow CI).
+        let create = app.buttons.matching(NSPredicate(
+            format: "identifier CONTAINS 'CreateButton' OR label IN {'New Spreadsheet', 'Create Document'}")).firstMatch
         XCTAssertTrue(create.waitForExistence(timeout: 60), app.debugDescription)
         create.tap()
 
