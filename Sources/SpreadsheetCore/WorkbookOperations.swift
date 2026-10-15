@@ -1,63 +1,69 @@
 import Foundation
 
 /// Structural edits (insert/delete rows/columns, sheet ops) with formula
-/// rewriting across the whole workbook. Callers should run
-/// `CalculationEngine.rebuildAll()` afterwards.
+/// rewriting across the whole workbook. After a row or column edit, pass
+/// its result to `CalculationEngine.apply(_:)`; after a sheet operation,
+/// run `CalculationEngine.rebuildAll()`.
 public enum WorkbookOperations {
     // MARK: Rows & columns
 
-    public static func insertRows(in workbook: Workbook, sheetID: Int, at index: Int, count: Int) {
-        guard count > 0 else { return }
-        shift(workbook: workbook, sheetID: sheetID, axisIsRow: true, index: index, count: count)
+    @discardableResult
+    public static func insertRows(in workbook: Workbook, sheetID: Int, at index: Int, count: Int) -> StructuralEditResult? {
+        guard count > 0 else { return nil }
+        return apply(StructuralChange(sheetID: sheetID, axisIsRow: true, index: index, count: count), to: workbook)
     }
 
-    public static func deleteRows(in workbook: Workbook, sheetID: Int, at index: Int, count: Int) {
-        guard count > 0 else { return }
-        shift(workbook: workbook, sheetID: sheetID, axisIsRow: true, index: index, count: -count)
+    @discardableResult
+    public static func deleteRows(in workbook: Workbook, sheetID: Int, at index: Int, count: Int) -> StructuralEditResult? {
+        guard count > 0 else { return nil }
+        return apply(StructuralChange(sheetID: sheetID, axisIsRow: true, index: index, count: -count), to: workbook)
     }
 
-    public static func insertColumns(in workbook: Workbook, sheetID: Int, at index: Int, count: Int) {
-        guard count > 0 else { return }
-        shift(workbook: workbook, sheetID: sheetID, axisIsRow: false, index: index, count: count)
+    @discardableResult
+    public static func insertColumns(in workbook: Workbook, sheetID: Int, at index: Int, count: Int) -> StructuralEditResult? {
+        guard count > 0 else { return nil }
+        return apply(StructuralChange(sheetID: sheetID, axisIsRow: false, index: index, count: count), to: workbook)
     }
 
-    public static func deleteColumns(in workbook: Workbook, sheetID: Int, at index: Int, count: Int) {
-        guard count > 0 else { return }
-        shift(workbook: workbook, sheetID: sheetID, axisIsRow: false, index: index, count: -count)
+    @discardableResult
+    public static func deleteColumns(in workbook: Workbook, sheetID: Int, at index: Int, count: Int) -> StructuralEditResult? {
+        guard count > 0 else { return nil }
+        return apply(StructuralChange(sheetID: sheetID, axisIsRow: false, index: index, count: -count), to: workbook)
     }
 
-    private static func shift(workbook: Workbook, sheetID: Int, axisIsRow: Bool, index: Int, count: Int) {
-        guard let sheet = workbook.sheet(withID: sheetID) else { return }
+    /// Insert or delete rows or columns: move the cells and everything
+    /// anchored to them, and rewrite every formula and defined name that
+    /// refers to the edited sheet. Nil when the sheet doesn't exist.
+    ///
+    /// Each kind of content the workbook carries takes its step here, moved
+    /// by `change`; the result says what the calculation engine and undo
+    /// need to know.
+    @discardableResult
+    public static func apply(_ change: StructuralChange, to workbook: Workbook) -> StructuralEditResult? {
+        guard change.count != 0, let sheet = workbook.sheet(withID: change.sheetID) else { return nil }
         let editedSheetName = sheet.name
+        let axisIsRow = change.axisIsRow, index = change.index, count = change.count
+        var result = StructuralEditResult(change: change, before: .init(
+            layout: sheet.layoutState, columnWidths: sheet.columnWidths, definedNames: workbook.definedNames,
+            pivotCaches: workbook.pivotCaches, pivotTables: workbook.pivotTables))
 
         // 1. Remap cell storage on the edited sheet.
         var newCells: [CellAddress: Cell] = [:]
         newCells.reserveCapacity(sheet.cells.count)
         for (addr, cell) in sheet.cells {
-            let pos = axisIsRow ? addr.row : addr.column
-            if count < 0 {
-                let delEnd = index - count - 1 // index + |count| - 1
-                if pos >= index && pos <= delEnd { continue } // deleted
-                let newPos = pos > delEnd ? pos + count : pos
-                let newAddr = axisIsRow
-                    ? CellAddress(row: newPos, column: addr.column)
-                    : CellAddress(row: addr.row, column: newPos)
+            if let newAddr = change.address(after: addr) {
                 newCells[newAddr] = cell
             } else {
-                let newPos = pos >= index ? pos + count : pos
-                let newAddr = axisIsRow
-                    ? CellAddress(row: newPos, column: addr.column)
-                    : CellAddress(row: addr.row, column: newPos)
-                newCells[newAddr] = cell
+                result.removedCells[addr] = cell
             }
         }
         sheet.cells = newCells
 
         // 2. Remap sizing metadata.
         if axisIsRow {
-            sheet.rowHeights = remapIndexMap(sheet.rowHeights, index: index, count: count)
+            sheet.rowHeights = remapIndexMap(sheet.rowHeights, change)
         } else {
-            sheet.columnWidths = remapIndexMap(sheet.columnWidths, index: index, count: count)
+            sheet.columnWidths = remapIndexMap(sheet.columnWidths, change)
         }
 
         // 3. Remap merged ranges, hidden rows and the AutoFilter.
@@ -65,29 +71,39 @@ public enum WorkbookOperations {
             remapRange(range, axisIsRow: axisIsRow, index: index, count: count)
         }
         if axisIsRow {
-            sheet.hiddenRows = Set(sheet.hiddenRows.compactMap { remapIndex($0, index: index, count: count) })
+            sheet.hiddenRows = Set(sheet.hiddenRows.compactMap { change.position(after: $0) })
         }
         if let filter = sheet.autoFilter {
             sheet.autoFilter = remapAutoFilter(filter, axisIsRow: axisIsRow, index: index, count: count)
         }
 
-        // 4. Rewrite formulas (and defined names) everywhere.
-        rewriteFormulas(in: workbook) { found, ownSheetName in
+        // 4. Rewrite formulas (and defined names) everywhere. A formula on
+        // another sheet can only refer to this one by name.
+        let mentions: ((String) -> Bool)? = editedSheetName.contains("'") ? nil : {
+            $0.range(of: editedSheetName, options: .caseInsensitive) != nil
+        }
+        let namesBefore = workbook.definedNames
+        // (Defined names are always checked: a name scoped to this sheet
+        // refers to it without naming it.)
+        result.rewrittenFormulas = rewriteFormulas(in: workbook, onlyIf: { sheetID in
+            sheetID == nil || sheetID == change.sheetID ? nil : mentions
+        }) { found, ownSheetName in
             // Excel leaves a 3-D reference alone when only one of its
             // sheets changes shape.
             guard !found.isThreeD,
                   let target = found.ref.sheetName ?? ownSheetName,
                   target.caseInsensitiveCompare(editedSheetName) == .orderedSame else { return found }
-            guard let adjusted = found.ref.adjustedForStructuralChange(
-                axisIsRow: axisIsRow, index: index, count: count) else { return nil }
+            guard let adjusted = change.adjusting(found.ref) else { return nil }
             var result = found
             result.ref = adjusted
             return result
         }
+        result.definedNamesChanged = workbook.definedNames != namesBefore
 
         // 5. Keep preserved pivot tables and their sources in step.
-        shiftPivots(in: workbook, sheetID: sheetID, sheetName: editedSheetName,
+        shiftPivots(in: workbook, sheetID: change.sheetID, sheetName: editedSheetName,
                     axisIsRow: axisIsRow, index: index, count: count)
+        return result
     }
 
     // MARK: Pivot tables
@@ -192,28 +208,17 @@ public enum WorkbookOperations {
         return newRef.text
     }
 
-    private static func remapIndexMap(_ map: [Int: CGFloat], index: Int, count: Int) -> [Int: CGFloat] {
+    private static func remapIndexMap(_ map: [Int: CGFloat], _ change: StructuralChange) -> [Int: CGFloat] {
         var out: [Int: CGFloat] = [:]
         for (pos, size) in map {
-            if count < 0 {
-                let delEnd = index - count - 1
-                if pos >= index && pos <= delEnd { continue }
-                out[pos > delEnd ? pos + count : pos] = size
-            } else {
-                out[pos >= index ? pos + count : pos] = size
-            }
+            if let newPos = change.position(after: pos) { out[newPos] = size }
         }
         return out
     }
 
     /// Where one row/column index lands after the edit; nil when deleted.
     static func remapIndex(_ pos: Int, index: Int, count: Int) -> Int? {
-        if count < 0 {
-            let delEnd = index - count - 1
-            if pos >= index && pos <= delEnd { return nil }
-            return pos > delEnd ? pos + count : pos
-        }
-        return pos >= index ? pos + count : pos
+        StructuralChange(sheetID: 0, axisIsRow: true, index: index, count: count).position(after: pos)
     }
 
     /// The filter moves and resizes with its range (a one-cell range still
@@ -292,7 +297,7 @@ public enum WorkbookOperations {
         let mentions: ((String) -> Bool)? = oldName.contains("'") ? nil : {
             $0.range(of: oldName, options: .caseInsensitive) != nil
         }
-        rewriteFormulas(in: workbook, onlyIf: mentions) { found, _ in
+        rewriteFormulas(in: workbook, onlyIf: { _ in mentions }) { found, _ in
             var result = found
             result.ref.sheetName = renamed(found.ref.sheetName)
             result.lastSheetName = renamed(found.lastSheetName)
@@ -327,7 +332,7 @@ public enum WorkbookOperations {
         let mentions: ((String) -> Bool)? = name.contains("'") ? nil : {
             $0.range(of: name, options: .caseInsensitive) != nil
         }
-        rewriteFormulas(in: workbook, onlyIf: mentions) { found, _ in
+        rewriteFormulas(in: workbook, onlyIf: { _ in mentions }) { found, _ in
             guard let last = found.lastSheetName, let first = found.ref.sheetName else {
                 return isDeleted(found.ref.sheetName) ? nil : found
             }
@@ -363,37 +368,125 @@ public enum WorkbookOperations {
 
     // MARK: Shared
 
-    /// Rewrite the references in every formula and defined name. `transform`
-    /// gets each reference and the name of the sheet the formula is on (nil
-    /// for a workbook-scoped name, whose unqualified references aren't tied
-    /// to a sheet); nil turns the reference into #REF!. Works on tokens, so
-    /// formulas the parser rejects are adjusted too (see FormulaTextRewriter).
-    /// `onlyIf` is a cheap pre-check: text it rejects is left alone.
+    /// Rewrite the references in every formula and defined name, and
+    /// return the text each rewritten formula had before, by where it is.
+    /// `transform` gets each reference and the name of the sheet the
+    /// formula is on (nil for a workbook-scoped name, whose unqualified
+    /// references aren't tied to a sheet); nil turns the reference into
+    /// #REF!. Works on tokens, so formulas the parser rejects are adjusted
+    /// too (see FormulaTextRewriter). `onlyIf` gives, per sheet id (nil for
+    /// the defined names), a cheap pre-check: text it rejects is left alone.
+    @discardableResult
     private static func rewriteFormulas(
         in workbook: Workbook,
-        onlyIf mayAffect: ((String) -> Bool)? = nil,
+        onlyIf mayAffect: (_ sheetID: Int?) -> ((String) -> Bool)? = { _ in nil },
         _ transform: (FormulaTextReference, _ ownSheetName: String?) -> FormulaTextReference?
-    ) {
+    ) -> [AbsoluteAddress: String] {
+        var before: [AbsoluteAddress: String] = [:]
         for sheet in workbook.sheets {
             let ownName = sheet.name
+            let check = mayAffect(sheet.id)
             for (addr, cell) in sheet.cells {
-                guard let formula = cell.formula, mayAffect?(formula) ?? true else { continue }
+                guard let formula = cell.formula, check?(formula) ?? true else { continue }
                 let rewritten = FormulaTextRewriter.rewritingReferences(in: formula) { transform($0, ownName) }
                 if rewritten != formula {
                     var newCell = cell
                     newCell.formula = rewritten
                     sheet.setCell(newCell, at: addr)
+                    before[AbsoluteAddress(sheetID: sheet.id, address: addr)] = formula
                 }
             }
         }
-        guard !workbook.definedNames.isEmpty else { return }
+        guard !workbook.definedNames.isEmpty else { return before }
+        let check = mayAffect(nil)
         var names = workbook.definedNames
-        for i in names.indices where mayAffect?(names[i].formula) ?? true {
+        for i in names.indices where check?(names[i].formula) ?? true {
             let scope = names[i].scopeSheetID.flatMap { workbook.sheet(withID: $0)?.name }
             names[i].formula = FormulaTextRewriter.rewritingReferences(in: names[i].formula) {
                 transform($0, scope)
             }
         }
         if names != workbook.definedNames { workbook.definedNames = names }
+        return before
     }
+}
+
+/// What a row or column insert or delete changed, for the calculation
+/// engine (`CalculationEngine.apply(_:)`) and for undo.
+public struct StructuralEditResult: Sendable {
+    public let change: StructuralChange
+    /// The text before the edit of each formula it rewrote, by sheet id and
+    /// address after the edit.
+    public internal(set) var rewrittenFormulas: [AbsoluteAddress: String] = [:]
+    /// Cells a delete removed, at their addresses before it.
+    public internal(set) var removedCells: [CellAddress: Cell] = [:]
+    /// True when a defined name's formula was rewritten.
+    public internal(set) var definedNamesChanged = false
+    /// The parts outside the cells that the edit adjusted, as they were.
+    /// Shared copy-on-write, so holding them costs nothing until they
+    /// change; anything else anchored to cells that a delete can clip or
+    /// remove belongs here too, so undo can put it back.
+    let before: Before
+
+    struct Before: Sendable {
+        let layout: SheetLayoutState
+        let columnWidths: [Int: CGFloat]
+        let definedNames: [DefinedName]
+        let pivotCaches: [PivotCache]
+        let pivotTables: [PivotTable]
+    }
+
+    init(change: StructuralChange, before: Before) {
+        self.change = change
+        self.before = before
+    }
+
+    /// Undo the edit, which must be the last change to `workbook`: run the
+    /// opposite edit, then put back what it can't work out for itself --
+    /// the cells a delete removed, the exact text of each formula the edit
+    /// rewrote (the opposite edit gets most of them back, but not their
+    /// spelling, nor references a delete turned into #REF!), and the parts
+    /// in `before`. Frozen panes are a view setting and stay as they are,
+    /// as in Excel. Pass the result to `CalculationEngine.apply(_:)`.
+    public func undo(in workbook: Workbook) -> StructuralUndoResult? {
+        guard let sheet = workbook.sheet(withID: change.sheetID),
+              let inverse = WorkbookOperations.apply(change.inverse, to: workbook) else { return nil }
+        var restored = Set<AbsoluteAddress>()
+        for (address, cell) in removedCells {
+            sheet.setCell(cell, at: address)
+            restored.insert(AbsoluteAddress(sheetID: sheet.id, address: address))
+        }
+        for (key, text) in rewrittenFormulas {
+            // Back where it was before the edit.
+            guard let target = workbook.sheet(withID: key.sheetID),
+                  let address = key.sheetID == change.sheetID ? change.address(before: key.address) : key.address
+            else { continue }
+            var cell = target.cell(at: address)
+            guard cell.formula != text else { continue }
+            cell.formula = text
+            target.setCell(cell, at: address)
+            restored.insert(AbsoluteAddress(sheetID: key.sheetID, address: address))
+        }
+        var layout = before.layout
+        layout.frozenRows = sheet.frozenRows
+        layout.frozenColumns = sheet.frozenColumns
+        sheet.layoutState = layout
+        sheet.columnWidths = before.columnWidths
+        let namesChanged = workbook.definedNames != before.definedNames
+        if namesChanged { workbook.definedNames = before.definedNames }
+        workbook.pivotCaches = before.pivotCaches
+        workbook.pivotTables = before.pivotTables
+        return StructuralUndoResult(inverse: inverse, restoredCells: restored, definedNamesChanged: namesChanged)
+    }
+}
+
+/// What undoing a row or column edit changed (`StructuralEditResult.undo`),
+/// for `CalculationEngine.apply(_:)`.
+public struct StructuralUndoResult: Sendable {
+    /// The opposite edit.
+    public let inverse: StructuralEditResult
+    /// Cells put back by hand after it: removed cells and formula texts.
+    public let restoredCells: Set<AbsoluteAddress>
+    /// True when the defined names were put back.
+    public let definedNamesChanged: Bool
 }

@@ -28,47 +28,52 @@ public struct FormulaTextReference: Equatable, Sendable {
 public enum FormulaTextRewriter {
     /// `text` with each reference replaced by `transform`'s result: the same
     /// reference keeps its original text, nil becomes `#REF!`. References
-    /// into other workbooks (`[1]Sheet1!A1`) are left alone.
+    /// into other workbooks (`[1]Sheet1!A1`) are left alone. Text with no
+    /// reference to change is returned as is, without a copy.
     public static func rewritingReferences(
         in text: String, _ transform: (FormulaTextReference) -> FormulaTextReference?
     ) -> String {
-        let chars = Array(text)
-        let lexemes = lex(chars)
-        var out = ""
-        out.reserveCapacity(chars.count + 8)
-        var i = 0
-        func emit(_ range: Range<Int>) { out.append(contentsOf: String(chars[range])) }
-
-        while i < lexemes.count {
-            guard let match = matchReference(lexemes, at: i) else {
-                emit(lexemes[i].range)
-                i += 1
-                continue
+        var text = text
+        // Native strings are contiguous already; this copies only bridged ones.
+        return text.withUTF8 { bytes in
+            let lexemes = lex(bytes)
+            var out: [UInt8] = []
+            var copied = 0 // bytes of `text` already in `out`
+            func replace(_ span: Range<Int>, with replacement: String) {
+                if out.isEmpty { out.reserveCapacity(bytes.count + 8) }
+                out.append(contentsOf: bytes[copied..<span.lowerBound])
+                out.append(contentsOf: replacement.utf8)
+                copied = span.upperBound
             }
-            let span = lexemes[i].range.lowerBound..<lexemes[match.end - 1].range.upperBound
-            defer { i = match.end }
-            guard !match.external, let found = match.reference else {
-                emit(span)
-                continue
+            var i = 0
+            while i < lexemes.count {
+                guard let match = matchReference(lexemes, bytes, at: i) else {
+                    i += 1
+                    continue
+                }
+                let span = lexemes[i].range.lowerBound..<lexemes[match.end - 1].range.upperBound
+                i = match.end
+                guard !match.external, let found = match.reference else { continue }
+                guard let replaced = transform(found) else {
+                    replace(span, with: CellError.ref.rawValue)
+                    continue
+                }
+                if replaced == found { continue }
+                // The sheet prefix keeps its original spelling unless it changed.
+                var replacement = ""
+                if replaced.ref.sheetName == found.ref.sheetName && replaced.lastSheetName == found.lastSheetName {
+                    if let prefix = match.prefix { replacement = string(bytes, prefix) }
+                } else if let first = replaced.ref.sheetName {
+                    replacement = sheetPrefix(first, last: replaced.lastSheetName)
+                }
+                replacement += replaced.ref.start.a1
+                if let end = replaced.ref.end { replacement += ":" + end.a1 }
+                replace(span, with: replacement)
             }
-            guard let replaced = transform(found) else {
-                out += CellError.ref.rawValue
-                continue
-            }
-            if replaced == found {
-                emit(span)
-                continue
-            }
-            // The sheet prefix keeps its original spelling unless it changed.
-            if replaced.ref.sheetName == found.ref.sheetName && replaced.lastSheetName == found.lastSheetName {
-                if let prefix = match.prefix { emit(prefix) }
-            } else if let first = replaced.ref.sheetName {
-                out += sheetPrefix(first, last: replaced.lastSheetName)
-            }
-            out += replaced.ref.start.a1
-            if let end = replaced.ref.end { out += ":" + end.a1 }
-        }
-        return out
+            guard copied > 0 else { return nil }
+            out.append(contentsOf: bytes[copied...])
+            return String(decoding: out, as: UTF8.self)
+        } ?? text
     }
 
     /// Every reference in `text` (for tests and diagnostics).
@@ -90,19 +95,26 @@ public enum FormulaTextRewriter {
         return first + ":" + last + "!"
     }
 
+    static func string(_ bytes: UnsafeBufferPointer<UInt8>, _ range: Range<Int>) -> String {
+        String(decoding: UnsafeBufferPointer(rebasing: bytes[range]), as: UTF8.self)
+    }
+
     // MARK: Tokens
 
+    /// Tokens work on the text's UTF-8 bytes: every character with a meaning
+    /// in a formula is ASCII, and a multi-byte character can't contain an
+    /// ASCII byte. Ranges are byte offsets.
     enum Kind: Equatable {
         case space
         case string
-        /// 'Sheet name' (unescaped).
-        case quoted(String)
+        /// 'Sheet name'; its range includes the quotes (see `quotedName`).
+        case quoted
         /// `[...]`: a table reference's column part, or a workbook index.
         case bracket
         case error
-        case number(String)
-        case name(String)
-        case punct(Character)
+        case number
+        case name
+        case punct(UInt8)
     }
 
     struct Lexeme {
@@ -110,97 +122,160 @@ public enum FormulaTextRewriter {
         let range: Range<Int>
     }
 
+    /// Where a lexer step stands: a byte offset into the text.
+    private struct Cursor {
+        let bytes: UnsafeBufferPointer<UInt8>
+        var i = 0
+
+        var atEnd: Bool { i >= bytes.count }
+        func byte(at k: Int) -> UInt8? { k < bytes.count ? bytes[k] : nil }
+
+        /// Length of the whitespace character at `k`, or 0.
+        func spaceLength(at k: Int) -> Int {
+            guard let b = byte(at: k) else { return 0 }
+            switch b {
+            case 0x20, 0x09, 0x0A, 0x0D: return 1
+            case 0xC2 where byte(at: k + 1) == 0xA0: return 2 // no-break space
+            default: return 0
+            }
+        }
+
+        /// The Unicode scalar starting at `k` and its length in bytes.
+        func scalar(at k: Int) -> (Unicode.Scalar, Int)? {
+            var iterator = bytes[k...].makeIterator()
+            var decoder = UTF8()
+            guard case .scalarValue(let scalar) = decoder.decode(&iterator) else { return nil }
+            return (scalar, UTF8.width(scalar))
+        }
+
+        /// Length of the character at `k` when it can be part of a name
+        /// (letters, digits, `_ $ . \`, and letters beyond ASCII with their
+        /// combining marks), or 0.
+        func nameCharacterLength(at k: Int, first: Bool) -> Int {
+            guard let b = byte(at: k) else { return 0 }
+            if b < 0x80 {
+                switch b {
+                case UInt8(ascii: "A")...UInt8(ascii: "Z"), UInt8(ascii: "a")...UInt8(ascii: "z"),
+                     UInt8(ascii: "_"), UInt8(ascii: "$"), UInt8(ascii: "\\"):
+                    return 1
+                case UInt8(ascii: "0")...UInt8(ascii: "9"), UInt8(ascii: "."):
+                    return first ? 0 : 1
+                default:
+                    return 0
+                }
+            }
+            guard let (scalar, length) = scalar(at: k) else { return 0 }
+            let properties = scalar.properties
+            if properties.isAlphabetic { return length }
+            if !first {
+                switch properties.generalCategory {
+                case .nonspacingMark, .spacingMark, .enclosingMark:
+                    return length
+                default:
+                    if properties.numericType != nil { return length }
+                }
+            }
+            return 0
+        }
+    }
+
     /// Tokenize without ever failing: anything unexpected is a one-character
     /// punctuation token, and an unterminated string runs to the end.
-    static func lex(_ chars: [Character]) -> [Lexeme] {
+    static func lex(_ bytes: UnsafeBufferPointer<UInt8>) -> [Lexeme] {
         var out: [Lexeme] = []
-        var i = 0
-        let n = chars.count
-        while i < n {
-            let start = i
-            let c = chars[i]
-            switch c {
-            case " ", "\t", "\n", "\r", "\u{00A0}":
-                while i < n, [" ", "\t", "\n", "\r", "\u{00A0}"].contains(chars[i]) { i += 1 }
-                out.append(Lexeme(kind: .space, range: start..<i))
-            case "\"":
-                i += 1
-                while i < n {
-                    if chars[i] == "\"" {
-                        if i + 1 < n, chars[i + 1] == "\"" { i += 2; continue }
-                        i += 1
+        var c = Cursor(bytes: bytes)
+        let n = bytes.count
+        /// Length of the digit at `k` (any script's, as Character.isNumber), or 0.
+        func digitLength(at k: Int) -> Int {
+            guard let b = c.byte(at: k) else { return 0 }
+            if b < 0x80 { return b >= UInt8(ascii: "0") && b <= UInt8(ascii: "9") ? 1 : 0 }
+            guard let (scalar, length) = c.scalar(at: k), scalar.properties.numericType != nil else { return 0 }
+            return length
+        }
+        func isDigit(_ k: Int) -> Bool { digitLength(at: k) > 0 }
+        while !c.atEnd {
+            let start = c.i
+            let b = bytes[c.i]
+            if c.spaceLength(at: c.i) > 0 {
+                while case let length = c.spaceLength(at: c.i), length > 0 { c.i += length }
+                out.append(Lexeme(kind: .space, range: start..<c.i))
+                continue
+            }
+            switch b {
+            case UInt8(ascii: "\""), UInt8(ascii: "'"):
+                // A string, or a quoted sheet name; a doubled quote is one.
+                c.i += 1
+                while c.i < n {
+                    if bytes[c.i] == b {
+                        if c.byte(at: c.i + 1) == b { c.i += 2; continue }
+                        c.i += 1
                         break
                     }
-                    i += 1
+                    c.i += 1
                 }
-                out.append(Lexeme(kind: .string, range: start..<i))
-            case "'":
-                var name = ""
-                i += 1
-                while i < n {
-                    if chars[i] == "'" {
-                        if i + 1 < n, chars[i + 1] == "'" { name.append("'"); i += 2; continue }
-                        i += 1
-                        break
-                    }
-                    name.append(chars[i])
-                    i += 1
-                }
-                out.append(Lexeme(kind: .quoted(name), range: start..<i))
-            case "[":
+                out.append(Lexeme(kind: b == UInt8(ascii: "'") ? .quoted : .string, range: start..<c.i))
+            case UInt8(ascii: "["):
                 var depth = 0
-                while i < n {
-                    let d = chars[i]
-                    if d == "'" { i += 2; continue } // escaped character in a column name
-                    if d == "[" { depth += 1 }
-                    if d == "]" {
+                while c.i < n {
+                    let d = bytes[c.i]
+                    if d == UInt8(ascii: "'") { c.i += 2; continue } // escaped character in a column name
+                    if d == UInt8(ascii: "[") { depth += 1 }
+                    if d == UInt8(ascii: "]") {
                         depth -= 1
-                        if depth == 0 { i += 1; break }
+                        if depth == 0 { c.i += 1; break }
                     }
-                    i += 1
+                    c.i += 1
                 }
-                i = min(i, n)
-                out.append(Lexeme(kind: .bracket, range: start..<i))
-            case "#":
+                c.i = min(c.i, n)
+                out.append(Lexeme(kind: .bracket, range: start..<c.i))
+            case UInt8(ascii: "#"):
                 var matched = 0
                 for err in CellError.allCases {
-                    let raw = Array(err.rawValue)
-                    if raw.count > matched, raw.count <= n - i,
-                       zip(raw, chars[i..<(i + raw.count)]).allSatisfy({ $0.uppercased() == $1.uppercased() }) {
+                    let raw = err.rawValue.utf8
+                    if raw.count > matched, raw.count <= n - c.i,
+                       zip(raw, bytes[c.i..<(c.i + raw.count)]).allSatisfy({ $0 | 0x20 == $1 | 0x20 }) {
                         matched = raw.count
                     }
                 }
-                if matched > 0 {
-                    i += matched
-                    out.append(Lexeme(kind: .error, range: start..<i))
-                } else {
-                    i += 1
-                    out.append(Lexeme(kind: .punct(c), range: start..<i))
-                }
+                c.i += max(matched, 1)
+                out.append(Lexeme(kind: matched > 0 ? .error : .punct(b), range: start..<c.i))
             default:
-                if isDigit(c) || (c == "." && i + 1 < n && isDigit(chars[i + 1])) {
-                    while i < n, isDigit(chars[i]) || chars[i] == "." { i += 1 }
-                    if i < n, chars[i] == "e" || chars[i] == "E" {
-                        let sign = i + 1 < n && (chars[i + 1] == "+" || chars[i + 1] == "-") ? 1 : 0
-                        if i + 1 + sign < n, isDigit(chars[i + 1 + sign]) {
-                            i += 1 + sign
-                            while i < n, isDigit(chars[i]) { i += 1 }
+                if isDigit(c.i) || (b == UInt8(ascii: ".") && isDigit(c.i + 1)) {
+                    while true {
+                        if c.byte(at: c.i) == UInt8(ascii: ".") { c.i += 1; continue }
+                        let length = digitLength(at: c.i)
+                        guard length > 0 else { break }
+                        c.i += length
+                    }
+                    if let e = c.byte(at: c.i), e | 0x20 == UInt8(ascii: "e") {
+                        let sign = c.byte(at: c.i + 1) == UInt8(ascii: "+") || c.byte(at: c.i + 1) == UInt8(ascii: "-") ? 1 : 0
+                        if isDigit(c.i + 1 + sign) {
+                            c.i += 1 + sign
+                            while case let length = digitLength(at: c.i), length > 0 { c.i += length }
                         }
                     }
-                    out.append(Lexeme(kind: .number(String(chars[start..<i])), range: start..<i))
-                } else if isLetter(c) || c == "_" || c == "$" || c == "\\" {
-                    while i < n, isLetter(chars[i]) || isDigit(chars[i])
-                            || chars[i] == "_" || chars[i] == "$" || chars[i] == "." || chars[i] == "\\" {
-                        i += 1
-                    }
-                    out.append(Lexeme(kind: .name(String(chars[start..<i])), range: start..<i))
+                    out.append(Lexeme(kind: .number, range: start..<c.i))
+                } else if case let length = c.nameCharacterLength(at: c.i, first: true), length > 0 {
+                    c.i += length
+                    while case let length = c.nameCharacterLength(at: c.i, first: false), length > 0 { c.i += length }
+                    out.append(Lexeme(kind: .name, range: start..<c.i))
                 } else {
-                    i += 1
-                    out.append(Lexeme(kind: .punct(c), range: start..<i))
+                    // One character, however many bytes it takes.
+                    c.i += b < 0x80 ? 1 : (c.scalar(at: c.i)?.1 ?? 1)
+                    out.append(Lexeme(kind: .punct(b < 0x80 ? b : 0), range: start..<c.i))
                 }
             }
         }
         return out
+    }
+
+    /// A quoted sheet name without its quotes, a doubled quote made one.
+    static func quotedName(_ bytes: UnsafeBufferPointer<UInt8>, _ range: Range<Int>) -> String {
+        var inner = range.lowerBound + 1..<range.upperBound
+        if inner.upperBound > inner.lowerBound, bytes[inner.upperBound - 1] == UInt8(ascii: "'") {
+            inner = inner.lowerBound..<inner.upperBound - 1
+        }
+        return string(bytes, inner).replacingOccurrences(of: "''", with: "'")
     }
 
     // MARK: Reference matching
@@ -215,9 +290,10 @@ public enum FormulaTextRewriter {
         let external: Bool
     }
 
-    static func matchReference(_ lx: [Lexeme], at i: Int) -> Match? {
+    static func matchReference(_ lx: [Lexeme], _ bytes: UnsafeBufferPointer<UInt8>, at i: Int) -> Match? {
         func kind(_ j: Int) -> Kind? { j < lx.count ? lx[j].kind : nil }
-        func isPunct(_ j: Int, _ c: Character) -> Bool { kind(j) == .punct(c) }
+        func isPunct(_ j: Int, _ c: Character) -> Bool { kind(j) == .punct(c.asciiValue!) }
+        func text(_ j: Int) -> String { string(bytes, lx[j].range) }
 
         // 1. Optional sheet prefix.
         var first: String?
@@ -227,7 +303,7 @@ public enum FormulaTextRewriter {
         switch kind(i) {
         case .bracket:
             // [1]Sheet1!A1 or [1]!Name: another workbook.
-            if case .name? = kind(i + 1), isPunct(i + 2, "!") {
+            if kind(i + 1) == .name, isPunct(i + 2, "!") {
                 external = true
                 j = i + 3
             } else if isPunct(i + 1, "!") {
@@ -235,8 +311,9 @@ public enum FormulaTextRewriter {
             } else {
                 return nil
             }
-        case .quoted(let sheet):
+        case .quoted:
             guard isPunct(i + 1, "!") else { return nil }
+            let sheet = quotedName(bytes, lx[i].range)
             if sheet.contains("[") { external = true } // '[1]Sheet1'!A1: another workbook
             // Sheet names can't contain ':', so one here is a 3-D range.
             let parts = sheet.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
@@ -247,13 +324,13 @@ public enum FormulaTextRewriter {
                 first = sheet
             }
             j = i + 2
-        case .name(let sheet):
+        case .name:
             if isPunct(i + 1, "!") {
-                first = sheet
+                first = text(i)
                 j = i + 2
-            } else if isPunct(i + 1, ":"), case .name(let lastSheet)? = kind(i + 2), isPunct(i + 3, "!") {
-                first = sheet
-                last = lastSheet
+            } else if isPunct(i + 1, ":"), kind(i + 2) == .name, isPunct(i + 3, "!") {
+                first = text(i)
+                last = text(i + 2)
                 j = i + 4
             }
         default:
@@ -262,11 +339,11 @@ public enum FormulaTextRewriter {
         let prefixRange: Range<Int>? = j > i ? lx[i].range.lowerBound..<lx[j - 1].range.upperBound : nil
 
         // 2. The reference body.
-        guard let (body, end) = matchBody(lx, at: j) else {
+        guard let (body, end) = matchBody(lx, bytes, at: j) else {
             // A prefix without a reference body (Sheet1!Name, Sheet1!#REF!)
             // is copied as is.
             if j > i {
-                if case .error? = kind(j) {
+                if kind(j) == .error {
                     return Match(end: j + 1, prefix: prefixRange, reference: nil, external: true)
                 }
                 return Match(end: j, prefix: prefixRange, reference: nil, external: true)
@@ -280,65 +357,100 @@ public enum FormulaTextRewriter {
     }
 
     /// A1, A1:B2, A:C, 1:3 (with $ markers) starting at lexeme `j`.
-    static func matchBody(_ lx: [Lexeme], at j: Int) -> (ReferenceExpr, Int)? {
+    static func matchBody(_ lx: [Lexeme], _ bytes: UnsafeBufferPointer<UInt8>, at j: Int) -> (ReferenceExpr, Int)? {
         func kind(_ k: Int) -> Kind? { k < lx.count ? lx[k].kind : nil }
+        func slice(_ k: Int) -> Slice<UnsafeBufferPointer<UInt8>> { bytes[lx[k].range] }
         // Not a reference when it names a function or a table: A1(...) / T1[...].
         func endsReference(_ k: Int) -> Bool {
             switch kind(k) {
-            case .punct("(")?, .bracket?, .punct("!")?: return false
+            case .punct(UInt8(ascii: "("))?, .bracket?, .punct(UInt8(ascii: "!"))?: return false
             default: return true
             }
         }
+        func isColon(_ k: Int) -> Bool { kind(k) == .punct(UInt8(ascii: ":")) }
         guard let k0 = kind(j) else { return nil }
 
-        if case .name(let s) = k0, let start = cellComponent(s) {
-            if kind(j + 1) == .punct(":"), case .name(let s2)? = kind(j + 2), let end = cellComponent(s2),
-               endsReference(j + 3) {
+        if k0 == .name, let start = cellComponent(slice(j)) {
+            if isColon(j + 1), kind(j + 2) == .name, let end = cellComponent(slice(j + 2)), endsReference(j + 3) {
                 return (ReferenceExpr(start: start, end: end), j + 3)
             }
             guard endsReference(j + 1) else { return nil }
             return (ReferenceExpr(start: start), j + 1)
         }
-        if case .name(let s) = k0, let start = columnComponent(s),
-           kind(j + 1) == .punct(":"), case .name(let s2)? = kind(j + 2), let end = columnComponent(s2),
-           endsReference(j + 3) {
+        if k0 == .name, let start = columnComponent(slice(j)),
+           isColon(j + 1), kind(j + 2) == .name, let end = columnComponent(slice(j + 2)), endsReference(j + 3) {
             return (ReferenceExpr(start: start, end: end), j + 3)
         }
-        if let start = rowComponent(k0), kind(j + 1) == .punct(":"), let k2 = kind(j + 2),
-           let end = rowComponent(k2), endsReference(j + 3) {
+        if let start = rowComponent(k0, slice(j)), isColon(j + 1), let k2 = kind(j + 2),
+           let end = rowComponent(k2, slice(j + 2)), endsReference(j + 3) {
             return (ReferenceExpr(start: start, end: end), j + 3)
         }
         return nil
     }
 
     /// "A1" / "$A$1" inside the grid.
-    static func cellComponent(_ s: String) -> RefComponent? {
-        guard let (addr, colAbs, rowAbs) = CellAddress.parseA1(s), addr.isValid else { return nil }
-        return RefComponent(column: addr.column, row: addr.row, columnAbsolute: colAbs, rowAbsolute: rowAbs)
+    static func cellComponent(_ s: Slice<UnsafeBufferPointer<UInt8>>) -> RefComponent? {
+        var k = s.startIndex
+        let end = s.endIndex
+        let columnAbsolute = k < end && s[k] == UInt8(ascii: "$")
+        if columnAbsolute { k += 1 }
+        var column = 0, letters = 0
+        while k < end, case let b = s[k] | 0x20, b >= UInt8(ascii: "a"), b <= UInt8(ascii: "z") {
+            guard letters < 3 else { return nil }
+            column = column * 26 + Int(b - UInt8(ascii: "a")) + 1
+            letters += 1
+            k += 1
+        }
+        guard letters > 0 else { return nil }
+        let rowAbsolute = k < end && s[k] == UInt8(ascii: "$")
+        if rowAbsolute { k += 1 }
+        guard let row = digits(s[k..<end]), row >= 1 else { return nil }
+        let address = CellAddress(row: row - 1, column: column - 1)
+        guard address.isValid else { return nil }
+        return RefComponent(column: column - 1, row: row - 1, columnAbsolute: columnAbsolute, rowAbsolute: rowAbsolute)
     }
 
     /// "A" / "$A" -> whole-column component.
-    static func columnComponent(_ s: String) -> RefComponent? {
-        var body = Substring(s)
-        var abs = false
-        if body.first == "$" { abs = true; body = body.dropFirst() }
-        guard !body.isEmpty, body.count <= 3, body.allSatisfy({ $0.isASCII && $0.isLetter }),
-              let col = CellAddress.columnIndex(String(body)), col < CellAddress.maxColumns else { return nil }
-        return RefComponent(column: col, row: nil, columnAbsolute: abs)
+    static func columnComponent(_ s: Slice<UnsafeBufferPointer<UInt8>>) -> RefComponent? {
+        var k = s.startIndex
+        let absolute = k < s.endIndex && s[k] == UInt8(ascii: "$")
+        if absolute { k += 1 }
+        let count = s.endIndex - k
+        guard count > 0, count <= 3 else { return nil }
+        var column = 0
+        while k < s.endIndex {
+            let b = s[k] | 0x20
+            guard b >= UInt8(ascii: "a"), b <= UInt8(ascii: "z") else { return nil }
+            column = column * 26 + Int(b - UInt8(ascii: "a")) + 1
+            k += 1
+        }
+        guard column - 1 < CellAddress.maxColumns else { return nil }
+        return RefComponent(column: column - 1, row: nil, columnAbsolute: absolute)
     }
 
     /// "3" / "$3" -> whole-row component.
-    static func rowComponent(_ kind: Kind) -> RefComponent? {
-        let text: Substring
-        var abs = false
+    static func rowComponent(_ kind: Kind, _ s: Slice<UnsafeBufferPointer<UInt8>>) -> RefComponent? {
+        var digits = s[...]
+        var absolute = false
         switch kind {
-        case .number(let s): text = Substring(s)
-        case .name(let s) where s.hasPrefix("$"): text = Substring(s).dropFirst(); abs = true
+        case .number: break
+        case .name where s.first == UInt8(ascii: "$"): digits = s.dropFirst(); absolute = true
         default: return nil
         }
-        guard !text.isEmpty, text.count <= 7, text.allSatisfy({ $0.isASCII && $0.isNumber }),
-              let row = Int(text), row >= 1, row <= CellAddress.maxRows else { return nil }
-        return RefComponent(column: nil, row: row - 1, rowAbsolute: abs)
+        guard digits.count <= 7, let row = Self.digits(digits), row >= 1, row <= CellAddress.maxRows else { return nil }
+        return RefComponent(column: nil, row: row - 1, rowAbsolute: absolute)
+    }
+
+    /// The value of a non-empty run of ASCII digits; nil for anything else
+    /// or a value too large to be a row.
+    private static func digits(_ s: Slice<UnsafeBufferPointer<UInt8>>) -> Int? {
+        guard !s.isEmpty, s.count <= 10 else { return nil }
+        var value = 0
+        for b in s {
+            guard b >= UInt8(ascii: "0"), b <= UInt8(ascii: "9") else { return nil }
+            value = value * 10 + Int(b - UInt8(ascii: "0"))
+        }
+        return value
     }
 }
 
@@ -461,19 +573,22 @@ public enum FormulaFunctionPrefixes {
     /// `replace` returns non-nil; strings, sheet names and table columns are
     /// never touched.
     private static func rewritingFunctionNames(_ text: String, _ replace: (String) -> String?) -> String {
-        let chars = Array(text)
-        let lexemes = FormulaTextRewriter.lex(chars)
-        var out = ""
-        var changed = false
-        for (k, lexeme) in lexemes.enumerated() {
-            if case .name(let name) = lexeme.kind, k + 1 < lexemes.count,
-               lexemes[k + 1].kind == .punct("("), let replacement = replace(name) {
-                out += replacement
-                changed = true
-            } else {
-                out.append(contentsOf: String(chars[lexeme.range]))
+        var text = text
+        return text.withUTF8 { bytes in
+            let lexemes = FormulaTextRewriter.lex(bytes)
+            var out = ""
+            var changed = false
+            for (k, lexeme) in lexemes.enumerated() {
+                let original = FormulaTextRewriter.string(bytes, lexeme.range)
+                if lexeme.kind == .name, k + 1 < lexemes.count,
+                   lexemes[k + 1].kind == .punct(UInt8(ascii: "(")), let replacement = replace(original) {
+                    out += replacement
+                    changed = true
+                } else {
+                    out += original
+                }
             }
-        }
-        return changed ? out : text
+            return changed ? out : nil
+        } ?? text
     }
 }

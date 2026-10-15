@@ -175,10 +175,27 @@ per cell in the engine and reused for dependency extraction and transforms.
   order). Volatile set (NOW, TODAY, RAND, RANDBETWEEN, and GETPIVOTDATA — it
   reads pivot cells its arguments don't name) recalculated on every edit.
   Formulas naming a sheet that doesn't exist yet are re-installed when it
-  appears. Sheets keep their used range up to date incrementally. Structural
-  edits rebuild the whole graph (`rebuildAll`) — correct first, incremental
-  later. `spreadsheet-bench --edits` times edits on synthetic workbooks;
-  `--undo` times a row insert with its undo and redo.
+  appears. Sheets keep their used range up to date incrementally.
+- **Row and column inserts and deletes** don't rebuild the graph.
+  `StructuralChange` describes the edit, and everything that holds a
+  position moves by it: cells, formula text, layout tables, pivot tables,
+  and (later) anything else in the file that's anchored to cells.
+  `WorkbookOperations.apply` returns a `StructuralEditResult` (rewritten
+  formulas, removed cells, the parts outside the cells as they were);
+  `CalculationEngine.apply` moves the graph entries of the formulas that
+  moved or whose references changed, adjusting their parse trees in place
+  (formulas using names are re-parsed). A per-formula record of the last
+  row and column it reads lets it skip the rest without looking at their
+  trees. Only formulas whose result can change recalculate: a reference
+  that spans or cuts into the edit, a deleted reference, ROW/COLUMN when
+  they or their references moved, and names the edit rewrote. A formula
+  that moved with everything it reads keeps its value. Sheet operations
+  still use `rebuildAll`. `StructuralEditEngineTests` holds the in-place
+  path to a full rebuild over random workbooks, edits and undos.
+  `spreadsheet-bench --edits` times edits on synthetic workbooks; `--undo`
+  times a row insert with its undo and redo (release, 1,048,575 formulas:
+  1.9 s near the top, where every formula moves, 0.6 s near the bottom;
+  a full rebuild took 5.4 s).
 - **Iterative solvers** (IRR/XIRR/RATE): Newton–Raphson with numeric
   derivative, bracketing-scan + bisection fallback, #NUM! on non-convergence.
 
@@ -362,10 +379,11 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   step records the cells a delete removed, the original text of every
   formula the edit rewrote (an edit and its opposite rewrite the same
   formulas, so the rest needn't be kept), and the small layout tables,
-  defined names and pivot definitions. Undo runs the opposite edit and puts
-  those back; redo runs the edit again; each rebuilds the engine once. A
-  step on a full 1,048,576 × 10 sheet holds a few KB (a whole-sheet
-  snapshot would hold ~1 GB, the old XLSX snapshot 24 MB).
+  defined names and pivot definitions (`StructuralEditResult.undo`). Undo
+  runs the opposite edit and puts those back; redo runs the edit again;
+  neither rebuilds the engine (see §5). A step on a full 1,048,576 × 10
+  sheet holds a few KB (a whole-sheet snapshot would hold ~1 GB, the old
+  XLSX snapshot 24 MB).
 - Undo of other workbook-level commands (add, delete, rename and move
   sheet, Import CSV, every pivot edit, Delete over a pivot): `takeSnapshot()`
   before the command, `registerSnapshotUndo` after it. The snapshot is

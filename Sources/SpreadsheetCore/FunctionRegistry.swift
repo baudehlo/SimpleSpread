@@ -53,6 +53,12 @@ public enum FunctionRegistry {
     /// rewritten on refresh), so it recalculates with every change too.
     public static let volatileFunctions: Set<String> = ["NOW", "TODAY", "RAND", "RANDBETWEEN", "GETPIVOTDATA"]
 
+    /// Functions whose value depends on where a cell or reference is, not
+    /// only on what it holds: they recalculate when a row or column insert
+    /// or delete moves them or their references (CalculationEngine.apply).
+    /// INDIRECT, OFFSET and CELL belong here once they exist.
+    public static let positionFunctions: Set<String> = ["ROW", "COLUMN"]
+
     public static func function(named name: String) -> BuiltinFunction? {
         all[name.uppercased()]
     }
