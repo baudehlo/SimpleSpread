@@ -18,9 +18,12 @@ dependency is [Sparkle](https://sparkle-project.org) for software updates.
   shared strings, styles, number formats, formulas with cached values,
   borders, merged ranges, frozen panes, hidden rows and sheets, AutoFilters,
   defined names, newer functions saved with Excel's `_xlfn.` prefixes, and
-  1904-date-system normalization on read. When a file holds things
-  SimpleSpread can't write back (charts, comments, conditional formatting…),
-  the first save says so and offers to save a copy instead.
+  1904-date-system normalization on read. Charts, images, comments, tables,
+  conditional formatting, data validation, hyperlinks, sparklines and print
+  setup in a file are kept through a save, and they follow the cells when
+  rows, columns or sheets change. When a file holds things SimpleSpread
+  can't write back (chart sheets, macros, slicers…), the first save says so
+  and offers to save a copy instead.
 - **Pivot tables**: Insert ▸ PivotTable… and a PivotTable Fields panel
   like Excel's: drag fields into rows, columns, values and filters;
   summarize by sum/count/average/…; show values as % of total/row/column,

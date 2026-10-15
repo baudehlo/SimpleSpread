@@ -45,7 +45,8 @@ public enum WorkbookOperations {
         let axisIsRow = change.axisIsRow, index = change.index, count = change.count
         var result = StructuralEditResult(change: change, before: .init(
             layout: sheet.layoutState, columnWidths: sheet.columnWidths, definedNames: workbook.definedNames,
-            pivotCaches: workbook.pivotCaches, pivotTables: workbook.pivotTables))
+            pivotCaches: workbook.pivotCaches, pivotTables: workbook.pivotTables,
+            carriedContent: workbook.carriedContent))
 
         // 1. Remap cell storage on the edited sheet.
         var newCells: [CellAddress: Cell] = [:]
@@ -83,11 +84,7 @@ public enum WorkbookOperations {
             $0.range(of: editedSheetName, options: .caseInsensitive) != nil
         }
         let namesBefore = workbook.definedNames
-        // (Defined names are always checked: a name scoped to this sheet
-        // refers to it without naming it.)
-        result.rewrittenFormulas = rewriteFormulas(in: workbook, onlyIf: { sheetID in
-            sheetID == nil || sheetID == change.sheetID ? nil : mentions
-        }) { found, ownSheetName in
+        func adjust(_ found: FormulaTextReference, _ ownSheetName: String?) -> FormulaTextReference? {
             // Excel leaves a 3-D reference alone when only one of its
             // sheets changes shape.
             guard !found.isThreeD,
@@ -98,7 +95,13 @@ public enum WorkbookOperations {
             result.ref = adjusted
             return result
         }
+        // (Defined names are always checked: a name scoped to this sheet
+        // refers to it without naming it.)
+        result.rewrittenFormulas = rewriteFormulas(in: workbook, onlyIf: { sheetID in
+            sheetID == nil || sheetID == change.sheetID ? nil : mentions
+        }, adjust)
         result.definedNamesChanged = workbook.definedNames != namesBefore
+        applyToCarriedContent(.structural(change, sheetName: editedSheetName), in: workbook, adjust)
 
         // 5. Keep preserved pivot tables and their sources in step.
         shiftPivots(in: workbook, sheetID: change.sheetID, sheetName: editedSheetName,
@@ -297,12 +300,14 @@ public enum WorkbookOperations {
         let mentions: ((String) -> Bool)? = oldName.contains("'") ? nil : {
             $0.range(of: oldName, options: .caseInsensitive) != nil
         }
-        rewriteFormulas(in: workbook, onlyIf: { _ in mentions }) { found, _ in
+        func rename(_ found: FormulaTextReference, _: String?) -> FormulaTextReference? {
             var result = found
             result.ref.sheetName = renamed(found.ref.sheetName)
             result.lastSheetName = renamed(found.lastSheetName)
             return result
         }
+        rewriteFormulas(in: workbook, onlyIf: { _ in mentions }, rename)
+        applyToCarriedContent(.renameSheet(id: sheetID, from: oldName, to: applied), in: workbook, rename)
         return applied
     }
 
@@ -332,7 +337,7 @@ public enum WorkbookOperations {
         let mentions: ((String) -> Bool)? = name.contains("'") ? nil : {
             $0.range(of: name, options: .caseInsensitive) != nil
         }
-        rewriteFormulas(in: workbook, onlyIf: { _ in mentions }) { found, _ in
+        func remove(_ found: FormulaTextReference, _: String?) -> FormulaTextReference? {
             guard let last = found.lastSheetName, let first = found.ref.sheetName else {
                 return isDeleted(found.ref.sheetName) ? nil : found
             }
@@ -348,6 +353,8 @@ public enum WorkbookOperations {
             if result.ref.sheetName == result.lastSheetName { result.lastSheetName = nil }
             return result
         }
+        rewriteFormulas(in: workbook, onlyIf: { _ in mentions }, remove)
+        applyToCarriedContent(.deleteSheet(id: sheetID, name: name), in: workbook, remove)
         return true
     }
 
@@ -367,6 +374,18 @@ public enum WorkbookOperations {
     }
 
     // MARK: Shared
+
+    /// Tell the workbook's carried content about an edit; `transform` is
+    /// the edit's reference rewrite, as for cell formulas.
+    private static func applyToCarriedContent(
+        _ edit: CarriedContentEdit, in workbook: Workbook,
+        _ transform: (FormulaTextReference, _ ownSheetName: String?) -> FormulaTextReference?
+    ) {
+        guard let content = workbook.carriedContent else { return }
+        workbook.carriedContent = content.applying(edit) { formula, ownSheetName in
+            FormulaTextRewriter.rewritingReferences(in: formula) { transform($0, ownSheetName) }
+        }
+    }
 
     /// Rewrite the references in every formula and defined name, and
     /// return the text each rewritten formula had before, by where it is.
@@ -424,8 +443,8 @@ public struct StructuralEditResult: Sendable {
     public internal(set) var definedNamesChanged = false
     /// The parts outside the cells that the edit adjusted, as they were.
     /// Shared copy-on-write, so holding them costs nothing until they
-    /// change; anything else anchored to cells that a delete can clip or
-    /// remove belongs here too, so undo can put it back.
+    /// change. Carried content (charts, comments, …) is among them: a
+    /// delete can clip or remove it, which the opposite edit can't undo.
     let before: Before
 
     struct Before: Sendable {
@@ -434,6 +453,7 @@ public struct StructuralEditResult: Sendable {
         let definedNames: [DefinedName]
         let pivotCaches: [PivotCache]
         let pivotTables: [PivotTable]
+        let carriedContent: (any CarriedContent)?
     }
 
     init(change: StructuralChange, before: Before) {
@@ -476,6 +496,7 @@ public struct StructuralEditResult: Sendable {
         if namesChanged { workbook.definedNames = before.definedNames }
         workbook.pivotCaches = before.pivotCaches
         workbook.pivotTables = before.pivotTables
+        workbook.carriedContent = before.carriedContent
         return StructuralUndoResult(inverse: inverse, restoredCells: restored, definedNamesChanged: namesChanged)
     }
 }

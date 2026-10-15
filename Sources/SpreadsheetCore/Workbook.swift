@@ -200,6 +200,9 @@ public final class Workbook {
     public var definedNames: [DefinedName] = [] {
         didSet { definedNameCache = nil }
     }
+    /// What an opened file holds beyond the model (charts, comments, …),
+    /// written back on save; nil for none (CarriedContent.swift).
+    public var carriedContent: (any CarriedContent)?
     /// Lookup table and parsed formulas for `definedNames` (DefinedNames.swift).
     var definedNameCache: DefinedNameCache?
     private var nextSheetID = 1
@@ -258,12 +261,13 @@ public final class Workbook {
         wb.pivotTables = pivotTables
         wb.preservedStyles = preservedStyles
         wb.definedNames = definedNames
+        wb.carriedContent = carriedContent
         wb.nextSheetID = nextSheetID
         return wb
     }
 
-    /// Take over another workbook's sheets (keeping their ids), styles and
-    /// pivot tables, in place: for restoring a snapshot under objects (the
+    /// Take over another workbook's sheets (keeping their ids), styles,
+    /// pivot tables and carried content, in place: for restoring a snapshot under objects (the
     /// engine, undo records) that hold this instance and its sheet ids.
     public func replaceContents(with other: Workbook) {
         sheets = other.sheets
@@ -273,6 +277,7 @@ public final class Workbook {
         pivotTables = other.pivotTables
         preservedStyles = other.preservedStyles
         definedNames = other.definedNames
+        carriedContent = other.carriedContent
     }
 
     public func moveSheet(withID id: Int, to newIndex: Int) {

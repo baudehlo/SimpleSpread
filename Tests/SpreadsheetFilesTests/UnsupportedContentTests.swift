@@ -112,7 +112,9 @@ struct UnsupportedContentTests {
         #expect(try Self.unsupported(data) == ["drawings and shapes"])
     }
 
-    @Test func worksheetContentIsNamed() throws {
+    /// Most of what a sheet holds outside its cells is carried through a
+    /// save (CarriedParts); what the model rewrites (columns, outlines) isn't.
+    @Test func worksheetContentIsNamedUnlessCarried() throws {
         let sheet = """
         <sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><cols><col min="1" max="1" width="9" hidden="1"/><col min="2" max="2" width="9" outlineLevel="1"/></cols>\
         <sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><sheetProtection sheet="1"/>\
@@ -123,9 +125,11 @@ struct UnsupportedContentTests {
         <extLst><ext uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:sparklineGroups/></ext></extLst>
         """
         #expect(try Self.unsupported(Self.package(sheets: [("S", nil, sheet)])) == [
-            "sparklines", "conditional formatting", "data validation", "hyperlinks", "sheet protection",
-            "print settings", "hidden columns", "grouped rows or columns",
+            "hidden columns", "grouped rows or columns",
         ])
+        // A sheet in the Strict namespaces isn't carried (so all of it is named).
+        let strict = Self.header + "<worksheet xmlns=\"http://purl.oclc.org/ooxml/spreadsheetml/main\">" + sheet + "</worksheet>"
+        #expect(XLSXReader.carriedSheet(Data(strict.utf8)) == nil)
     }
 
     @Test func defaultPrintSetupIsNotReported() throws {
@@ -138,10 +142,11 @@ struct UnsupportedContentTests {
             + "<pageSetup paperSize=\"9\" scale=\"100\" fitToWidth=\"1\" fitToHeight=\"1\" pageOrder=\"downThenOver\" orientation=\"portrait\" blackAndWhite=\"false\" draft=\"false\" cellComments=\"none\" firstPageNumber=\"0\" copies=\"1\"/>"
             + "<headerFooter differentFirst=\"false\"><oddHeader></oddHeader><oddFooter> </oddFooter></headerFooter>"
         #expect(try Self.unsupported(Self.package(sheets: [("S", nil, libre)])) == [])
+        // Print setup is carried now, so it isn't named either way.
         let footer = Self.plainSheet + "<headerFooter><oddFooter>&amp;CPage &amp;P</oddFooter></headerFooter>"
-        #expect(try Self.unsupported(Self.package(sheets: [("S", nil, footer)])) == ["print settings"])
+        #expect(try Self.unsupported(Self.package(sheets: [("S", nil, footer)])) == [])
         let gridlines = Self.plainSheet + "<printOptions gridLines=\"1\"/>"
-        #expect(try Self.unsupported(Self.package(sheets: [("S", nil, gridlines)])) == ["print settings"])
+        #expect(try Self.unsupported(Self.package(sheets: [("S", nil, gridlines)])) == [])
     }
 
     @Test func rowFormattingIsSeenByBothReaders() throws {
@@ -194,10 +199,12 @@ struct UnsupportedContentTests {
         #expect(xml.contains("activeTab=\"1\""))
     }
 
-    @Test func workbookSettingsAreNamed() throws {
+    @Test func workbookSettingsAreCarried() throws {
         let data = try Self.package(sheets: [("S", nil, Self.plainSheet)],
                                     workbookExtra: "<workbookProtection lockStructure=\"1\"/>")
-        #expect(try Self.unsupported(data) == ["workbook protection"])
+        #expect(try Self.unsupported(data) == [])
+        let saved = try XLSXWriter.data(for: XLSXReader.read(data: data))
+        #expect(try Package(saved).string("xl/workbook.xml").contains("<workbookProtection lockStructure=\"1\"/>"))
         // Protection elements that protect nothing.
         let off = try Self.package(sheets: [("S", nil, Self.plainSheet + "<sheetProtection sheet=\"false\"/>")],
                                    workbookExtra: "<workbookProtection/>")
@@ -208,14 +215,16 @@ struct UnsupportedContentTests {
         let url = Bundle.module.resourceURL!.appendingPathComponent("Fixtures/Pivots/poi-WithChartSheet.xlsx")
         let found = try Self.unsupported(Data(contentsOf: url))
         #expect(found.contains { $0.hasSuffix("chart sheet") || $0.hasSuffix("chart sheets") }, "\(found)")
-        #expect(found.contains { $0.hasSuffix("chart") || $0.hasSuffix("charts") }, "\(found)")
+        // A chart sheet opens as an empty sheet; its chart is carried on it.
+        #expect(!found.contains { $0.hasSuffix("chart") || $0.hasSuffix("charts") }, "\(found)")
+        let saved = try Package(XLSXWriter.data(for: XLSXReader.read(data: Data(contentsOf: url))))
+        #expect(saved.names(under: "xl/charts/chart").count == 1)
     }
 
     @Test func publicReadReturnsTheList() throws {
-        let data = try Self.package(sheets: [("S", nil, Self.plainSheet)],
-                                    workbookExtra: "<workbookProtection lockStructure=\"1\"/>")
+        let data = try Self.package(sheets: [("S", nil, Self.plainSheet), ("Secret", "veryHidden", Self.plainSheet)])
         var unsupported: [String] = []
         _ = try XLSXReader.read(data: data, unsupportedContent: &unsupported, progress: nil)
-        #expect(unsupported == ["workbook protection"])
+        #expect(unsupported == ["“very hidden” sheet settings"])
     }
 }

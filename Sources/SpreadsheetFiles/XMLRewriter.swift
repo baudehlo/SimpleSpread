@@ -71,11 +71,20 @@ enum XMLRewriter {
     }
 
     typealias Visitor = (inout Element) -> Action
+    /// Gets an element's text (the local-name path down to the element it's
+    /// in, and the decoded text, whole) and returns the text to write.
+    typealias TextVisitor = (_ path: [String], _ text: String) -> String
 
     /// Rewrite `data`, returning the re-serialized part.
     static func rewrite(_ data: Data, _ visit: Visitor) throws -> Data {
+        try rewrite(data, visit, text: nil)
+    }
+
+    /// Rewrite `data`, element text included.
+    static func rewrite(_ data: Data, _ visit: Visitor, text: TextVisitor?) throws -> Data {
         try withoutActuallyEscaping(visit) { visit in
             let delegate = Delegate(mode: .document, visit: visit)
+            delegate.visitText = text
             try run(data, delegate)
             return Data(delegate.output.utf8)
         }
@@ -185,6 +194,10 @@ enum XMLRewriter {
 
         let mode: Mode
         let visit: Visitor
+        var visitText: TextVisitor?
+        /// Text read since the last tag (XMLParser may hand it over in
+        /// pieces); written when the next tag starts or ends.
+        var pendingText = ""
         var output = ""
         var fragments: [String] = []
         var path: [String] = []
@@ -220,8 +233,18 @@ enum XMLRewriter {
             }
         }
 
+        /// Write the text read since the last tag.
+        private func flushText() {
+            guard !pendingText.isEmpty else { return }
+            let text = visitText.map { $0(path, pendingText) } ?? pendingText
+            pendingText = ""
+            closeStartTag()
+            output += XMLRewriter.escapeText(text)
+        }
+
         func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?,
                     qualifiedName: String?, attributes attributeDict: [String: String]) {
+            flushText()
             path.append(XMLRewriter.localName(elementName))
             defer { scopes.append(attributeDict.filter { $0.key == "xmlns" || $0.key.hasPrefix("xmlns:") }) }
             guard dropDepth == nil else { return }
@@ -263,6 +286,7 @@ enum XMLRewriter {
 
         func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?,
                     qualifiedName: String?) {
+            flushText()
             defer {
                 path.removeLast()
                 scopes.removeLast()
@@ -287,14 +311,12 @@ enum XMLRewriter {
 
         func parser(_ parser: XMLParser, foundCharacters string: String) {
             guard emitting, dropDepth == nil, !path.isEmpty else { return }
-            closeStartTag()
-            output += XMLRewriter.escapeText(string)
+            pendingText += string
         }
 
         func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
             guard emitting, dropDepth == nil, !path.isEmpty else { return }
-            closeStartTag()
-            output += XMLRewriter.escapeText(String(decoding: CDATABlock, as: UTF8.self))
+            pendingText += String(decoding: CDATABlock, as: UTF8.self)
         }
     }
 }

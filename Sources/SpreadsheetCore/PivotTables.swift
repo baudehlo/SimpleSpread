@@ -214,6 +214,7 @@ extension Workbook {
     func pruneUnusedPivotCaches() {
         let used = Set(pivotTables.map(\.cacheID))
         pivotCaches.removeAll { !used.contains($0.cacheID) }
-        if pivotCaches.isEmpty { preservedStyles = nil }
+        // Carried content (conditional formats, tables) may use the styles too.
+        if pivotCaches.isEmpty && carriedContent == nil { preservedStyles = nil }
     }
 }

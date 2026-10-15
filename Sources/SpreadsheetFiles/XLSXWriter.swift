@@ -33,45 +33,87 @@ public enum XLSXWriter {
         var sharedStrings = SharedStringBuilder()
         let styles = StyleParts(workbook: workbook, extraFormats: generatedPivotFormats(workbook))
 
+        // Preserved pivot tables: workbook rel ids follow sheets, styles, sharedStrings.
+        let pivots = try pivotPackage(for: workbook, firstWorkbookRelID: workbook.sheets.count + 3,
+                                      formatID: styles.numberFormatID)
+        // Carried parts (charts, comments, …) go where the writer's own parts don't.
+        var taken: Set<String> = ["[Content_Types].xml", "_rels/.rels", "docProps/core.xml", "docProps/app.xml",
+                                  "xl/workbook.xml", "xl/_rels/workbook.xml.rels", "xl/styles.xml",
+                                  "xl/sharedStrings.xml"]
+        for i in workbook.sheets.indices {
+            taken.insert("xl/worksheets/sheet\(i + 1).xml")
+            taken.insert("xl/worksheets/_rels/sheet\(i + 1).xml.rels")
+        }
+        taken.formUnion(pivots.entries.map(\.path))
+        let carried = carriedPackage(for: workbook, taken: taken,
+                                     firstWorkbookRelID: workbook.sheets.count + 3 + pivots.workbookRelationships.count,
+                                     firstPackageRelID: 4)
+
         // Worksheets (collect shared strings while writing), in proportion
         // to their cells.
         var sheetXMLs: [Data] = []
         let totalCells = Double(workbook.sheets.reduce(0) { $0 + $1.cells.count + 1 })
         var cellsDone = 0.0
-        for sheet in workbook.sheets {
+        for (position, sheet) in workbook.sheets.enumerated() {
             let start = cellsDone, count = Double(sheet.cells.count + 1)
-            sheetXMLs.append(try worksheetXML(sheet: sheet, workbook: workbook,
-                                              styles: styles, strings: &sharedStrings) { fraction in
+            // Table headers that must be written as their column names.
+            var written = sheet
+            if let headers = carried.headerCells[position] {
+                written = sheet.copy()
+                for (address, text) in headers {
+                    var cell = written.cell(at: address)
+                    cell.value = .string(text)
+                    cell.formula = nil
+                    written.setCell(cell, at: address)
+                }
+            }
+            sheetXMLs.append(try worksheetXML(sheet: written, workbook: workbook, styles: styles,
+                                              strings: &sharedStrings, carried: carried.sheets[position]) { fraction in
                 try report(sheetDataShare * (start + fraction * count) / totalCells)
             })
             cellsDone += count
         }
 
-        // Preserved pivot tables: workbook rel ids follow sheets, styles, sharedStrings.
-        let pivots = try pivotPackage(for: workbook, firstWorkbookRelID: workbook.sheets.count + 3,
-                                      formatID: styles.numberFormatID)
-
         var parts: [(name: String, data: Data)] = []
         parts.append(("[Content_Types].xml",
-                      Data(contentTypesXML(sheetCount: workbook.sheets.count, extra: pivots.contentTypes).utf8)))
-        parts.append(("_rels/.rels", Data(rootRelsXML().utf8)))
+                      Data(contentTypesXML(sheetCount: workbook.sheets.count,
+                                           extra: pivots.contentTypes + carried.overrides,
+                                           defaults: carried.defaults).utf8)))
+        parts.append(("_rels/.rels", Data(rootRelsXML(extra: carried.packageRelationships).utf8)))
         parts.append(("docProps/core.xml", Data(corePropsXML().utf8)))
         parts.append(("docProps/app.xml", Data(appPropsXML(workbook: workbook).utf8)))
         parts.append(("xl/workbook.xml",
-                      Data(workbookXML(workbook: workbook, pivotCaches: pivots.workbookElement).utf8)))
+                      Data(workbookXML(workbook: workbook, pivotCaches: pivots.workbookElement,
+                                       carried: carried.workbookElements,
+                                       rootAttributes: carried.workbookRootAttributes).utf8)))
         parts.append(("xl/_rels/workbook.xml.rels",
                       Data(workbookRelsXML(sheetCount: workbook.sheets.count,
-                                           extra: pivots.workbookRelationships).utf8)))
+                                           extra: pivots.workbookRelationships + carried.workbookRelationships).utf8)))
         parts.append(("xl/styles.xml", Data(styles.xml().utf8)))
         parts.append(("xl/sharedStrings.xml", Data(sharedStrings.xml().utf8)))
         for (i, xml) in sheetXMLs.enumerated() {
             parts.append(("xl/worksheets/sheet\(i + 1).xml", xml))
-            if let rels = pivots.sheetRelationships[i] {
+            // Carried relationships keep their ids (the sheet's XML uses
+            // them); pivot tables' are only in the rels part, so they take
+            // ids that are free.
+            var rels = carried.sheetRelationships[i] ?? []
+            var ids = Set(rels.map(\.id))
+            for var pivot in pivots.sheetRelationships[i] ?? [] {
+                var k = 1
+                while ids.contains("rId\(k)") { k += 1 }
+                pivot = PackageRelationship(id: "rId\(k)", type: pivot.type, target: pivot.target)
+                ids.insert(pivot.id)
+                rels.append(pivot)
+            }
+            if !rels.isEmpty {
                 parts.append(("xl/worksheets/_rels/sheet\(i + 1).xml.rels", Data(relationshipsXML(rels).utf8)))
             }
         }
         sheetXMLs = []
         for entry in pivots.entries {
+            parts.append((entry.path, entry.data))
+        }
+        for entry in carried.entries {
             parts.append((entry.path, entry.data))
         }
 
@@ -96,11 +138,15 @@ public enum XLSXWriter {
     // MARK: Package parts
 
     static func contentTypesXML(sheetCount: Int,
-                                extra: [(partName: String, contentType: String)] = []) -> String {
+                                extra: [(partName: String, contentType: String)] = [],
+                                defaults: [(extension: String, contentType: String)] = []) -> String {
         var s = xmlHeader
         s += "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">"
         s += "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>"
         s += "<Default Extension=\"xml\" ContentType=\"application/xml\"/>"
+        for (ext, contentType) in defaults {
+            s += "<Default Extension=\"\(XML.escapeAttribute(ext))\" ContentType=\"\(XML.escapeAttribute(contentType))\"/>"
+        }
         s += "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>"
         for i in 1...max(1, sheetCount) {
             s += "<Override PartName=\"/xl/worksheets/sheet\(i).xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"
@@ -110,19 +156,23 @@ public enum XLSXWriter {
         s += "<Override PartName=\"/docProps/core.xml\" ContentType=\"application/vnd.openxmlformats-package.core-properties+xml\"/>"
         s += "<Override PartName=\"/docProps/app.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.extended-properties+xml\"/>"
         for (partName, contentType) in extra {
-            s += "<Override PartName=\"\(XML.escapeAttribute(partName))\" ContentType=\"\(contentType)\"/>"
+            s += "<Override PartName=\"\(XML.escapeAttribute(partName))\" ContentType=\"\(XML.escapeAttribute(contentType))\"/>"
         }
         s += "</Types>"
         return s
     }
 
-    static func rootRelsXML() -> String {
-        xmlHeader
-        + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
-        + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
-        + "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>"
-        + "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/>"
-        + "</Relationships>"
+    static func rootRelsXML(extra: [PackageRelationship] = []) -> String {
+        var s = xmlHeader
+        s += "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
+        s += "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>"
+        s += "<Relationship Id=\"rId2\" Type=\"http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties\" Target=\"docProps/core.xml\"/>"
+        s += "<Relationship Id=\"rId3\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties\" Target=\"docProps/app.xml\"/>"
+        for rel in extra {
+            s += "<Relationship Id=\"\(rel.id)\" Type=\"\(XML.escapeAttribute(rel.type))\" Target=\"\(XML.escapeAttribute(rel.target))\"\(rel.isExternal ? " TargetMode=\"External\"" : "")/>"
+        }
+        s += "</Relationships>"
+        return s
     }
 
     static func corePropsXML() -> String {
@@ -140,10 +190,15 @@ public enum XLSXWriter {
         + "</Properties>"
     }
 
-    static func workbookXML(workbook: Workbook, pivotCaches: String = "") -> String {
+    static func workbookXML(workbook: Workbook, pivotCaches: String = "", carried: [CarriedElement] = [],
+                            rootAttributes: [String: String] = [:]) -> String {
+        let slots = carriedElementsBySlot(carried, order: workbookElementOrder)
+        func carriedXML(_ names: String...) -> String { names.map { (slots[$0] ?? []).joined() }.joined() }
         var s = xmlHeader
-        s += "<workbook xmlns=\"\(mainNS)\" xmlns:r=\"\(relNS)\">"
+        s += "<workbook xmlns=\"\(mainNS)\" xmlns:r=\"\(relNS)\"\(rootAttributesXML(rootAttributes))>"
+        s += carriedXML("fileVersion", "fileSharing")
         s += "<workbookPr date1904=\"0\"/>"
+        s += carriedXML("workbookProtection")
         let shown = firstVisibleSheetIndex(workbook)
         s += "<bookViews><workbookView activeTab=\"\(shown)\"/></bookViews>"
         s += "<sheets>"
@@ -152,6 +207,7 @@ public enum XLSXWriter {
             s += "<sheet name=\"\(XML.escapeAttribute(sheet.name))\" sheetId=\"\(sheet.id)\"\(state) r:id=\"rId\(i + 1)\"/>"
         }
         s += "</sheets>"
+        s += carriedXML("functionGroups", "externalReferences")
         // Excel names every AutoFilter's range (hidden, sheet-scoped) and
         // writes the name itself on save; we do the same.
         var definedNames = ""
@@ -178,7 +234,9 @@ public enum XLSXWriter {
         if !definedNames.isEmpty {
             s += "<definedNames>" + definedNames + "</definedNames>"
         }
+        s += carriedXML("calcPr", "oleSize", "customWorkbookViews")
         s += pivotCaches // CT_Workbook: after sheets/definedNames/calcPr, before extLst
+        s += carriedXML("smartTagPr", "smartTagTypes", "webPublishing", "fileRecoveryPr", "webPublishObjects", "extLst")
         s += "</workbook>"
         return s
     }
@@ -216,19 +274,28 @@ public enum XLSXWriter {
     /// the byte writer is tested against.
     static func worksheetXML(sheet: Sheet, workbook: Workbook,
                              styles: StyleParts, strings: inout SharedStringBuilder,
-                             fastSheetData: Bool = true) -> Data {
+                             fastSheetData: Bool = true, carried: CarriedSheet? = nil) -> Data {
         worksheetXML(sheet: sheet, workbook: workbook, styles: styles, strings: &strings,
-                     fastSheetData: fastSheetData, progress: { _ in })
+                     fastSheetData: fastSheetData, carried: carried, progress: { _ in })
     }
 
     /// As above; `progress` gets the fraction of the sheet's cells written
     /// (fast path only) and throws to stop.
     static func worksheetXML(sheet: Sheet, workbook: Workbook,
                              styles: StyleParts, strings: inout SharedStringBuilder,
-                             fastSheetData: Bool = true,
+                             fastSheetData: Bool = true, carried: CarriedSheet? = nil,
                              progress: (Double) throws -> Void) rethrows -> Data {
+        // Elements carried from the file go in their places in the schema's sequence.
+        let slots = carriedElementsBySlot(carried?.elements ?? [], order: worksheetElementOrder)
+        func carriedXML(_ names: ArraySlice<String>) -> String { names.map { (slots[$0] ?? []).joined() }.joined() }
+        func carriedXML(from first: String, to last: String) -> String {
+            guard let a = worksheetElementOrder.firstIndex(of: first),
+                  let b = worksheetElementOrder.firstIndex(of: last) else { return "" }
+            return carriedXML(worksheetElementOrder[a...b])
+        }
         var s = xmlHeader
-        s += "<worksheet xmlns=\"\(mainNS)\" xmlns:r=\"\(relNS)\">"
+        s += "<worksheet xmlns=\"\(mainNS)\" xmlns:r=\"\(relNS)\"\(rootAttributesXML(carried?.rootAttributes ?? [:]))>"
+        s += carriedXML(from: "sheetPr", to: "sheetPr")
 
         let used = sheet.usedRange
         s += "<dimension ref=\"\(used?.a1 ?? "A1")\"/>"
@@ -306,9 +373,11 @@ public enum XLSXWriter {
 
         // CT_Worksheet: sheetData, sheetCalcPr, sheetProtection,
         // protectedRanges, scenarios, autoFilter, sortState, ..., mergeCells.
+        s += carriedXML(from: "sheetCalcPr", to: "scenarios")
         if let filter = sheet.autoFilter {
             s += autoFilterXML(filter)
         }
+        s += carriedXML(from: "sortState", to: "customSheetViews")
 
         // mergeCells
         if !sheet.mergedRanges.isEmpty {
@@ -319,7 +388,12 @@ public enum XLSXWriter {
             s += "</mergeCells>"
         }
 
-        s += "<pageMargins left=\"0.7\" right=\"0.7\" top=\"0.75\" bottom=\"0.75\" header=\"0.3\" footer=\"0.3\"/>"
+        s += carriedXML(from: "phoneticPr", to: "printOptions")
+        if slots["pageMargins"] == nil {
+            // Attributes sorted, as a carried element is written: saving our own file again changes nothing.
+            s += "<pageMargins bottom=\"0.75\" footer=\"0.3\" header=\"0.3\" left=\"0.7\" right=\"0.7\" top=\"0.75\"/>"
+        }
+        s += carriedXML(from: "pageMargins", to: "extLst")
         s += "</worksheet>"
         guard fastSheetData else { return Data(s.utf8) }
         var data = head
