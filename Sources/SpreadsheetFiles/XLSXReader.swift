@@ -44,7 +44,9 @@ public enum XLSXReader {
     static func read(data: Data, report: inout XLSXReadReport,
                      progress: ((Double) -> Bool)? = nil, fastSheetData: Bool = true) throws -> Workbook {
         let zip = try ZipArchiveReader(data: data)
-        var unsupported = UnsupportedContent.scanPackage(zip)
+        let contentTypes = (try? zip.contents(named: "[Content_Types].xml")).flatMap { try? ContentTypes.parse($0) }
+            ?? ContentTypes()
+        var unsupported = UnsupportedContent()
 
         // 1. Root rels -> workbook part.
         let rootRels = try parseRelationships(zipData(zip, "_rels/.rels"), baseDir: "")
@@ -55,7 +57,8 @@ public enum XLSXReader {
         }
 
         // 2. Workbook part + its rels.
-        let workbookInfo = try parseWorkbook(zipData(zip, workbookPath))
+        let workbookData = try zipData(zip, workbookPath)
+        let workbookInfo = try parseWorkbook(workbookData)
         let workbookDir = directory(of: workbookPath)
         let relsPath = workbookDir.isEmpty
             ? "_rels/\(fileName(of: workbookPath)).rels"
@@ -94,6 +97,10 @@ public enum XLSXReader {
         let totalSize = max(1, sheetSizes.reduce(0, +))
         var doneSize = 0
         var sheetParts: [SheetPart] = []
+        /// What each sheet holds that isn't in the model, by sheet id.
+        var sheetFindings: [Int: Set<UnsupportedContent.Kind>] = [:]
+        /// What each sheet carries outside its cells (read here, while the part is at hand).
+        var carriedSheets: [Int: CarriedSheet] = [:]
         for (sheetIndex, sheetMeta) in workbookInfo.sheets.enumerated() {
             let size = sheetSizes[sheetIndex]
             let sheetProgress: ((Double) -> Bool)? = progress.map { report in
@@ -111,10 +118,12 @@ public enum XLSXReader {
             }
             sheet.isHidden = sheetMeta.state == "hidden" || sheetMeta.state == "veryHidden"
             if sheetMeta.state == "veryHidden" { unsupported.add(.veryHiddenSheets) }
-            let found = try parseWorksheet(zipData(zip, rel.target), into: sheet,
+            let partData = try zipData(zip, rel.target)
+            let found = try parseWorksheet(partData, into: sheet,
                                            sharedStrings: sharedStrings, styleIndexMap: styleIndexMap,
                                            progress: sheetProgress, fastSheetData: fastSheetData)
-            unsupported.formUnion(found)
+            sheetFindings[sheet.id, default: []].formUnion(found)
+            carriedSheets[sheet.id] = carriedSheet(partData)
             sheetParts.append(SheetPart(sheetID: sheet.id, sheetIndex: sheetIndex, path: rel.target))
         }
 
@@ -131,7 +140,32 @@ public enum XLSXReader {
             stylesData: stylesData, customFormats: customFormats), into: workbook)
         workbook.clearStrayPivotButtons() // buttons of pivots not kept
         unsupported.add(.pivotTables, count: report.droppedPivots.filter { $0.tableName != nil }.count)
-        unsupported.formUnion(workbookInfo.unsupported)
+
+        // 5b. What else the file holds, carried through to the next save.
+        let carried = readCarriedParts(CarriedReadContext(
+            zip: zip, types: contentTypes, rootRels: rootRels, workbookPath: workbookPath,
+            workbookData: workbookData, workbookRels: wbRels, sheetParts: sheetParts, sheets: carriedSheets))
+        if !carried.isEmpty {
+            workbook.carriedContent = carried
+            if workbook.preservedStyles == nil, let stylesData {
+                // Conditional formats and tables refer to differential formats by position.
+                workbook.preservedStyles = preservedStyleEntries(stylesData)
+            }
+        }
+        // Lost on save: parts not carried, and what carried sheets don't keep.
+        unsupported.formUnion(UnsupportedContent.scanPackage(zip, types: contentTypes,
+                                                             skipping: Set(carried.parts.keys)))
+        for (sheetID, found) in sheetFindings {
+            unsupported.formUnion(carried.sheets[sheetID] == nil ? found : found.subtracting(UnsupportedContent.carriedSheetKinds))
+        }
+        let carriedWorkbook = Set(carried.workbookElements.map(\.name))
+        unsupported.formUnion(workbookInfo.unsupported.filter { kind in
+            switch kind {
+            case .workbookProtection: return !carriedWorkbook.contains("workbookProtection")
+            case .customViews: return !carriedWorkbook.contains("customWorkbookViews")
+            default: return true
+            }
+        })
         report.unsupportedContent = unsupported.descriptions
 
         // 6. 1904 date system: shift date-formatted numerics into 1900 serials.

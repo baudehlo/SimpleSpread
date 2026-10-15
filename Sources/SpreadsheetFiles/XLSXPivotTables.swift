@@ -473,27 +473,33 @@ extension XLSXReader {
         }
         workbook.pivotTables = keptTables
 
-        var preserved = PreservedStyles()
+        var preserved = ctx.stylesData.map(preservedStyleEntries) ?? PreservedStyles()
         for id in numberFormatIDs where id >= 164 {
             if let code = ctx.customFormats[id] { preserved.numberFormats[id] = code }
         }
-        if let styles = ctx.stylesData {
-            preserved.differentialFormats = (try? XMLRewriter.fragments(of: styles) {
-                $0.path == ["styleSheet", "dxfs", "dxf"]
-            }) ?? []
-            try? XMLRewriter.scan(styles) { element in
-                if element.path.count > 3, element.path.prefix(3) == ["styleSheet", "dxfs", "dxf"],
-                   element.localName == "numFmt", let id = Int(element.attributes["numFmtId"] ?? ""), id >= 164 {
-                    preserved.reservedNumberFormatIDs.insert(id)
-                }
-                return .keep
-            }
-            preserved.tableStyles = (try? XMLRewriter.fragments(of: styles) {
-                $0.path == ["styleSheet", "tableStyles"]
-            })?.first
-        }
         workbook.preservedStyles = preserved
         return dropped
+    }
+
+    /// The stylesheet entries carried parts refer to by position or name:
+    /// differential formats (pivot formats, conditional formats, table
+    /// styles) and the custom table styles.
+    static func preservedStyleEntries(_ styles: Data) -> PreservedStyles {
+        var preserved = PreservedStyles()
+        preserved.differentialFormats = (try? XMLRewriter.fragments(of: styles) {
+            $0.path == ["styleSheet", "dxfs", "dxf"]
+        }) ?? []
+        try? XMLRewriter.scan(styles) { element in
+            if element.path.count > 3, element.path.prefix(3) == ["styleSheet", "dxfs", "dxf"],
+               element.localName == "numFmt", let id = Int(element.attributes["numFmtId"] ?? ""), id >= 164 {
+                preserved.reservedNumberFormatIDs.insert(id)
+            }
+            return .keep
+        }
+        preserved.tableStyles = (try? XMLRewriter.fragments(of: styles) {
+            $0.path == ["styleSheet", "tableStyles"]
+        })?.first
+        return preserved
     }
 }
 

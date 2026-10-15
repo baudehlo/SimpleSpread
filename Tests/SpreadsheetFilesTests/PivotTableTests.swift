@@ -333,7 +333,8 @@ struct PivotFixtureTests {
         let cacheIDs = Set(workbook.pivotCaches.map(\.cacheID))
         #expect(Set(workbook.pivotTables.map(\.cacheID)) == cacheIDs)
         #expect(cacheIDs.count == workbook.pivotCaches.count)
-        #expect((workbook.preservedStyles != nil) == !workbook.pivotTables.isEmpty)
+        // Pivots need their styles kept; so may carried conditional formats and tables.
+        #expect((workbook.preservedStyles != nil) == (!workbook.pivotTables.isEmpty || workbook.carriedContent != nil))
     }
 
     @Test(arguments: PivotFixtures.all)
@@ -542,7 +543,8 @@ struct PivotFixtureTests {
         let written = try Package(XLSXWriter.data(for: workbook))
         #expect(!written.partNames.contains { $0.hasPrefix("xl/pivot") })
         #expect(try !written.string("xl/workbook.xml").contains("pivotCaches"))
-        #expect(workbook.preservedStyles == nil)
+        // Styles are kept for the carried content (the theme), not the pivots.
+        #expect(workbook.preservedStyles?.numberFormats.isEmpty ?? true)
         #expect(workbook.sheets.contains { !$0.cells.isEmpty })
     }
 }

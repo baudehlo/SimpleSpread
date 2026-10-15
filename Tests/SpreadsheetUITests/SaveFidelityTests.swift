@@ -15,7 +15,8 @@ struct SaveFidelityTests {
         return dir
     }
 
-    /// An .xlsx with a comments part and conditional formatting.
+    /// An .xlsx with a comments part nothing links to (so it can't be
+    /// carried) and a macro project.
     func fileWithComments(in dir: URL) throws -> URL {
         let workbook = Workbook.newDocument()
         workbook.sheets[0].setCell(Cell(value: .number(1)), at: CellAddress(row: 0, column: 0))
@@ -26,15 +27,13 @@ struct SaveFidelityTests {
             if entry.name == "[Content_Types].xml" {
                 data = Data(String(decoding: data, as: UTF8.self).replacingOccurrences(
                     of: "</Types>",
-                    with: "<Override PartName=\"/xl/comments1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/></Types>").utf8)
-            } else if entry.name == "xl/worksheets/sheet1.xml" {
-                data = Data(String(decoding: data, as: UTF8.self).replacingOccurrences(
-                    of: "<pageMargins",
-                    with: "<conditionalFormatting sqref=\"A1\"><cfRule type=\"cellIs\" priority=\"1\" operator=\"greaterThan\"><formula>0</formula></cfRule></conditionalFormatting><pageMargins").utf8)
+                    with: "<Override PartName=\"/xl/comments1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml\"/>"
+                        + "<Override PartName=\"/xl/vbaProject.bin\" ContentType=\"application/vnd.ms-office.vbaProject\"/></Types>").utf8)
             }
             writer.addEntry(name: entry.name, data: data)
         }
         writer.addEntry(name: "xl/comments1.xml", data: Data("<comments/>".utf8))
+        writer.addEntry(name: "xl/vbaProject.bin", data: Data([0xD0, 0xCF]))
         let url = dir.appendingPathComponent("Budget.xlsx")
         try writer.finalize().write(to: url)
         return url
@@ -44,7 +43,7 @@ struct SaveFidelityTests {
         let dir = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: dir) }
         let doc = try SpreadsheetDocument.open(url: fileWithComments(in: dir))
-        #expect(doc.unsupportedContent == ["comments", "conditional formatting"])
+        #expect(doc.unsupportedContent == ["comments", "macros"])
     }
 
     @Test func theFirstSaveInPlaceAsksAndThenNotAgain() throws {
@@ -52,10 +51,10 @@ struct SaveFidelityTests {
         defer { try? FileManager.default.removeItem(at: dir) }
         let url = try fileWithComments(in: dir)
         let doc = try SpreadsheetDocument.open(url: url)
-        #expect(DocumentSaving.plan(for: doc) == .confirmLoss(url, ["comments", "conditional formatting"]))
+        #expect(DocumentSaving.plan(for: doc) == .confirmLoss(url, ["comments", "macros"]))
         // Save As says what the copy leaves out, without asking.
         #expect(DocumentSaving.plan(for: doc, as: true)
-                == .choose(lossNote: "This copy won’t include the comments and conditional formatting from “Budget.xlsx”, which SimpleSpread can’t save. The original file is not changed."))
+                == .choose(lossNote: "This copy won’t include the comments and macros from “Budget.xlsx”, which SimpleSpread can’t save. The original file is not changed."))
 
         // "Save Anyway" (or saving a copy) is the answer for this document.
         try doc.save(to: url)

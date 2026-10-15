@@ -42,7 +42,9 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
   range-returning functions.
 - INDIRECT/OFFSET (they break static dependency analysis; roadmap item with
   dynamic dependency tracking).
-- Charts, images, comments, conditional formatting, data validation.
+- Editing charts, images, comments, conditional formatting and data
+  validation. Files that have them keep them through a save (§7), but
+  SimpleSpread doesn't show or change them.
 - Pivot tables: OLAP/Data Model sources, calculated items, label/value
   filters, slicers and timelines, and Excel 2010+ show-values-as modes
   (rank, % of parent). Pivots that use them are kept intact for Excel but
@@ -249,12 +251,57 @@ Number→text has three contracts: `generalString` (grid only, ~10 digits),
 `roundTripString` (formula text, the cell editor: exact), and
 `textCoercionString` (`&`, text functions: Excel's 15 digits).
 Hidden sheets (`state`) are kept (`Sheet.isHidden`; veryHidden comes back as
-hidden). Everything else the model doesn't hold is dropped on save, so the
-reader lists it (`UnsupportedContent`: parts by content type, worksheet
-elements such as conditional formatting or print setup, rich-text runs,
-dropped pivots) and the first ⌘S over such a file asks: Save a Copy… /
-Save Anyway / Cancel (`DocumentSaving.plan`); Save As only notes it in the
-panel. Carrying unknown parts through unchanged is the longer-term fix.
+hidden).
+
+**Carried content.** What the model doesn't hold is carried through a save
+(`CarriedParts`, behind Core's `CarriedContent` protocol on
+`Workbook.carriedContent`):
+- every part a worksheet links to and what those link to in turn (drawings
+  with their charts and images, comments and their VML boxes, threaded
+  comments, tables, OLE objects and controls, printer settings), written at
+  their original paths with their relationships rebuilt under their
+  original ids;
+- the worksheet elements the writer doesn't produce (sheetPr, protection,
+  conditional formatting, data validation, hyperlinks, print setup and page
+  breaks, sparklines and other extLst content), kept as XML fragments and
+  spliced back in schema order, with the original root's namespace
+  declarations and `mc:Ignorable`;
+- at workbook level, the theme, links to other workbooks, the people behind
+  threaded comments, custom XML and custom document properties, and the
+  `<workbook>` children that are settings (protection, custom views, …).
+
+A part is carried only if everything it links to is, and an element
+pointing at a part that isn't carried goes too, so a saved file never has
+a dangling link. Not carried, and still reported: chart sheets (they open as
+empty sheets; their chart is carried on them), macros, slicers and
+timelines, data connections, query tables and the Data Model, linked data
+types, change history, signatures, add-ins, Strict-namespace sheets, plus
+what the model rewrites itself (hidden columns, column and row formatting,
+outlines, rich text).
+
+Edits keep carried content lined up with the cells. Every row and column
+insert or delete (the same `StructuralChange` that moves cells), sheet
+rename and sheet delete goes to `CarriedContent.applying`, which:
+- moves drawing anchors, honouring "move but don't size" and "don't move";
+- moves comment, sqref, hyperlink and table references, removing those whose
+  cells were deleted, with their VML boxes and empty containers;
+- moves page breaks, and adds or removes table columns for column edits
+  inside a table;
+- rewrites formulas in charts, rules, validations, sparklines, VML controls
+  and hyperlink locations with the same reference rewrite as cell formulas.
+
+The content is a value: workbook snapshots, the structural undo record
+(`StructuralEditResult.Before`) and the background save copy it for free.
+At save, table column names are synced to their header cells (Excel repairs
+a mismatch); a header cell that's empty or repeats a name gets the name
+written into it in the file. Sorting doesn't move comments with their rows.
+The reader lists what isn't carried (`UnsupportedContent`: parts not
+carried, by content type; elements of sheets that aren't carried; rich-text
+runs; dropped pivots), and the first ⌘S over such a file asks: Save a
+Copy… / Save Anyway / Cancel (`DocumentSaving.plan`); Save As only notes it
+in the panel. Checked in Excel for the web: files with charts, comments,
+tables, conditional formatting, validation, hyperlinks and sparklines open
+without repair after inserts, deletes and renames.
 Both worksheet readers feed one `SheetCellBuilder` (row/column inference,
 shared formulas, value types, bounds on every number from the file), and a
 fuzz test checks they never trap and agree.

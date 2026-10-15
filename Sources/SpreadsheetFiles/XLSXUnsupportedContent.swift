@@ -87,6 +87,10 @@ struct UnsupportedContent: Equatable {
         for kind in kinds { add(kind) }
     }
 
+    mutating func formUnion(_ other: UnsupportedContent) {
+        for (kind, count) in other.counts { add(kind, count: count) }
+    }
+
     /// Human-readable, in display order: "3 charts", "comments", …
     var descriptions: [String] {
         var kinds = counts.keys.sorted()
@@ -101,12 +105,19 @@ struct UnsupportedContent: Equatable {
 
     // MARK: Package parts
 
-    /// Classify every part in the package by its content type.
-    static func scanPackage(_ zip: ZipArchiveReader) -> UnsupportedContent {
+    /// Worksheet content a carried sheet keeps (CarriedParts): reported
+    /// only for sheets that aren't carried.
+    static let carriedSheetKinds: Set<Kind> = [
+        .conditionalFormatting, .dataValidation, .hyperlinks, .sheetProtection, .scenarios, .customViews,
+        .embeddedObjects, .formControls, .printSettings, .sparklines,
+    ]
+
+    /// Classify every part in the package by its content type, but those
+    /// in `skipping` (carried through a save).
+    static func scanPackage(_ zip: ZipArchiveReader, types: ContentTypes, skipping: Set<String> = []) -> UnsupportedContent {
         var found = UnsupportedContent()
-        guard let typesData = try? zip.contents(named: "[Content_Types].xml"),
-              let types = try? ContentTypes.parse(typesData) else { return found }
-        for entry in zip.entries where !entry.name.hasSuffix("/") && entry.name != "[Content_Types].xml" {
+        for entry in zip.entries where !entry.name.hasSuffix("/") && entry.name != "[Content_Types].xml"
+            && !skipping.contains(entry.name) {
             guard let type = types.contentType(ofPart: entry.name) else { continue }
             guard let kind = kind(forContentType: type, partName: entry.name) else { continue }
             // Some writers (LibreOffice) always add an empty custom properties part.
