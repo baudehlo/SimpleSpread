@@ -175,36 +175,7 @@ struct EditCommands: Commands {
         // document made ⌘V/⌘Z/⌘A act on the grid while the user was typing.
         CommandGroup(after: .pasteboard) {
             Divider()
-            Button("Fill Down") {
-                perform(document) { $0.fillDown() }
-            }
-            .keyboardShortcut("d", modifiers: .command)
-            .disabled(document == nil)
-
-            Button("Fill Right") {
-                perform(document) { $0.fillRight() }
-            }
-            .keyboardShortcut("r", modifiers: .command)
-            .disabled(document == nil)
-
-            Divider()
-            Button("Find…") {
-                perform(document) { $0.presentFind() }
-            }
-            .keyboardShortcut("f", modifiers: .command)
-            .disabled(document == nil)
-
-            Button("Find Next") {
-                perform(document) { $0.findNext() }
-            }
-            .keyboardShortcut("g", modifiers: .command)
-            .disabled((document?.findMatches.isEmpty ?? true))
-
-            Button("Find Previous") {
-                perform(document) { $0.findPrevious() }
-            }
-            .keyboardShortcut("g", modifiers: [.command, .shift])
-            .disabled((document?.findMatches.isEmpty ?? true))
+            DocumentCommandItems(commands: DocumentCommand.menu("Edit"), document: document)
         }
     }
 }
@@ -223,36 +194,7 @@ struct ViewCommands: Commands {
             }
 
             Divider()
-
-            Button("Zoom In") {
-                perform(document) { $0.zoomIn() }
-            }
-            .keyboardShortcut("=", modifiers: .command) // acts as the conventional ⌘+
-            .disabled(document == nil)
-
-            Button("Zoom Out") {
-                perform(document) { $0.zoomOut() }
-            }
-            .keyboardShortcut("-", modifiers: .command)
-            .disabled(document == nil)
-
-            Button("Actual Size") {
-                perform(document) { $0.resetZoom() }
-            }
-            .keyboardShortcut("0", modifiers: .command)
-            .disabled(document == nil)
-
-            Divider()
-
-            Button("Freeze Panes") { perform(document) { $0.freezePanesAtSelection() } }
-                .disabled(document == nil || document?.selection.activeCell == CellAddress(row: 0, column: 0))
-            Button("Freeze Top Row") { perform(document) { $0.freezePanes(rows: 1, columns: 0) } }
-                .disabled(document == nil)
-            Button("Freeze First Column") { perform(document) { $0.freezePanes(rows: 0, columns: 1) } }
-                .disabled(document == nil)
-            Button("Unfreeze Panes") { perform(document) { $0.freezePanes(rows: 0, columns: 0) } }
-                .disabled(document?.hasFrozenPanes != true)
-
+            DocumentCommandItems(commands: DocumentCommand.menu("View"), document: document)
             Divider()
         }
     }
@@ -263,69 +205,7 @@ struct InsertCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Insert") {
-            Button("Row Above") {
-                guard let document else { return }
-                document.commitPendingEdit()
-                document.insertRows(at: document.selection.range.start.row,
-                                    count: document.selection.range.rowCount)
-            }
-            Button("Row Below") {
-                guard let document else { return }
-                document.commitPendingEdit()
-                document.insertRows(at: document.selection.range.end.row + 1,
-                                    count: document.selection.range.rowCount)
-            }
-            Button("Column Left") {
-                guard let document else { return }
-                document.commitPendingEdit()
-                document.insertColumns(at: document.selection.range.start.column,
-                                       count: document.selection.range.columnCount)
-            }
-            Button("Column Right") {
-                guard let document else { return }
-                document.commitPendingEdit()
-                document.insertColumns(at: document.selection.range.end.column + 1,
-                                       count: document.selection.range.columnCount)
-            }
-            Divider()
-            Button("Delete Selected Rows") {
-                guard let document else { return }
-                document.commitPendingEdit()
-                document.deleteRows(at: document.selection.range.start.row,
-                                    count: document.selection.range.rowCount)
-            }
-            Button("Delete Selected Columns") {
-                guard let document else { return }
-                document.commitPendingEdit()
-                document.deleteColumns(at: document.selection.range.start.column,
-                                       count: document.selection.range.columnCount)
-            }
-            Divider()
-            Button("New Sheet") {
-                perform(document) { $0.addSheet() }
-            }
-            .keyboardShortcut("n", modifiers: [.command, .shift])
-            Divider()
-            Button("PivotTable…") {
-                perform(document) { $0.isInsertPivotPresented = true }
-            }
-            .disabled(document == nil)
-            Menu("Chart") {
-                ForEach(ChartPanel.kinds, id: \.kind) { choice in
-                    Button {
-                        perform(document) { $0.insertChart(choice.kind) }
-                    } label: {
-                        Label(choice.name, systemImage: choice.symbol)
-                    }
-                }
-            }
-            .disabled(document == nil)
-            // The keyboard's way to a chart (Tab then goes chart to chart).
-            Button("Select Next Chart") {
-                perform(document) { $0.selectNextChart() }
-            }
-            .keyboardShortcut("j", modifiers: [.command, .option])
-            .disabled(document?.activeCharts.isEmpty ?? true)
+            DocumentCommandItems(commands: DocumentCommand.menu("Insert"), document: document)
         }
     }
 }
@@ -335,40 +215,7 @@ struct DataCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Data") {
-            Button("Sort A to Z") { perform(document) { $0.quickSort(ascending: true) } }
-                .disabled(document == nil)
-            Button("Sort Z to A") { perform(document) { $0.quickSort(ascending: false) } }
-                .disabled(document == nil)
-            Button("Custom Sort…") { perform(document) { $0.isSortPresented = true } }
-                .disabled(document == nil)
-            Divider()
-            Button(document?.activeAutoFilter == nil ? "Filter" : "Remove Filter") {
-                perform(document) { $0.toggleAutoFilter() }
-            }
-            .keyboardShortcut("l", modifiers: [.command, .shift])
-            .disabled(document == nil)
-            Button("Clear Filters") { perform(document) { $0.clearAllFilters() } }
-                .disabled(document?.activeAutoFilter?.columns.isEmpty ?? true)
-            Button("Reapply Filter") { perform(document) { $0.reapplyAutoFilter() } }
-                .disabled(document?.activeAutoFilter == nil)
-            Divider()
-            Button("Refresh") {
-                guard let document, let pivot = document.activePivotIndex else { return }
-                document.commitPendingEdit()
-                document.refreshPivot(pivot)
-            }
-            .refreshShortcut(.option)
-            .disabled(document?.activePivotIndex == nil)
-            Button("Refresh All") {
-                perform(document) { $0.refreshAllPivots() }
-            }
-            .refreshShortcut([.control, .option])
-            .disabled(document?.workbook.pivotTables.isEmpty ?? true)
-            Divider()
-            Button(document?.isPivotPanelVisible == false ? "Show PivotTable Fields" : "Hide PivotTable Fields") {
-                perform(document) { $0.isPivotPanelVisible.toggle() }
-            }
-            .disabled(document == nil)
+            DocumentCommandItems(commands: DocumentCommand.menu("Data"), document: document)
         }
     }
 }
@@ -378,47 +225,7 @@ struct FormatCommands: Commands {
 
     var body: some Commands {
         CommandMenu("Format") {
-            Button("Bold") { perform(document) { $0.toggleBold() } }
-                .disabled(document == nil)
-            Button("Italic") { perform(document) { $0.toggleItalic() } }
-                .disabled(document == nil)
-            Button("Underline") { perform(document) { $0.toggleUnderline() } }
-                .disabled(document == nil)
-            Button("Strikethrough") { perform(document) { $0.toggleStrikethrough() } }
-                .keyboardShortcut("x", modifiers: [.command, .shift])
-                .disabled(document == nil)
-            Divider()
-            ForEach(DocumentWindowView.formatChoices, id: \.0) { name, format in
-                Button(name) {
-                    perform(document) { $0.setNumberFormat(format) }
-                }
-                .disabled(document == nil)
-            }
-            Divider()
-            Button("Increase Indent") { perform(document) { $0.adjustIndent(by: 1) } }
-                .keyboardShortcut("]", modifiers: [.command, .option])
-                .disabled(document == nil)
-            Button("Decrease Indent") { perform(document) { $0.adjustIndent(by: -1) } }
-                .keyboardShortcut("[", modifiers: [.command, .option])
-                .disabled(document == nil)
-            Menu("Borders") {
-                ForEach(DocumentWindowView.borderChoices, id: \.0) { name, preset in
-                    Button(name) { perform(document) { $0.applyBorders(preset) } }
-                }
-            }
-            .disabled(document == nil)
-            Menu("Merge Cells") {
-                Button("Merge & Center") { perform(document) { $0.mergeSelection(.mergeAndCenter) } }
-                Button("Merge Across") { perform(document) { $0.mergeSelection(.mergeAcross) } }
-                Button("Merge Cells") { perform(document) { $0.mergeSelection(.merge) } }
-                Button("Unmerge Cells") { perform(document) { $0.unmergeSelection() } }
-                    .disabled(document?.selectionHasMerge != true)
-            }
-            .disabled(document == nil)
-            Divider()
-            Button("Clear Formatting") { perform(document) { $0.clearFormattingInSelection() } }
-                .keyboardShortcut("\\", modifiers: .command)
-                .disabled(document == nil)
+            DocumentCommandItems(commands: DocumentCommand.menu("Format"), document: document)
         }
     }
 }
