@@ -30,6 +30,23 @@ struct PivotEditingDocumentTests {
         #expect(doc.suggestedPivotSource()?.a1 == "A1:B3")
     }
 
+    /// A big table, as in the benchmark's complex.xlsx: Insert ▸ PivotTable…
+    /// opens at once (it took minutes, so the dialog seemed never to come).
+    @Test func suggestedSourceIsQuickOnABigTable() {
+        let wb = Workbook()
+        let sheet = wb.addSheet(named: "Data")
+        for r in 0..<20_001 {
+            for c in 0..<8 { sheet.setCell(Cell(value: r == 0 ? .string("H\(c)") : .number(Double(r * c))), at: CellAddress(row: r, column: c)) }
+        }
+        let doc = SpreadsheetDocument(workbook: wb)
+        doc.selection.select(a("A1"))
+        let clock = ContinuousClock()
+        var source: CellRange?
+        let elapsed = clock.measure { source = doc.suggestedPivotSource() }
+        #expect(source?.a1 == "A1:H20001")
+        #expect(elapsed < .milliseconds(500), "\(elapsed)")
+    }
+
     @Test func insertingAPivotMakesANewSheetAndSelectsIt() {
         let doc = document()
         let dataSheet = doc.activeSheetID

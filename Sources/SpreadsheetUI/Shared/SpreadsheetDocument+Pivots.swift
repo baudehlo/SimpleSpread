@@ -37,19 +37,9 @@ extension SpreadsheetDocument {
         let sheet = activeSheet
         let start = selection.activeCell
         guard !sheet.value(at: start).isEmpty else { return nil }
-        var region = CellRange(start)
-        var grew = true
-        while grew {
-            grew = false
-            let outer = CellRange(start: CellAddress(row: max(0, region.start.row - 1), column: max(0, region.start.column - 1)),
-                                  end: CellAddress(row: region.end.row + 1, column: region.end.column + 1))
-            let filled = sheet.cells.keys.filter { outer.contains($0) && !sheet.value(at: $0).isEmpty }
-            for address in filled where !region.contains(address) {
-                region = region.union(CellRange(address))
-                grew = true
-            }
-        }
-        return region
+        // Excel's current region; it costs about the region's border (a
+        // scan of every cell per row it grew took minutes on 20,000 rows).
+        return sheet.currentRegion(around: start)
     }
 
     /// Insert a pivot table over `source` (on the active sheet) and select it.
