@@ -157,6 +157,8 @@ struct FilterPopoverView: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Apply") { apply() }
                     .keyboardShortcut(.defaultAction)
+                    // Nothing ticked would hide every row: Excel greys out OK.
+                    .disabled(nothingChecked && choice.condition(conditionText) == nil)
             }
         }
         .padding(14)
@@ -166,6 +168,10 @@ struct FilterPopoverView: View {
 
     private var currentFilter: ColumnFilter? {
         document.activeAutoFilter?.columns[columnOffset]
+    }
+
+    private var nothingChecked: Bool {
+        checked.isEmpty && !(hasBlanks && blanksChecked)
     }
 
     private var shownValues: [String] {
