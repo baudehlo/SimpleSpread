@@ -218,5 +218,28 @@ struct GridEditingTests {
         let copyItem = NSMenuItem(title: "Copy", action: #selector(SpreadsheetGridView.copy(_:)), keyEquivalent: "c")
         #expect(grid.validateMenuItem(copyItem))
     }
+
+    /// ⌘D on one row copies the row above (⌘R: the column to the left), as
+    /// Excel does; the selection stays put.
+    @Test func fillDownAndRightFromASingleRowOrColumn() {
+        let doc = SpreadsheetDocument()
+        doc.commitInput("7", at: CellAddress(a1: "B2")!)
+        doc.commitInput("=B2*2", at: CellAddress(a1: "C2")!)
+        doc.selection.select(range: CellRange(a1: "B3:C3")!)
+        doc.fillDown()
+        #expect(doc.displayString(at: CellAddress(a1: "B3")!) == "7")
+        #expect(doc.activeSheet.cell(at: CellAddress(a1: "C3")!).formula == "B3*2")
+        #expect(doc.selection.range == CellRange(a1: "B3:C3")!)
+        doc.selection.select(CellAddress(a1: "D2")!)
+        doc.fillRight()
+        #expect(doc.activeSheet.cell(at: CellAddress(a1: "D2")!).formula == "C2*2")
+        #expect(doc.selection.activeCell == CellAddress(a1: "D2")!)
+        // Nothing above row 1, nothing left of column A.
+        doc.selection.select(CellAddress(a1: "A1")!)
+        let revision = doc.revision
+        doc.fillDown()
+        doc.fillRight()
+        #expect(doc.revision == revision)
+    }
 }
 #endif

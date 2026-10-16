@@ -1149,20 +1149,39 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     /// Fill Down (⌘D): copy the selection's top row into the rows below it,
-    /// adjusting relative formula references. No-op on a single-row selection.
+    /// adjusting relative formula references; a single row copies the one
+    /// above it.
     public func fillDown() {
         let r = selection.range
-        guard r.rowCount > 1 else { return }
+        // One row: copy the row above into it, as Excel does.
+        if r.rowCount == 1 {
+            guard r.start.row > 0 else { return }
+            let above = CellRange(start: CellAddress(row: r.start.row - 1, column: r.start.column),
+                                  end: CellAddress(row: r.start.row - 1, column: r.end.column))
+            let selected = selection
+            fill(from: above, to: above.union(r))
+            selection = selected
+            return
+        }
         let topRow = CellRange(start: r.start,
                                end: CellAddress(row: r.start.row, column: r.end.column))
         fill(from: topRow, to: r)
     }
 
     /// Fill Right (⌘R): copy the selection's left column into the columns to
-    /// its right. No-op on a single-column selection.
+    /// its right; a single column copies the one to its left.
     public func fillRight() {
         let r = selection.range
-        guard r.columnCount > 1 else { return }
+        // One column: copy the column to the left into it, as Excel does.
+        if r.columnCount == 1 {
+            guard r.start.column > 0 else { return }
+            let left = CellRange(start: CellAddress(row: r.start.row, column: r.start.column - 1),
+                                 end: CellAddress(row: r.end.row, column: r.start.column - 1))
+            let selected = selection
+            fill(from: left, to: left.union(r))
+            selection = selected
+            return
+        }
         let leftColumn = CellRange(start: r.start,
                                    end: CellAddress(row: r.end.row, column: r.start.column))
         fill(from: leftColumn, to: r)
