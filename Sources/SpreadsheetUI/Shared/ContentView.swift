@@ -23,7 +23,7 @@ public struct DocumentWindowView: View {
                 Divider()
                 ChartPanel(document: document, chart: chart)
                     .id(chart.id)
-            } else if document.isPivotPanelVisible, let pivot = document.activePivotIndex {
+            } else if document.isPivotPanelVisible, let pivot = document.pivotPanelIndex {
                 Divider()
                 PivotFieldsPanel(document: document, index: pivot)
                     .id(pivot)

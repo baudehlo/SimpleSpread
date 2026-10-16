@@ -2,7 +2,8 @@ import SwiftUI
 import SpreadsheetCore
 
 /// The PivotTable Fields panel: Excel's field list for the pivot under the
-/// active cell. Check a field to add it (text to Rows, numbers to Values),
+/// active cell, or the one last selected (it stays while you select the
+/// source data or anything else). Check a field to add it (text to Rows, numbers to Values),
 /// drag fields between the four areas, and use each field's menu for
 /// summaries, sorting, filtering and subtotals.
 struct PivotFieldsPanel: View {
@@ -43,11 +44,20 @@ struct PivotFieldsPanel: View {
 
     // MARK: Header
 
+    /// The pivot's name, and its sheet when that isn't the one showing
+    /// (the panel stays on a pivot while you look elsewhere).
+    private var subtitle: String {
+        guard let table else { return "" }
+        guard table.sheetID != document.activeSheetID,
+              let sheet = document.workbook.sheet(withID: table.sheetID) else { return table.name }
+        return "\(table.name) on \(sheet.name)"
+    }
+
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text("PivotTable Fields").font(.headline)
-                Text(table?.name ?? "").font(.caption).foregroundStyle(.secondary)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             Button {
@@ -135,7 +145,9 @@ struct PivotFieldsPanel: View {
                         }
                 }
                 if entries.isEmpty {
-                    Text("Drag fields here").font(.caption2).foregroundStyle(.tertiary)
+                    // The fields are the source's column headings, listed above.
+                    Text("Drag a field from the list above").font(.caption2).foregroundStyle(.tertiary)
+                        .multilineTextAlignment(.center)
                         .frame(maxWidth: .infinity, minHeight: 22)
                 }
             }

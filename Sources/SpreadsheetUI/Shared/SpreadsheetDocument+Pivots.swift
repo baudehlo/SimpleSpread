@@ -19,6 +19,24 @@ extension SpreadsheetDocument {
     /// The pivot table under the active cell.
     public var activePivotIndex: Int? { pivotIndex(at: selection.activeCell) }
 
+    /// The pivot the PivotTable Fields panel shows: the one under the active
+    /// cell, or else the one the selection was last in, so the panel stays
+    /// while you look at the source data (or anything else) beside it.
+    /// Unlike Excel, which hides its field list outside the pivot.
+    public var pivotPanelIndex: Int? {
+        if let active = activePivotIndex { return active }
+        guard let target = pivotPanelTarget else { return nil }
+        return workbook.pivotTables.firstIndex { $0.sheetID == target.sheetID && $0.name == target.name }
+    }
+
+    /// Note the pivot under the active cell for the panel (selection and
+    /// sheet changes call this).
+    func rememberPivotForPanel() {
+        guard let index = activePivotIndex else { return }
+        let table = workbook.pivotTables[index]
+        pivotPanelTarget = (table.sheetID, table.name)
+    }
+
     /// Why a pivot table can't be edited or refreshed here, or nil.
     public func pivotEditBlocker(_ index: Int) -> String? {
         let table = workbook.pivotTables[index]

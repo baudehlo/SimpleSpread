@@ -57,10 +57,16 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// The cells selected. Selecting cells (by any means) deselects a chart.
     @Published public var selection = SelectionState() {
-        didSet { if selection != oldValue, selectedChartID != nil { selectedChartID = nil } }
+        didSet {
+            if selection != oldValue, selectedChartID != nil { selectedChartID = nil }
+            rememberPivotForPanel()
+        }
     }
     @Published public var activeSheetID: Int {
-        didSet { if oldValue != activeSheetID { selectedChartID = nil } }
+        didSet {
+            if oldValue != activeSheetID { selectedChartID = nil }
+            rememberPivotForPanel()
+        }
     }
     /// The XLSX file this document saves to. Nil until first saved — including
     /// for documents opened from CSV, which must Save-As to XLSX rather than
@@ -85,8 +91,12 @@ public final class SpreadsheetDocument: ObservableObject {
     @Published public var zoomLevel: CGFloat = 1.0
     /// An alert for the window to show; the window clears it on dismissal.
     @Published public var notice: DocumentNotice?
-    /// Show the PivotTable Fields panel when the active cell is in a pivot.
+    /// Show the PivotTable Fields panel when the active cell is in a pivot
+    /// (and after, for that pivot: see `pivotPanelIndex`).
     @Published public var isPivotPanelVisible = true
+    /// The pivot the selection was last in (its sheet and name), which the
+    /// PivotTable Fields panel stays on while cells elsewhere are selected.
+    var pivotPanelTarget: (sheetID: Int, name: String)?
     /// Insert ▸ PivotTable… sheet.
     @Published public var isInsertPivotPresented = false
     /// The chart selected on the active sheet (its id), if any: see

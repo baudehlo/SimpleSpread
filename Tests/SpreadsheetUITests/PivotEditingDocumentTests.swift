@@ -47,6 +47,30 @@ struct PivotEditingDocumentTests {
         #expect(elapsed < .milliseconds(500), "\(elapsed)")
     }
 
+    /// The PivotTable Fields panel stays on a pivot while cells outside it
+    /// are selected (the source data, on another sheet), and still edits it.
+    @Test func thePanelStaysOnThePivotWhileYouLookAtTheData() throws {
+        let doc = document()
+        let dataSheet = doc.activeSheetID
+        doc.selection.select(a("A1"))
+        #expect(doc.insertPivotTable(source: CellRange(a1: "A1:B5")!))
+        let pivot = try #require(doc.activePivotIndex)
+        #expect(doc.pivotPanelIndex == pivot)
+        // Off to the source data on its own sheet.
+        doc.activeSheetID = dataSheet
+        doc.selection.select(a("B3"))
+        #expect(doc.activePivotIndex == nil)
+        #expect(doc.pivotPanelIndex == pivot)
+        // An edit from the panel still lands on the pivot.
+        doc.editPivot(pivot, actionName: "Add Field") { d, c in d.place(field: 1, in: .values, cache: c) }
+        #expect(doc.workbook.pivotTables[pivot].definition?.dataFields.count == 1)
+        // Gone with its sheet.
+        doc.activeSheetID = doc.workbook.pivotTables[pivot].sheetID
+        doc.confirm = { _, _, _ in true }
+        doc.deleteActiveSheet()
+        #expect(doc.pivotPanelIndex == nil)
+    }
+
     @Test func insertingAPivotMakesANewSheetAndSelectsIt() {
         let doc = document()
         let dataSheet = doc.activeSheetID
