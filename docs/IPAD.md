@@ -56,6 +56,8 @@ the next time the project is generated.
 - `SIMPLESPREAD_DEMO=1` opens the sample sheet.
 - `SIMPLESPREAD_DEMO=layout` opens a sample with merges, frozen panes and a
   filter.
+- `SIMPLESPREAD_DEMO=charts` opens a small table with three charts, one
+  selected (the Chart panel shows).
 - `SIMPLESPREAD_OPEN=/path/file.csv` opens a file at launch.
 
 These match the Mac hooks.

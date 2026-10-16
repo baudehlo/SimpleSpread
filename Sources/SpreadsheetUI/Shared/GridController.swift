@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import SpreadsheetCore
+import SpreadsheetFiles
 
 /// What a platform grid view does for its GridController: say what is on
 /// screen, redraw, scroll, and host the in-cell text editor.
@@ -68,6 +69,11 @@ final class GridController {
         case fillHandle(source: CellRange)
         /// Dragging a selection grip (iPad): `anchor` is the fixed corner.
         case grip(anchor: CellAddress)
+        /// Moving a chart: where the press began (view coordinates, as the
+        /// pointer reports them) and where the chart was (unshifted).
+        case moveChart(id: String, start: CGPoint, original: CGRect)
+        /// Resizing a chart by one of its handles.
+        case resizeChart(id: String, handle: ChartHandle, start: CGPoint, original: CGRect)
     }
 
     private(set) var dragMode: DragMode = .none
@@ -112,13 +118,25 @@ final class GridController {
     }
     private var pivotBandsCache: (revision: Int, sheetID: Int, bands: [PivotBands])?
 
+    /// Draws the active sheet's charts and keeps their images.
+    lazy var chartLayer: SheetChartLayer = {
+        let layer = SheetChartLayer()
+        layer.onImageReady = { [weak self] in self?.host?.gridNeedsDisplay() }
+        return layer
+    }()
+    /// A chart being moved or resized, and its frame for now (unshifted
+    /// view coordinates).
+    private(set) var movingChart: (id: String, frame: CGRect)?
+
     /// A renderer for the grid as it is now.
     func renderer(decorations: GridDecorations = GridDecorations()) -> GridRenderer? {
         guard let document else { return nil }
         var decorations = decorations
         decorations.pendingFillTarget = pendingFillTarget
+        decorations.selectedChart = document.selectedChart?.id
+        decorations.movingChart = movingChart
         return GridRenderer(document: document, geometry: geometry, pivotBands: pivotBands,
-                            decorations: decorations)
+                            charts: document.activeCharts, chartLayer: chartLayer, decorations: decorations)
     }
 
     // MARK: Pointer
@@ -139,7 +157,9 @@ final class GridController {
 
         document.commitPendingEdit() // the in-cell editor or the formula bar
 
-        switch geometry.region(at: point) {
+        let region = geometry.region(at: point)
+        if region != .cells, document.selectedChartID != nil { document.selectChart(nil) }
+        switch region {
         case .corner:
             selectAll()
             return .none
@@ -191,6 +211,22 @@ final class GridController {
             return .none
 
         case .cells:
+            // Charts sit above the cells: the selected one's handles, then any chart.
+            if let hit = chartHandleHit(at: point) {
+                dragMode = .resizeChart(id: hit.chart.id, handle: hit.handle, start: point, original: hit.frame)
+                return .none
+            }
+            if let hit = chart(at: point) {
+                document.selectChart(hit.chart.id)
+                if clickCount == 2 { document.isChartPanelVisible = true }
+                // A chart in a group moves only with the group.
+                if !hit.chart.isGrouped {
+                    dragMode = .moveChart(id: hit.chart.id, start: point, original: hit.frame)
+                }
+                stateChanged()
+                return .none
+            }
+            if document.selectedChartID != nil { document.selectChart(nil) }
             if fillHandleHit(at: point, geometry: geometry) {
                 dragMode = .fillHandle(source: document.selection.range)
                 return .none
@@ -294,6 +330,21 @@ final class GridController {
             let newHeight = max(14, startHeight + (point.y - startY))
             document.setRowHeight(index, height: newHeight)
             host?.gridSizeChanged()
+        case .moveChart(let id, let start, let original):
+            // By how far the pointer moved, not where it is: over a frozen
+            // pane, a point maps to other cells.
+            var frame = original.offsetBy(dx: point.x - start.x, dy: point.y - start.y)
+            // Not past the top-left corner of the sheet.
+            frame.origin.x = max(frame.origin.x, geometry.contentOrigin.x)
+            frame.origin.y = max(frame.origin.y, geometry.contentOrigin.y)
+            movingChart = (id, frame)
+            host?.gridNeedsDisplay()
+        case .resizeChart(let id, let handle, let start, let original):
+            var frame = handle.resize(original, by: CGSize(width: point.x - start.x, height: point.y - start.y))
+            frame = frame.intersection(CGRect(x: geometry.contentOrigin.x, y: geometry.contentOrigin.y,
+                                              width: .greatestFiniteMagnitude, height: .greatestFiniteMagnitude))
+            movingChart = (id, frame)
+            host?.gridNeedsDisplay()
         case .fillHandle(let source):
             // Constrain fill to one axis (the dominant drag direction).
             let addr = geometry.address(at: point)
@@ -324,6 +375,19 @@ final class GridController {
            target != source {
             document?.fill(from: source, to: target)
             stateChanged()
+        }
+        if let moving = movingChart {
+            let original: CGRect?
+            switch dragMode {
+            case .moveChart(_, _, let frame), .resizeChart(_, _, _, let frame): original = frame
+            default: original = nil
+            }
+            movingChart = nil
+            if let original, moving.frame.integral != original.integral {
+                let origin = geometry.contentOrigin
+                document?.placeChart(moving.id, frame: moving.frame.offsetBy(dx: -origin.x, dy: -origin.y))
+                stateChanged()
+            }
         }
         switch dragMode {
         case .selectCells, .selectRows, .selectColumns, .grip:
@@ -449,6 +513,25 @@ final class GridController {
         ]
     }
 
+    /// The menu for a right-click (or long press) on a chart, which it selects.
+    func chartMenu(at point: CGPoint) -> [[MenuItem]]? {
+        guard let document, let hit = chart(at: point) else { return nil }
+        document.commitPendingEdit()
+        document.selectChart(hit.chart.id)
+        stateChanged()
+        let id = hit.chart.id
+        return [
+            [MenuItem(title: "Edit Chart…") { [weak self] in
+                self?.document?.isChartPanelVisible = true
+            }],
+            [MenuItem(title: "Copy Chart") { [weak self] in self?.copy() },
+             MenuItem(title: "Delete Chart", destructive: true) { [weak self] in
+                 self?.document?.deleteChart(id)
+                 self?.stateChanged()
+             }],
+        ]
+    }
+
     /// A menu item that runs a document command and updates the grid.
     private func act(_ title: String, destructive: Bool = false, resizes: Bool = false,
                      _ command: @escaping (SpreadsheetDocument) -> Void) -> MenuItem {
@@ -458,6 +541,68 @@ final class GridController {
             if resizes { self.host?.gridSizeChanged() }
             self.stateChanged()
         }
+    }
+
+    // MARK: Charts
+
+    /// A view point in unshifted view coordinates (where charts are
+    /// measured): over a frozen pane, the frozen rows or columns there.
+    func unshifted(_ point: CGPoint) -> CGPoint {
+        let geometry = self.geometry
+        let content = geometry.contentPoint(point)
+        return CGPoint(x: content.x + geometry.contentOrigin.x, y: content.y + geometry.contentOrigin.y)
+    }
+
+    /// The topmost chart under a view point, and its frame (unshifted).
+    func chart(at point: CGPoint) -> (chart: SheetChart, frame: CGRect)? {
+        guard let document, geometry.region(at: point) == .cells else { return nil }
+        let p = unshifted(point)
+        let geometry = self.geometry
+        for chart in document.activeCharts.reversed() {
+            let frame = SheetChartLayer.frame(of: chart, in: geometry)
+            if frame.contains(p) { return (chart, frame) }
+        }
+        return nil
+    }
+
+    /// The selected chart's handle under a view point.
+    func chartHandleHit(at point: CGPoint) -> (chart: SheetChart, handle: ChartHandle, frame: CGRect)? {
+        guard let document, let chart = document.selectedChart, !chart.isGrouped else { return nil }
+        let frame = SheetChartLayer.frame(of: chart, in: geometry)
+        let p = unshifted(point)
+        let reach = max(hitSlop + 2, 6)
+        for (handle, center) in SheetChartLayer.handles(of: frame)
+        where abs(center.x - p.x) <= reach && abs(center.y - p.y) <= reach {
+            return (chart, handle, frame)
+        }
+        return nil
+    }
+
+    /// Whether a press here would move or resize the selected chart (the
+    /// iPad lets a drag there do that rather than scroll).
+    func selectedChartHit(at point: CGPoint) -> Bool {
+        guard let selected = document?.selectedChart, !selected.isGrouped else { return false }
+        return chartHandleHit(at: point) != nil || chart(at: point)?.chart.id == selected.id
+    }
+
+    private func nudgeChart(_ chart: SheetChart, _ direction: SelectionState.Direction, by step: CGFloat) {
+        guard let document, !chart.isGrouped else { return }
+        var frame = SpreadsheetDocument.contentFrame(of: chart, in: layout)
+        switch direction {
+        case .up: frame.origin.y = max(0, frame.origin.y - step)
+        case .down: frame.origin.y += step
+        case .left: frame.origin.x = max(0, frame.origin.x - step)
+        case .right: frame.origin.x += step
+        }
+        document.placeChart(chart.id, frame: frame, nudge: true)
+        stateChanged()
+    }
+
+    /// Tab among charts (see SpreadsheetDocument.selectNextChart).
+    func selectNextChart(backward: Bool = false) {
+        document?.selectNextChart(backward: backward)
+        scrollActiveCellToVisible()
+        stateChanged()
     }
 
     // MARK: Keyboard (Ready mode)
@@ -479,6 +624,28 @@ final class GridController {
     /// `toEdge`: ⌘ with an arrow jumps to the edge of the data.
     func handle(_ key: Key, shift: Bool = false, toEdge: Bool = false) {
         guard let document else { return }
+        if let chart = document.selectedChart {
+            switch key {
+            case .delete:
+                document.deleteChart(chart.id)
+                stateChanged()
+                return
+            case .escape:
+                document.selectChart(nil)
+                stateChanged()
+                return
+            case .arrow(let direction):
+                nudgeChart(chart, direction, by: shift ? 10 : 1)
+                return
+            case .tab:
+                selectNextChart(backward: shift)
+                return
+            default:
+                // Other keys go back to the cells.
+                document.selectChart(nil)
+                stateChanged()
+            }
+        }
         let l = layout
         switch key {
         case .arrow(let dir):
@@ -595,6 +762,27 @@ final class GridController {
         guard let document, let host else { return }
         let l = layout
         let geometry = GridGeometry(layout: l, visible: host.visibleGridRect)
+        // A selected chart (one just inserted): its top-left corner, with
+        // as much of it as fits.
+        if let chart = document.selectedChart {
+            let frame = SheetChartLayer.frame(of: chart, in: geometry)
+            let visible = geometry.visible
+            let body = CGRect(x: visible.minX + geometry.contentOrigin.x + l.frozenWidth,
+                              y: visible.minY + geometry.contentOrigin.y + l.frozenHeight,
+                              width: visible.width - geometry.contentOrigin.x - l.frozenWidth,
+                              height: visible.height - geometry.contentOrigin.y - l.frozenHeight)
+            guard !body.contains(frame) else { return }
+            var origin = visible.origin
+            if frame.minX < body.minX || frame.maxX > body.maxX {
+                origin.x = max(0, min(frame.minX - 20, frame.maxX + 20 - body.width) - geometry.contentOrigin.x - l.frozenWidth)
+            }
+            if frame.minY < body.minY || frame.maxY > body.maxY {
+                origin.y = max(0, min(frame.minY - 20, frame.maxY + 20 - body.height) - geometry.contentOrigin.y - l.frozenHeight)
+            }
+            host.scrollGrid(to: origin)
+            host.gridNeedsDisplay()
+            return
+        }
         if let origin = geometry.scrollOrigin(toShow: document.selection.activeCell,
                                               gridSize: GridGeometry.gridSize(l)) {
             host.scrollGrid(to: origin)
@@ -608,11 +796,41 @@ final class GridController {
     /// active cell shows ("B3, 84", or "A1:C4, active cell A1, Item").
     var accessibilitySummary: String? {
         guard let document else { return nil }
+        if let chart = document.selectedChart {
+            return "Selected " + Self.accessibilityDescription(of: chart, in: document)
+        }
         let range = document.selection.range
         let active = document.selection.activeCell
         let shown = document.displayString(at: active)
         let place = range.isSingleCell ? active.a1 : "\(range.a1), active cell \(active.a1)"
         return shown.isEmpty ? place : "\(place), \(shown)"
+    }
+
+    /// The charts on screen, for VoiceOver: what each is, and where (view
+    /// coordinates). A chart is pixels in the grid, so this is how it's found.
+    var visibleChartsForAccessibility: [(id: String, label: String, frame: CGRect)] {
+        guard let document else { return [] }
+        let geometry = self.geometry
+        return document.activeCharts.compactMap { chart in
+            let frame = SheetChartLayer.frame(of: chart, in: geometry)
+            guard frame.intersects(geometry.visible) else { return nil }
+            return (chart.id, Self.accessibilityDescription(of: chart, in: document), frame)
+        }
+    }
+
+    /// "Chart: Sales by region, column chart, 3 series, data Sales!A1:D7."
+    static func accessibilityDescription(of chart: SheetChart, in document: SpreadsheetDocument) -> String {
+        var parts = ["Chart" + (chart.title.map { ": \($0)" } ?? "")]
+        if let unsupported = chart.unsupported {
+            parts.append(unsupported.lowercased())
+        } else if let kind = chart.kind {
+            parts.append("\(kind.rawValue) chart")
+            parts.append(chart.series.count == 1 ? "1 series" : "\(chart.series.count) series")
+        }
+        if let range = chart.settings?.dataRange(in: document.workbook) {
+            parts.append("data " + range.formula.replacingOccurrences(of: "$", with: ""))
+        }
+        return parts.joined(separator: ", ")
     }
 
     // MARK: Edit actions
@@ -627,11 +845,22 @@ final class GridController {
     }
 
     func copy() {
-        document?.copySelectionToPasteboard()
+        guard let document else { return }
+        if let chart = document.selectedChart {
+            document.copyChartToPasteboard(chart)
+        } else {
+            document.copySelectionToPasteboard()
+        }
     }
 
     func cut() {
-        document?.copySelectionToPasteboard(cut: true)
+        guard let document else { return }
+        if let chart = document.selectedChart {
+            document.copyChartToPasteboard(chart)
+            document.deleteChart(chart.id)
+        } else {
+            document.copySelectionToPasteboard(cut: true)
+        }
         stateChanged()
     }
 
@@ -646,7 +875,12 @@ final class GridController {
     }
 
     func delete() {
-        document?.clearSelectionContents()
+        guard let document else { return }
+        if let chart = document.selectedChart {
+            document.deleteChart(chart.id)
+        } else {
+            document.clearSelectionContents()
+        }
         stateChanged()
     }
 
@@ -670,6 +904,10 @@ final class GridController {
     /// commit); `.edit` = F2/double-click (arrows move the caret).
     func beginEditing(mode: EditMode, initialText: String?) {
         guard let document else { return }
+        if document.selectedChartID != nil {
+            document.selectChart(nil)
+            host?.gridNeedsDisplay()
+        }
         commitEditorIfNeeded()
         document.commitPendingEdit() // e.g. typing left in the formula bar
         let addr = document.selection.activeCell

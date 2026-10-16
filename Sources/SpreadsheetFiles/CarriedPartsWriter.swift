@@ -114,11 +114,20 @@ extension XLSXWriter {
             }
         }
 
+        // Charts: the values cached beside their references, as the cells
+        // hold them now (readers that don't recalculate show those).
+        var charts: [String: Data] = [:]
+        for path in reachable {
+            guard let part = carried.parts[path], part.kind == .chart, let root = try? XMLNode.parse(part.data),
+                  ChartCache.refresh(root, workbook: workbook) else { continue }
+            charts[path] = root.document
+        }
+
         // The parts, their relationships and content types.
         var defaults = ["rels": "application/vnd.openxmlformats-package.relationships+xml", "xml": "application/xml"]
         for path in reachable {
             guard let part = carried.parts[path], let written = paths[path] else { continue }
-            package.entries.append((written, tables[path] ?? part.data))
+            package.entries.append((written, tables[path] ?? charts[path] ?? part.data))
             let rels = packageRelationships(part.relationships, from: XLSXReader.directory(of: written))
             if !rels.isEmpty {
                 package.entries.append((XLSXReader.relsPath(for: written), Data(relationshipsXML(rels).utf8)))

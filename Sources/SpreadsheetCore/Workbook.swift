@@ -29,6 +29,7 @@ public final class Sheet {
         set {
             storage = newValue
             cellsVersion &+= 1
+            forgetChanges()
             invalidateUsedBounds()
         }
     }
@@ -36,6 +37,41 @@ public final class Sheet {
     /// Bumped whenever `storage` changes, so an undo snapshot can tell
     /// whether a command touched this sheet's cells (WorkbookSnapshot).
     private(set) var cellsVersion = 0
+    /// Bumped by every change to the cells, and never goes back (unlike
+    /// `cellsVersion`, which a restored snapshot sets back): what something
+    /// read from the cells (a chart) keeps to tell whether it's current.
+    public private(set) var changeStamp = 0
+    /// The cells changed lately, by the stamp each change made. Kept short;
+    /// older changes are forgotten.
+    private var changeLog: [(stamp: Int, address: CellAddress)] = []
+    /// Changes after this stamp are all in the log.
+    private var changeLogFloor = 0
+    private static let changeLogLimit = 512
+
+    /// The cells changed since `stamp`; nil when that isn't known any more
+    /// (too long ago, or the cells were replaced wholesale).
+    public func changedCells(since stamp: Int) -> [CellAddress]? {
+        if stamp >= changeStamp { return [] }
+        guard stamp >= changeLogFloor else { return nil }
+        return changeLog.filter { $0.stamp > stamp }.map(\.address)
+    }
+
+    private func logChange(_ address: CellAddress) {
+        changeStamp &+= 1
+        changeLog.append((changeStamp, address))
+        if changeLog.count > Self.changeLogLimit {
+            let dropped = changeLog.count - Self.changeLogLimit / 2
+            changeLogFloor = changeLog[dropped - 1].stamp
+            changeLog.removeFirst(dropped)
+        }
+    }
+
+    /// Every cell may have changed: the log can't say which.
+    private func forgetChanges() {
+        changeStamp &+= 1
+        changeLog.removeAll(keepingCapacity: true)
+        changeLogFloor = changeStamp
+    }
     /// Cached bounding box of `storage`; meaningful only when `boundsValid`.
     private var bounds: CellRange?
     private var boundsValid = true
@@ -77,6 +113,7 @@ public final class Sheet {
         if cell.isDefault {
             guard storage.removeValue(forKey: address) != nil else { return }
             cellsVersion &+= 1
+            logChange(address)
             if storage.isEmpty {
                 bounds = nil
                 boundsValid = true
@@ -89,6 +126,7 @@ public final class Sheet {
         } else {
             storage[address] = cell
             cellsVersion &+= 1
+            logChange(address)
             if boundsValid {
                 if let b = bounds {
                     if !b.contains(address) {
@@ -210,6 +248,7 @@ public final class Sheet {
         bounds = other.bounds
         boundsValid = other.boundsValid
         cellsVersion = other.cellsVersion
+        forgetChanges()
     }
 }
 

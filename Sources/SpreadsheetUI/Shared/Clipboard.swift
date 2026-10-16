@@ -75,6 +75,17 @@ enum SystemPasteboard {
         #endif
     }
 
+    /// A picture (a copied chart), as PNG.
+    static func write(png: Data) {
+        #if os(macOS)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setData(png, forType: .png)
+        #else
+        UIPasteboard.general.setItems([[UTType.png.identifier: png]])
+        #endif
+    }
+
     static func payload() -> Data? {
         #if os(macOS)
         NSPasteboard.general.data(forType: NSPasteboard.PasteboardType(payloadType))
