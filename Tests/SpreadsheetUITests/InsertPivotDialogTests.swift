@@ -1,3 +1,4 @@
+#if os(macOS)
 import AppKit
 import Foundation
 import SwiftUI
@@ -36,3 +37,4 @@ import Testing
         #expect(try await dialogStays(doc))
     }
 }
+#endif
