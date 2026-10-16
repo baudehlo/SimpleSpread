@@ -565,8 +565,10 @@ struct InsertPivotSheet: View {
     @State private var cellText = ""
     @State private var error: String?
     /// Pivot tables when the sheet opened: one more means it was made, even
-    /// after `create` returned (an iPad confirmation answered later).
-    @State private var pivotCount = 0
+    /// after `create` returned (an iPad confirmation answered later). Nil
+    /// until counted: the revision publisher fires as the sheet subscribes,
+    /// before onAppear, and a file's own pivots must not read as new ones.
+    @State private var pivotCount: Int?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -594,7 +596,7 @@ struct InsertPivotSheet: View {
         .padding(20)
         .frame(width: 380)
         .onReceive(document.$revision) { _ in
-            if document.workbook.pivotTables.count > pivotCount { created() }
+            if let pivotCount, document.workbook.pivotTables.count > pivotCount { created() }
         }
         .onAppear {
             pivotCount = document.workbook.pivotTables.count
