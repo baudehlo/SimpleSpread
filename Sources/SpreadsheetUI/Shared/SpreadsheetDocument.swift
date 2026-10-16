@@ -55,8 +55,13 @@ public final class SpreadsheetDocument: ObservableObject {
     let engine: CalculationEngine
     public let undoManager = UndoManager()
 
-    @Published public var selection = SelectionState()
-    @Published public var activeSheetID: Int
+    /// The cells selected. Selecting cells (by any means) deselects a chart.
+    @Published public var selection = SelectionState() {
+        didSet { if selection != oldValue, selectedChartID != nil { selectedChartID = nil } }
+    }
+    @Published public var activeSheetID: Int {
+        didSet { if oldValue != activeSheetID { selectedChartID = nil } }
+    }
     /// The XLSX file this document saves to. Nil until first saved — including
     /// for documents opened from CSV, which must Save-As to XLSX rather than
     /// overwrite the source.
@@ -84,6 +89,16 @@ public final class SpreadsheetDocument: ObservableObject {
     @Published public var isPivotPanelVisible = true
     /// Insert ▸ PivotTable… sheet.
     @Published public var isInsertPivotPresented = false
+    /// The chart selected on the active sheet (its id), if any: see
+    /// `selectedChart`, which also checks it's still there.
+    @Published public var selectedChartID: String?
+    /// Show the Chart panel while a chart is selected.
+    @Published public var isChartPanelVisible = true
+    /// The active sheet's charts, and what makes chart edits one undo step.
+    var chartState = ChartState()
+    /// Bumped by every change but a row or column resize: what charts read
+    /// from the cells is current while this hasn't changed.
+    private(set) var chartInputsRevision = 0
     /// Data ▸ Custom Sort… sheet.
     @Published public var isSortPresented = false
     /// Asks the user to confirm (message, detail, button title); nil
@@ -189,10 +204,13 @@ public final class SpreadsheetDocument: ObservableObject {
 
     // MARK: - Change plumbing
 
-    func markChanged() {
+    /// `layoutOnly`: only row heights or column widths changed, which no
+    /// chart's data depends on (so charts aren't read again).
+    func markChanged(layoutOnly: Bool = false) {
         isModified = true
         revision += 1
         changeCount += 1
+        if !layoutOnly { chartInputsRevision += 1 }
     }
 
     struct CellSnapshot {
@@ -764,7 +782,7 @@ public final class SpreadsheetDocument: ObservableObject {
                 registerSizeUndo(isRow: isRow, index: index, size: old, sheetID: sheet.id, actionName: actionName)
             }
         }
-        markChanged()
+        markChanged(layoutOnly: true)
         lastResizeStep = ResizeStep(sheetID: sheet.id, isRow: isRow, index: index, revision: revision)
     }
 
@@ -777,7 +795,7 @@ public final class SpreadsheetDocument: ObservableObject {
                 if isRow { sheet.rowHeights[index] = size } else { sheet.columnWidths[index] = size }
                 doc.registerSizeUndo(isRow: isRow, index: index, size: redo, sheetID: sheetID,
                                      actionName: actionName)
-                doc.markChanged()
+                doc.markChanged(layoutOnly: true)
             }
         }
         undoManager.setActionName(actionName)

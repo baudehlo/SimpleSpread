@@ -31,6 +31,12 @@ touch, with a trackpad or mouse, and with a hardware keyboard. See
   rows, columns or sheets change. When a file holds things SimpleSpread
   can't write back (chart sheets, macros, slicers…), the first save says so
   and offers to save a copy instead.
+- **Charts**: Insert ▸ Chart makes a column, bar, line, area, pie, doughnut
+  or scatter chart from the selection. Charts from a file show on the sheet
+  and redraw as their cells change; click one to move, resize or delete it,
+  and change its type, stacking, data, titles, legend, data labels and
+  colours in the Chart panel. Excel opens them as Excel would have made
+  them.
 - **Pivot tables**: Insert ▸ PivotTable… and a PivotTable Fields panel
   like Excel's: drag fields into rows, columns, values and filters;
   summarize by sum/count/average/…; show values as % of total/row/column,

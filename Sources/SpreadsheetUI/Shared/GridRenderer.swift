@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import SpreadsheetCore
+import SpreadsheetFiles
 #if os(macOS)
 import AppKit
 #else
@@ -34,6 +35,10 @@ struct GridDecorations {
     var fillHandle = true
     /// iPad's round grab handles at the selection's corners.
     var selectionGrips = false
+    /// The selected chart's id: drawn with an outline and handles.
+    var selectedChart: String?
+    /// A chart being moved or resized, and where it is for now (view coordinates).
+    var movingChart: (id: String, frame: CGRect)?
 }
 
 /// Draws the grid: cells, grid lines, borders, pivot and filter
@@ -48,6 +53,9 @@ struct GridRenderer {
     let geometry: GridGeometry
     /// Pivot banding for the active sheet (see GridController).
     let pivotBands: [PivotBands]
+    /// The active sheet's charts, drawn by `chartLayer` above the cells.
+    var charts: [SheetChart] = []
+    var chartLayer: SheetChartLayer?
     var decorations = GridDecorations()
     /// Fonts made while drawing, reused cell to cell (making one, with bold
     /// or italic applied, is the slowest part of drawing a cell).
@@ -292,6 +300,8 @@ struct GridRenderer {
         }
 
         drawSelection(selectionRange, in: ctx)
+        chartLayer?.draw(charts, geometry: geometry, visible: visible, moving: decorations.movingChart,
+                         selected: decorations.selectedChart, grips: decorations.selectionGrips, in: ctx)
     }
 
     // MARK: Selection

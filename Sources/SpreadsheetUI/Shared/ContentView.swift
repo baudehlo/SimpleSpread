@@ -19,7 +19,11 @@ public struct DocumentWindowView: View {
     public var body: some View {
         HStack(spacing: 0) {
             mainColumn
-            if document.isPivotPanelVisible, let pivot = document.activePivotIndex {
+            if let chart = document.selectedChart, document.isChartPanelVisible {
+                Divider()
+                ChartPanel(document: document, chart: chart)
+                    .id(chart.id)
+            } else if document.isPivotPanelVisible, let pivot = document.activePivotIndex {
                 Divider()
                 PivotFieldsPanel(document: document, index: pivot)
                     .id(pivot)

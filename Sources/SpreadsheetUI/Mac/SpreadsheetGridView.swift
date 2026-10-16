@@ -117,9 +117,11 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
     // MARK: Context menu
 
-    /// Right-click on a row/column header: insert, delete, hide or unhide.
+    /// Right-click on a chart (edit, copy, delete), or on a row/column
+    /// header (insert, delete, hide or unhide).
     override func menu(for event: NSEvent) -> NSMenu? {
-        guard let sections = controller.headerMenu(at: convert(event.locationInWindow, from: nil)) else {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let sections = controller.chartMenu(at: point) ?? controller.headerMenu(at: point) else {
             return nil
         }
         let menu = NSMenu()
@@ -342,6 +344,41 @@ extension SpreadsheetGridView {
     override func accessibilityLabel() -> String? { "Spreadsheet" }
     /// The selected cell and what it shows ("B3, 84").
     override func accessibilityValue() -> Any? { controller.accessibilitySummary }
+
+    /// The charts on screen, each an element VoiceOver can press to select.
+    override func accessibilityChildren() -> [Any]? {
+        controller.visibleChartsForAccessibility.map { item in
+            let screen = window.map { $0.convertToScreen(convert(item.frame, to: nil)) } ?? item.frame
+            return ChartAccessibilityElement(id: item.id, label: item.label, screenFrame: screen, grid: self)
+        }
+    }
+}
+
+/// A chart on the grid, for VoiceOver: pressing it selects the chart.
+private final class ChartAccessibilityElement: NSAccessibilityElement {
+    let id: String
+    weak var grid: SpreadsheetGridView?
+
+    init(id: String, label: String, screenFrame: CGRect, grid: SpreadsheetGridView) {
+        self.id = id
+        self.grid = grid
+        super.init()
+        setAccessibilityRole(.image)
+        setAccessibilityLabel(label)
+        setAccessibilityParent(grid)
+        setAccessibilityFrame(screenFrame)
+    }
+
+    override func accessibilityPerformPress() -> Bool {
+        let id = self.id
+        guard let grid else { return false }
+        return MainActor.assumeIsolated {
+            guard let document = grid.document else { return false }
+            document.selectChart(id)
+            grid.controller.stateChanged()
+            return true
+        }
+    }
 }
 
 extension SpreadsheetGridView: GridHost {

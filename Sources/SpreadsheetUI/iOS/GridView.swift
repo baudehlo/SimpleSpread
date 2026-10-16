@@ -196,7 +196,7 @@ final class GridView: UIScrollView {
         }
         // A tap on the cell that was already selected: the edit menu, once
         // it's clear this isn't the start of a double tap.
-        if !wasEditing, !extend, before.isSingleCell, document.selection == before,
+        if !wasEditing, !extend, before.isSingleCell, document.selection == before, document.selectedChartID == nil,
            controller.geometry.region(at: point) == .cells {
             let location = gesture.location(in: self)
             let work = DispatchWorkItem { [weak self] in
@@ -473,6 +473,22 @@ extension GridView {
         get { controller.accessibilitySummary }
         set {}
     }
+
+    /// The charts on screen, as actions that select them (a chart is
+    /// pixels in the grid, which is one element).
+    override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
+        get {
+            controller.visibleChartsForAccessibility.map { item in
+                UIAccessibilityCustomAction(name: "Select " + item.label) { [weak self] _ in
+                    guard let self, let document = self.document else { return false }
+                    document.selectChart(item.id)
+                    self.controller.stateChanged()
+                    return true
+                }
+            }
+        }
+        set {}
+    }
 }
 
 extension GridView: GridHost {
@@ -545,6 +561,8 @@ extension GridView {
             // Only from a selection grip or a header edge; anything else scrolls.
             let point = gridPoint(gesture.location(in: self))
             if controller.gripHit(at: point) != nil { return true }
+            // On the selected chart: move or resize it rather than scroll.
+            if controller.selectedChartHit(at: point) { return true }
             let geometry = controller.geometry
             let content = geometry.contentPoint(point)
             switch geometry.region(at: point) {
@@ -565,7 +583,9 @@ extension GridView: UIContextMenuInteractionDelegate {
         guard let document else { return nil }
         let point = gridPoint(location)
         let sections: [[GridController.MenuItem]]
-        if let header = controller.headerMenu(at: point) {
+        if let chart = controller.chartMenu(at: point) {
+            sections = chart
+        } else if let header = controller.headerMenu(at: point) {
             sections = header
         } else if controller.geometry.region(at: point) == .cells {
             // Like a right-click in Excel: outside the selection, select the cell first.
@@ -626,6 +646,8 @@ extension GridView: UIContextMenuInteractionDelegate {
         case .rowHeader:
             return CGRect(x: visible.minX, y: selection.minY, width: GridLayout.headerWidth, height: selection.height)
         case .cells:
+            // A chart's menu lifts the chart.
+            if let chart = document.selectedChart { return SheetChartLayer.frame(of: chart, in: geometry) }
             return selection
         case .corner:
             return nil

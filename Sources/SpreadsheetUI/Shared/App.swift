@@ -1,5 +1,6 @@
 import SwiftUI
 import SpreadsheetCore
+import SpreadsheetFiles
 import UniformTypeIdentifiers
 
 /// App-level registry of open documents (window value -> document).
@@ -24,6 +25,11 @@ public final class DocumentStore: ObservableObject {
     static func seedDemoContent(_ doc: SpreadsheetDocument) {
         func put(_ a1: String, _ text: String) {
             doc.commitInput(text, at: CellAddress(a1: a1)!)
+        }
+        if ProcessInfo.processInfo.environment["SIMPLESPREAD_DEMO"] == "charts" {
+            seedChartsDemo(doc)
+            doc.undoManager.removeAllActions()
+            return
         }
         put("A1", "Item"); put("B1", "Qty"); put("C1", "Unit Price"); put("D1", "Total")
         put("A2", "Widgets"); put("B2", "12"); put("C2", "$2.50"); put("D2", "=B2*C2")
@@ -62,6 +68,36 @@ public final class DocumentStore: ObservableObject {
             doc.setFindQuery(q)
         }
         doc.undoManager.removeAllActions()
+    }
+
+    /// `SIMPLESPREAD_DEMO=charts`: a small table with three charts, the
+    /// first selected (so the Chart panel shows).
+    static func seedChartsDemo(_ doc: SpreadsheetDocument) {
+        let rows = [["Month", "North", "South", "West"], ["Jan", "120", "90", "60"], ["Feb", "135", "95", "72"],
+                    ["Mar", "150", "110", "80"], ["Apr", "142", "125", "95"], ["May", "168", "130", "101"],
+                    ["Jun", "181", "142", "118"]]
+        for (r, row) in rows.enumerated() {
+            for (c, text) in row.enumerated() { doc.commitInput(text, at: CellAddress(row: r, column: c)) }
+        }
+        doc.selection.select(range: CellRange(a1: "A1:D1")!)
+        doc.toggleBold()
+        let charts: [(SheetChart.Kind, CGRect)] = [
+            (.line, CGRect(x: 0, y: 190, width: 400, height: 250)),
+            (.pie, CGRect(x: 410, y: 300, width: 300, height: 250)),
+            (.column, CGRect(x: 410, y: 20, width: 440, height: 270)),
+        ]
+        for (kind, frame) in charts {
+            doc.selection.select(range: CellRange(a1: "A1:D7")!)
+            guard doc.insertChart(kind), let id = doc.selectedChartID else { continue }
+            doc.placeChart(id, frame: frame)
+        }
+        doc.selection.select(CellAddress(a1: "A1")!)
+        if let column = doc.activeCharts.last, var settings = column.settings {
+            doc.selectChart(column.id)
+            settings.title = .text("Sales by region")
+            settings.valueAxisTitle = "Units"
+            doc.updateChart(column.id, to: settings)
+        }
     }
 
     /// `SIMPLESPREAD_DEMO=layout`: merged cells, a frozen header row, an
@@ -274,6 +310,22 @@ struct InsertCommands: Commands {
                 perform(document) { $0.isInsertPivotPresented = true }
             }
             .disabled(document == nil)
+            Menu("Chart") {
+                ForEach(ChartPanel.kinds, id: \.kind) { choice in
+                    Button {
+                        perform(document) { $0.insertChart(choice.kind) }
+                    } label: {
+                        Label(choice.name, systemImage: choice.symbol)
+                    }
+                }
+            }
+            .disabled(document == nil)
+            // The keyboard's way to a chart (Tab then goes chart to chart).
+            Button("Select Next Chart") {
+                perform(document) { $0.selectNextChart() }
+            }
+            .keyboardShortcut("j", modifiers: [.command, .option])
+            .disabled(document?.activeCharts.isEmpty ?? true)
         }
     }
 }

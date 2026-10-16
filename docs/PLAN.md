@@ -42,9 +42,9 @@ form Excel/Numbers/Google Sheets accept, and interchange CSV cleanly.
   range-returning functions.
 - INDIRECT/OFFSET (they break static dependency analysis; roadmap item with
   dynamic dependency tracking).
-- Editing charts, images, comments, conditional formatting and data
-  validation. Files that have them keep them through a save (§7), but
-  SimpleSpread doesn't show or change them.
+- Editing images, comments, conditional formatting and data validation.
+  Files that have them keep them through a save (§7), but SimpleSpread
+  doesn't show or change them. (Charts are shown and edited: "Charts" in §7.)
 - Pivot tables: OLAP/Data Model sources, calculated items, label/value
   filters, slicers and timelines, and Excel 2010+ show-values-as modes
   (rank, % of parent). Pivots that use them are kept intact for Excel but
@@ -318,6 +318,81 @@ rename and sheet delete goes to `CarriedContent.applying`, which:
   inside a table;
 - rewrites formulas in charts, rules, validations, sparklines, VML controls
   and hyperlink locations with the same reference rewrite as cell formulas.
+
+**Charts.** Charts live in the carried parts like everything else there
+(a sheet's drawing holds an anchor per chart, pointing at its chart part),
+so saving, undo (a value swap), snapshots and structural edits need nothing
+of their own. `SheetChart` (what's drawn) and `ChartSettings` (what the
+panel edits) are always derived from the parts, never kept beside them.
+They live in SpreadsheetFiles, so GridController, GridRenderer and the
+document's chart commands import it: the price of the parts being the model.
+- *References* (`ChartReference`): the one place a chart's `c:f` is
+  followed, for drawing, for the caches written to the file and for the
+  panel's data range. It follows sheet references, unions and this
+  workbook's defined names (`Book1.xlsx!Sales`, `[0]!Sales`); not other
+  workbooks or names that compute a range, which keep their cached values.
+  It reads only as far as the sheet's data goes (a whole-column reference
+  costs what the data does), and leaves out hidden rows and columns when
+  the chart plots visible cells only (as Excel's caches do too).
+- *Reading* (`SheetChartSource`): column and bar, line, area, pie and
+  doughnut, scatter, clustered / stacked / 100% stacked, column + line
+  combinations, secondary value axes (drawn as a right-hand scale), titles
+  (with Excel's automatic "Chart Title"), axis titles, legends, data labels
+  (per series), theme and explicit series colours; 3-D types draw flat;
+  every chart in a group of shapes, placed in its group's frame. Numbers in
+  the XML are clamped (counts, indexes, anchors, sizes), so an odd file
+  can't crash or stall. Series keep at most 4,096 points (the lowest and
+  highest of each run, so peaks survive; a pie's smallest slices become
+  "Other"). Parsing is kept per part, keyed by its bytes (moving a chart
+  reparses only the drawing). What a chart read from the cells is kept
+  with what it read: the blocks of cells, and their sheets' change stamps,
+  hidden rows and columns and row/column formats, and the defined names. A
+  change reads it again only if one of those changed, or a cell changed
+  inside one of its blocks (`Sheet.changedCells(since:)`: a short log of
+  changed cells; a formula's recalculated value is logged like an edit);
+  row and column resizes don't count at all.
+- *Drawing* (`SheetChartLayer`): Swift Charts into an image per chart,
+  never inside the grid's draw: a chart shows its last image (or a plain
+  box) while a new one is made, one per run-loop turn. Swift Charts sees
+  at most what the plot's width can show (2 points per pixel for lines,
+  1 per 3 pixels for bars), with categories plotted by position. Images
+  are keyed by a fingerprint of what the chart shows, capped at 8
+  megapixels each (scaled up beyond) and 256 MB in all. Other kinds
+  (radar, stock, bubble, surface, and the chartex types such as waterfall
+  and treemap) are placed and drawn as a labelled box.
+- *Making and changing* (`XLSXChartEditor`, `ChartXML`): Insert ▸ Chart
+  makes series from the selection (or the block around the active cell,
+  trimmed to the data) the way Excel does: a text header row names the
+  series, a text first column gives the categories, series run down columns
+  unless the block is wider than tall, a scatter takes x from the first
+  column. New charts get Excel's default style, written as Excel writes it,
+  with values cached beside the references. Settings changes touch only
+  what they change, in schema order, under the part's own prefixes
+  (Excel's `c:` or a default namespace). A new type or data range rebuilds
+  the plot series by series: each `<c:ser>` is kept and moved into a group
+  of its new kind, losing only children that kind can't have (a pie has no
+  trendline), and only references that changed are rewritten; groups and
+  axes, a secondary axis included, are kept where both kinds have them. At
+  save, caches that are there are brought up to date with the cells when
+  their values differ (a save without edits keeps the parts' bytes).
+  Checked in Excel for the web: new charts of every kind, and Excel's own
+  charts after each kind of change, open without repairs and look as
+  intended (`ChartOracleFiles` writes the files).
+- *Interaction* (GridController, both platforms): a click or tap selects
+  the topmost chart (outline and handles; round, larger ones on iPad); drag
+  moves it and a handle resizes it (by how far the pointer moved, so a drag
+  across a frozen pane's edge doesn't jump), arrows nudge it (⇧: 10 px; a
+  run is one undo step), Delete removes it, Escape or a click on a cell
+  deselects. Tab and ⇧Tab go chart to chart, and Insert ▸ Select Next Chart
+  (⌥⌘J) reaches one from the cells; VoiceOver finds each chart on screen (an
+  element on the Mac, an action on iPad). A chart in a group of shapes can
+  be selected, edited and deleted (the rest of the group stays) but moves
+  only with its group. Copy puts the chart on the pasteboard as a picture.
+  The Chart panel shows beside the grid while a chart is selected; changes
+  apply at once, one undo step each (a run of colour changes is one).
+- Not covered: editing the secondary axis itself, trendlines and error bars
+  (kept, not drawn or edited), axis scale and number formats, copying a
+  chart as a chart, chart sheets.
 
 The content is a value: workbook snapshots, the structural undo record
 (`StructuralEditResult.Before`) and the background save copy it for free.
