@@ -46,6 +46,11 @@ let package = Package(
         .testTarget(name: "SpreadsheetFilesTests", dependencies: ["SpreadsheetFiles"],
                     resources: [.copy("Fixtures")]),
         .testTarget(name: "SpreadsheetUITests", dependencies: ["SpreadsheetUI"]),
+        // The Mac app's windows driven the way a person uses them (clicks,
+        // keys, menus, reading the screen), over real-sized files. Slow:
+        // run locally with scripts/ui-tests.sh (SIMPLESPREAD_UI_TESTS=1),
+        // not in CI. See Tests/SpreadsheetAppUITests/README.md.
+        .testTarget(name: "SpreadsheetAppUITests", dependencies: ["SpreadsheetUI", "SpreadsheetFiles", "SpreadsheetCore"]),
     ],
     swiftLanguageModes: [.v6]
 )

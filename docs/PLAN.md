@@ -645,6 +645,11 @@ against the ECMA-376 schemas and other readers; all pass schema validation.
 
 - `ci.yml`: push/PR → macos-15 → `swift build`, `swift test`, plus a
   warn-only headless render smoke test that uploads the window PNG.
+- UI tests run locally, not in CI. `scripts/ui-tests.sh` drives the real
+  window through menus, dialogs, panels and the grid on small and
+  complex.xlsx-sized workbooks (about 3 min); `--ipad` adds the iPad
+  XCUITests. Run it before a release. See
+  `Tests/SpreadsheetAppUITests/README.md`.
 - `build.yml`: manual dispatch with version → tests → release build →
   generated icon → .app assembly (PlistBuddy, document types for xlsx/csv)
   → signing → DMG → optional notarization → GitHub Release with composed

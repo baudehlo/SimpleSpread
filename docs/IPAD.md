@@ -86,10 +86,11 @@ The iPad scheme runs:
 frame: about 8 ms in a debug build on Apple silicon, faster in release. The
 iPad redraws the visible screen as it scrolls.
 
-CI (`.github/workflows/ci.yml`, job "iPad Build & Test") runs this on a
-`macos-26` runner, except the screenshot tests (`ReviewTests` and
-`testScreenshots`). They take about a minute and are for looking at, so
-run them by hand:
+CI (`.github/workflows/ci.yml`, job "iPad Build & Test") runs the shared
+tests on a `macos-26` runner. The UI tests are slow, so they run locally:
+`scripts/ui-tests.sh --ipad` runs them after the Mac UI tests, skipping the
+screenshot tests (`ReviewTests` and `testScreenshots`). Those are for
+looking at, so run them by hand:
 `-only-testing:SimpleSpreadUITests/ReviewTests`.
 
 Timing on a local run:

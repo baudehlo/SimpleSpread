@@ -107,23 +107,8 @@ jobs:
             -skip-testing:SimpleSpreadUITests \
             -resultBundlePath "$RUNNER_TEMP/ipad-unit.xcresult"
 
-      # UI tests drive the app in the simulator. On a loaded CI runner the
-      # simulator now and then fails to launch the app or keep it running
-      # ("Failed to get background assertion"), so a failed test is retried
-      # (up to three runs); a real failure fails all three.
-      # The screenshot tests (ReviewTests, testScreenshots) take pictures
-      # for a person to look over; they cost a minute and check little, so
-      # they run by hand (docs/IPAD.md), not on every push.
-      - name: UI tests on iPad
-        working-directory: iOS
-        run: |
-          xcodebuild test-without-building -project SimpleSpread.xcodeproj -scheme SimpleSpread \
-            -destination "id=${{ steps.sim.outputs.udid }}" -derivedDataPath "$RUNNER_TEMP/dd" \
-            -only-testing:SimpleSpreadUITests \
-            -skip-testing:SimpleSpreadUITests/ReviewTests \
-            -skip-testing:SimpleSpreadUITests/SimpleSpreadUITests/testScreenshots \
-            -retry-tests-on-failure -test-iterations 3 \
-            -resultBundlePath "$RUNNER_TEMP/ipad-ui.xcresult"
+      # The UI tests (iPad XCUITests and the Mac SpreadsheetAppUITests) run
+      # locally with scripts/ui-tests.sh, not here: they're slow.
 
       - name: Upload test results
         if: always()
@@ -131,7 +116,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ipad-test-results
-          path: |
-            ${{ runner.temp }}/ipad-unit.xcresult
-            ${{ runner.temp }}/ipad-ui.xcresult
+          path: ${{ runner.temp }}/ipad-unit.xcresult
 
