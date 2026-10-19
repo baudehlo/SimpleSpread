@@ -51,6 +51,9 @@ echo "==> Assembling ${APP_DIR}..."
 rm -rf "$OUT" && mkdir -p "${CONTENTS}/MacOS" "${CONTENTS}/Resources"
 cp "$BINARY" "${CONTENTS}/MacOS/${APP_NAME}"
 cp AppIcon.icns "${CONTENTS}/Resources/AppIcon.icns"
+# The same privacy manifest as the iPad app: nothing collected, and the
+# required-reason APIs (preferences, file dates) are the same on the Mac.
+cp iOS/SimpleSpread/PrivacyInfo.xcprivacy "${CONTENTS}/Resources/PrivacyInfo.xcprivacy"
 "${SCRIPT_DIR}/write-info-plist.sh" "$APP_DIR" "$VERSION"
 PB=/usr/libexec/PlistBuddy
 PLIST="${CONTENTS}/Info.plist"
@@ -68,6 +71,10 @@ fi
 
 echo "==> Embedding the provisioning profile..."
 cp "$PROFILE" "${CONTENTS}/embedded.provisionprofile"
+
+# A profile fresh from Downloads carries com.apple.quarantine, which App
+# Store Connect rejects (ITMS-91109). Signing must come after this.
+xattr -cr "$APP_DIR"
 
 echo "==> Signing for the App Store..."
 ENTITLEMENTS="$(mktemp)"
