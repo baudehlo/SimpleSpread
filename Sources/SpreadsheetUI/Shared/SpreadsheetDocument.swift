@@ -177,14 +177,17 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Explains import limitations, cached formula values, and source protection for legacy Excel files.
     static func legacyImportNotice(unsupportedContent: [String]) -> DocumentNotice {
-        let limitations = unsupportedContent.isEmpty
-            ? ""
-            : " The file also contains \(DocumentSaving.list(unsupportedContent)) that SimpleSpread cannot preserve."
+        var detail = ""
+        if unsupportedContent.contains(XLSReader.formulasLabel) {
+            detail += "Formulas show their last calculated values and won’t recalculate. "
+        }
+        let others = unsupportedContent.filter { $0 != XLSReader.formulasLabel }
+        if !others.isEmpty {
+            detail += "Its \(DocumentSaving.list(others)) couldn’t be brought over. "
+        }
         return DocumentNotice(
             message: "This Excel 97–2003 workbook was opened as an XLSX copy.",
-            detail: "Only cell values and basic formatting are imported; charts, images, macros, and other "
-                + "advanced workbook features are not carried over. Formulas, if present, were opened using "
-                + "their cached values.\(limitations) Save edits as XLSX; the original file is unchanged.")
+            detail: detail + "Save your edits as an XLSX file; the original file is not changed.")
     }
 
 

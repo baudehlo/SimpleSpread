@@ -143,8 +143,9 @@ final class BrowserModel: ObservableObject {
                     return
                 }
                 if let legacyImport {
+                    // The XLSX copy was written without that content already, so
+                    // it only needs telling about, not guarding on save.
                     document.isLegacyImport = true
-                    document.unsupportedContent = legacyImport.unsupportedContent
                     document.notice = SpreadsheetDocument.legacyImportNotice(
                         unsupportedContent: legacyImport.unsupportedContent)
                 }
@@ -386,15 +387,11 @@ final class OpenFile: ObservableObject, Identifiable {
         file.refreshSaveState()
         guard document.isModified, savingLosesContent, !askedAboutLoss else { return }
         askedAboutLoss = true
-        let title = document.isLegacyImport
-            ? "This XLSX copy cannot preserve all imported content"
-            : "“\(displayName)” has content SimpleSpread can’t save"
-        let message = document.isLegacyImport
-            ? "The original Excel 97–2003 file is unchanged. Saving this XLSX copy will not retain its "
-                + "\(DocumentSaving.list(document.unsupportedContent)). Until you choose, nothing is saved."
-            : "Saving your changes will remove its \(DocumentSaving.list(document.unsupportedContent)). "
-                + "Save them to a copy to keep the original as it is. Until you choose, nothing is saved."
-        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+        let alert = UIAlertController(
+            title: "“\(displayName)” has content SimpleSpread can’t save",
+            message: "Saving your changes will remove its \(DocumentSaving.list(document.unsupportedContent)). "
+                + "Save them to a copy to keep the original as it is. Until you choose, nothing is saved.",
+            preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Save a Copy…", style: .default) { [weak self] _ in
             self?.saveCopy(switching: true)
         })
@@ -433,14 +430,10 @@ final class OpenFile: ObservableObject, Identifiable {
         document.commitPendingEdit()
         file.refreshSaveState()
         if document.isModified, savingLosesContent {
-            let title = document.isLegacyImport
-                ? "Save the changes to “\(displayName)” as XLSX?"
-                : "Save the changes to “\(displayName)”?"
-            let message = document.isLegacyImport
-                ? "The original Excel 97–2003 file is unchanged. This XLSX copy cannot preserve its "
-                    + "\(DocumentSaving.list(document.unsupportedContent))."
-                : "Saving will remove its \(DocumentSaving.list(document.unsupportedContent)), which SimpleSpread can’t save."
-            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
+            let alert = UIAlertController(
+                title: "Save the changes to “\(displayName)”?",
+                message: "Saving will remove its \(DocumentSaving.list(document.unsupportedContent)), which SimpleSpread can’t save.",
+                preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "Save a Copy…", style: .default) { [weak self] _ in
                 self?.saveCopy(switching: false) { saved in if saved { self?.finishClose(completion) } }
             })

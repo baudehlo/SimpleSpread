@@ -27,7 +27,9 @@ struct XLSStyleCatalog {
     var formats: [Int: String] = [:]
     var xfs: [XF] = []
     var palette: [RGBAColor] = XLSStyleCatalog.defaultPalette
-    var hasUnsupportedFeatures = false
+    /// XFs with formatting the model can't show (rotated text, pattern fills,
+    /// diagonal borders); reported only when a cell, row or column uses one.
+    var unsupportedXFs: Set<Int> = []
 
     static func parse(_ records: [BIFFRecord]) throws -> XLSStyleCatalog {
         var result = XLSStyleCatalog()
@@ -44,8 +46,8 @@ struct XLSStyleCatalog {
             case 0x00E0:
                 let xf = try parseXF(record.data)
                 let pattern = (xf.border2 >> 26) & 0x3F
-                if xf.rotation != 0 || pattern > 1 || ((xf.border2 >> 21) & 0x1F) != 0 {
-                    result.hasUnsupportedFeatures = true
+                if xf.rotation != 0 || pattern > 1 || ((xf.border2 >> 21) & 0x0F) != 0 {
+                    result.unsupportedXFs.insert(result.xfs.count)
                 }
                 result.xfs.append(xf)
             case 0x0092:
@@ -185,18 +187,19 @@ struct BIFFString {
         if richRuns { runCount = Int(try data.readU16(position)); position += 2 }
         var extensionBytes = 0
         if extended { extensionBytes = Int(try data.readU32(position)); position += 4 }
-        let byteCount = length * (wide ? 2 : 1)
-        guard byteCount >= 0, byteCount <= data.count - position else {
-            throw XLSError.malformed("Truncated BIFF string text.")
-        }
-        guard runCount <= (data.count - position - byteCount) / 4,
-              extensionBytes <= data.count - position - byteCount - runCount * 4 else {
+        guard position <= data.count else { throw XLSError.malformed("Truncated BIFF string text.") }
+        // Some writers count one character more than they store: keep what is there.
+        let truncated = length * (wide ? 2 : 1) > data.count - position
+        let byteCount = truncated ? (data.count - position) & (wide ? ~1 : ~0) : length * (wide ? 2 : 1)
+        guard truncated || (runCount <= (data.count - position - byteCount) / 4
+              && extensionBytes <= data.count - position - byteCount - runCount * 4) else {
             throw XLSError.malformed("Truncated BIFF string text or metadata.")
         }
         let chunk = data.subdata(in: position..<(position + byteCount))
         let text = wide
             ? String(decoding: stride(from: 0, to: chunk.count, by: 2).map { UInt16(chunk[$0]) | UInt16(chunk[$0 + 1]) << 8 }, as: UTF16.self)
             : String(decoding: chunk.map(UInt16.init), as: UTF16.self)
+        if truncated { return BIFFString(text: text, end: data.count) }
         position += byteCount + runCount * 4
         guard position <= data.count else { throw XLSError.malformed("Truncated BIFF rich text runs.") }
         return BIFFString(text: text, end: position)

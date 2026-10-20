@@ -21,17 +21,21 @@ system, so autosave cannot overwrite the source file.
   after import. Cells may be empty if the application that created the file did
   not write cached results.
 
-On opening, the app explains the import limitations and lists any detected
-content it cannot preserve. Charts, images, macros, pivot tables, external links,
-rich text run formatting, conditional formatting, data validation, print settings,
-and other advanced features are outside the supported import scope. Macros and
-external links are not executed. Keep the original file to view this content in
-an application with full support for legacy Excel files.
+On opening, a notice says the workbook was opened as an XLSX copy and names
+what it couldn't bring over, as the XLSX importer does: formulas (kept as their
+last values), charts, images, comments, hyperlinks, conditional formatting, data
+validation, macros, links to other workbooks, pivot tables, protection, print
+headers and footers, rich text runs, grouped rows or columns, and formatting the
+app can't show (rotated text, pattern fills, diagonal borders). Macros and
+external links are never run. Keep the original file to see this content in an
+application with full support for legacy Excel files.
 
-Encrypted workbooks, pre-BIFF8 formats, files without worksheets, and malformed
-containers or records produce errors. To bound resource use for abnormal input,
-the importer accepts files up to 256 MiB and up to 1,000,000 cell records. Inputs
-that exceed these limits are rejected rather than silently truncated.
+Records the importer doesn't use are skipped, as Excel's own readers do, and the
+compound-file container is read as leniently as other readers read it (files cut
+short inside their last sector, FAT sectors not marked as such, case-insensitive
+stream names). Encrypted workbooks, pre-BIFF8 formats, files without worksheets,
+and damage to what is imported (cells, strings, styles, sector chains) produce
+errors. Files over 256 MiB are rejected.
 
 ## Implementation and Validation
 
@@ -53,6 +57,9 @@ Format references:
 
 Tests cover malformed containers, mini-streams, external DIFAT sectors, string
 boundaries, and synthetic business-report fixtures from an independent writer.
+The importer was also checked against the 321 `.xls` files in Apache POI's test
+data: it opens 312 (the rest are encrypted, pre-BIFF8 or damaged), and every
+sheet's values match xlrd's except where 1904 dates are normalized.
 They also compare values and formatting through import, editing, XLSX export,
 and reopening. Fixture provenance and a reproducible generator are available in
 [`Tests/SpreadsheetFilesTests/Fixtures/LegacyXLS`](../Tests/SpreadsheetFilesTests/Fixtures/LegacyXLS).

@@ -38,9 +38,13 @@ struct CompoundFileReader {
     private let fat: [UInt32]
     private let miniFAT: [UInt32]
     private let rootMiniStream: Data
+    /// Top-level streams, keyed by upper-cased name: compound file names
+    /// compare case-insensitively ("Workbook", "WORKBOOK").
     private let rootStreams: [String: DirectoryEntry]
+    /// Upper-cased names of the top-level storages (macros, embedded objects).
+    let storageNames: Set<String>
 
-    var streamNames: [String] { rootStreams.keys.sorted() }
+    var streamNames: [String] { rootStreams.values.map(\.name).sorted() }
 
     init(data: Data) throws {
         try self.init(normalizedData: Data(data))
@@ -64,11 +68,9 @@ struct CompoundFileReader {
         }
         sectorSize = 1 << Int(shift)
         guard data.count >= sectorSize else { throw CompoundFileError.truncated }
-        sectorCount = data.count / sectorSize - 1
-        let declaredDirectorySectors = try Self.readUInt32(data, at: 40)
-        if major == 3 && declaredDirectorySectors != 0 {
-            throw CompoundFileError.invalid("The version 3 directory sector count must be zero.")
-        }
+        // Some writers stop the file partway through its last sector; the
+        // missing bytes read as zeros (as in Excel and other readers).
+        sectorCount = (data.count - 1) / sectorSize
         let fatSectorCount = Int(try Self.readUInt32(data, at: 44))
         let firstDirectorySector = try Self.readUInt32(data, at: 48)
         let miniCutoff = try Self.readUInt32(data, at: 56)
@@ -88,31 +90,23 @@ struct CompoundFileReader {
                 fatEntries.append(try Self.readUInt32(bytes, at: offset))
             }
         }
-        guard fatEntries.count >= sectorCount else { throw CompoundFileError.corruptChain }
-        for sectorID in fatSectorIDs where fatEntries[Int(sectorID)] != Self.fatSector {
-            throw CompoundFileError.corruptChain
-        }
+        // FAT sectors are meant to be marked as such in the FAT, but several
+        // writers leave them free; chains are still checked for loops and range.
         fat = fatEntries
 
         let directoryBytes = try Self.readRegularChain(start: firstDirectorySector, expectedSize: nil,
                                                        fat: fat, data: data, sectorSize: sectorSize,
                                                        sectorCount: sectorCount)
-        if major == 4 && directoryBytes.count / sectorSize != Int(declaredDirectorySectors) {
-            throw CompoundFileError.corruptChain
-        }
         let entries = try Self.parseDirectory(directoryBytes, majorVersion: major)
         guard let root = entries.first, root.type == 5 else { throw CompoundFileError.invalid("The root directory entry is missing.") }
-        rootStreams = try Self.readRootStreams(entries: entries, root: root)
+        (rootStreams, storageNames) = try Self.readRootEntries(entries: entries, root: root)
 
+        // The header's mini FAT sector count is unreliable in the wild; the chain decides.
         let miniFATBytes: Data
-        if miniFATSectorCount == 0 {
-            guard firstMiniFATSector == Self.endOfChain || firstMiniFATSector == Self.freeSector else {
-                throw CompoundFileError.corruptChain
-            }
+        if miniFATSectorCount == 0 || firstMiniFATSector > Self.maxRegularSector {
             miniFATBytes = Data()
         } else {
-            miniFATBytes = try Self.readRegularChain(start: firstMiniFATSector,
-                                                     expectedSize: miniFATSectorCount * sectorSize,
+            miniFATBytes = try Self.readRegularChain(start: firstMiniFATSector, expectedSize: nil,
                                                      fat: fat, data: data, sectorSize: sectorSize,
                                                      sectorCount: sectorCount)
         }
@@ -131,7 +125,7 @@ struct CompoundFileReader {
     }
 
     func stream(named name: String) throws -> Data? {
-        guard let entry = rootStreams[name] else { return nil }
+        guard let entry = rootStreams[name.uppercased()] else { return nil }
         guard let size = Int(exactly: entry.size) else { throw CompoundFileError.invalid("The stream is too large.") }
         guard size > 0 else { return Data() }
         if entry.size < 4096 {
@@ -165,10 +159,9 @@ struct CompoundFileReader {
             }
             current = try readUInt32(bytes, at: valuesPerSector * 4)
         }
-        guard (sectorCountInChain == 0 && (firstSector == endOfChain || firstSector == freeSector)) || current == endOfChain,
-              fatIDs.count == expectedFATSectors, Set(fatIDs).count == fatIDs.count else {
-            throw CompoundFileError.corruptChain
-        }
+        // Trust the FAT sectors the header counts; ignore any stray extras.
+        fatIDs = Array(fatIDs.prefix(expectedFATSectors))
+        guard Set(fatIDs).count == fatIDs.count else { throw CompoundFileError.corruptChain }
         for id in fatIDs {
             guard id <= maxRegularSector, Int(id) < sectorCount else { throw CompoundFileError.corruptChain }
         }
@@ -186,15 +179,16 @@ struct CompoundFileReader {
                 continue
             }
             guard type == 1 || type == 2 || type == 5 else { throw CompoundFileError.invalid("The directory contains an invalid entry type.") }
-            let nameLength = Int(try readUInt16(bytes, at: offset + 64))
-            guard nameLength >= 2, nameLength <= 64, nameLength % 2 == 0 else { throw CompoundFileError.invalid("A directory entry name is invalid.") }
+            // Names are up to 31 UTF-16 units plus a terminator; some writers
+            // leave the length at zero, which only makes the entry unnamed.
+            let nameLength = min(Int(try readUInt16(bytes, at: offset + 64)), 64)
             var units: [UInt16] = []
-            for nameOffset in stride(from: 0, to: nameLength - 2, by: 2) {
-                units.append(try readUInt16(bytes, at: offset + nameOffset))
+            for nameOffset in stride(from: 0, to: nameLength - 1, by: 2) {
+                let unit = try readUInt16(bytes, at: offset + nameOffset)
+                if unit == 0 { break }
+                units.append(unit)
             }
-            guard let name = String(utf16CodeUnits: units, count: units.count).nilIfEmpty else {
-                throw CompoundFileError.invalid("A directory entry name is empty.")
-            }
+            let name = String(decoding: units, as: UTF16.self)
             let rawSize = try readUInt64(bytes, at: offset + 120)
             let size = majorVersion == 3 ? rawSize & 0xFFFFFFFF : rawSize
             entries.append(DirectoryEntry(name: name, type: type,
@@ -207,8 +201,10 @@ struct CompoundFileReader {
         return entries
     }
 
-    private static func readRootStreams(entries: [DirectoryEntry], root: DirectoryEntry) throws -> [String: DirectoryEntry] {
+    private static func readRootEntries(entries: [DirectoryEntry],
+                                        root: DirectoryEntry) throws -> ([String: DirectoryEntry], Set<String>) {
         var streams: [String: DirectoryEntry] = [:]
+        var storages: Set<String> = []
         var visited: Set<UInt32> = []
         var pending = root.child == freeSector ? [] : [root.child]
         while let index = pending.popLast() {
@@ -217,12 +213,11 @@ struct CompoundFileReader {
             guard entry.type == 1 || entry.type == 2 else { throw CompoundFileError.corruptChain }
             if entry.left != freeSector { pending.append(entry.left) }
             if entry.right != freeSector { pending.append(entry.right) }
-            if entry.type == 2 {
-                guard streams[entry.name] == nil else { throw CompoundFileError.invalid("The root directory contains duplicate stream names.") }
-                streams[entry.name] = entry
-            }
+            let key = entry.name.uppercased()
+            if entry.type == 2, !key.isEmpty, streams[key] == nil { streams[key] = entry }
+            if entry.type == 1 { storages.insert(key) }
         }
-        return streams
+        return (streams, storages)
     }
 
     private static func readRegularChain(start: UInt32, expectedSize: Int?, fat: [UInt32], data: Data,
@@ -239,10 +234,7 @@ struct CompoundFileReader {
             }
             output.append(try sector(data, id: current, size: sectorSize, count: sectorCount))
             current = fat[Int(current)]
-            if let expectedSectors, seen.count == expectedSectors {
-                guard current == endOfChain else { throw CompoundFileError.corruptChain }
-                break
-            }
+            if let expectedSectors, seen.count == expectedSectors { break }
         }
         if let expectedSectors {
             guard seen.count == expectedSectors else { throw CompoundFileError.corruptChain }
@@ -275,8 +267,10 @@ struct CompoundFileReader {
     private static func sector(_ data: Data, id: UInt32, size: Int, count: Int) throws -> Data {
         guard id <= maxRegularSector, Int(id) < count else { throw CompoundFileError.truncated }
         let (offset, overflow) = (Int(id) + 1).multipliedReportingOverflow(by: size)
-        guard !overflow, offset <= data.count, size <= data.count - offset else { throw CompoundFileError.truncated }
-        return data.subdata(in: offset..<(offset + size))
+        guard !overflow, offset < data.count else { throw CompoundFileError.truncated }
+        var bytes = data.subdata(in: offset..<min(offset + size, data.count))
+        if bytes.count < size { bytes.append(Data(count: size - bytes.count)) } // short last sector
+        return bytes
     }
 
     private static func readUInt16(_ data: Data, at offset: Int) throws -> UInt16 {
@@ -291,10 +285,6 @@ struct CompoundFileReader {
     private static func readUInt64(_ data: Data, at offset: Int) throws -> UInt64 {
         UInt64(try readUInt32(data, at: offset)) | (UInt64(try readUInt32(data, at: offset + 4)) << 32)
     }
-}
-
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
 private extension Data.SubSequence {

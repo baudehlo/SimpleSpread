@@ -67,7 +67,9 @@ final class CompoundFileReaderTests: XCTestCase {
         setUInt32(sectorOffset(110, sectorSize: 512), value: 108, in: &repeatedFATSector)
         XCTAssertThrowsError(try CompoundFileReader(data: repeatedFATSector))
 
+        // The chain is followed for as many sectors as the header counts.
         var cyclicDIFAT = valid
+        setUInt32(72, value: 2, in: &cyclicDIFAT)
         setUInt32(sectorOffset(110, sectorSize: 512) + 508, value: 110, in: &cyclicDIFAT)
         XCTAssertThrowsError(try CompoundFileReader(data: cyclicDIFAT))
     }
@@ -119,16 +121,36 @@ final class CompoundFileReaderTests: XCTestCase {
         XCTAssertThrowsError(try XLSReader.read(data: makeCompoundFile(stream: biffWorkbook(cells: badString))))
     }
 
-    func testXLSRejectsDisplacedAndMissingFormulaString() {
+    func testXLSFormulaStringAfterSharedFormulaAndMissingString() throws {
         var formula = Data(repeating: 0, count: 22)
         formula[12] = 255
         formula[13] = 255
         let stringFormula = biffRecord(0x0006, formula)
         let string = biffRecord(0x0207, Data([1, 0, 0, 65]))
-        let displaced = biffWorkbook(cells: stringFormula + biffNumber(2) + string)
-        XCTAssertThrowsError(try XLSReader.read(data: makeCompoundFile(stream: displaced)))
+        let a1 = CellAddress(row: 0, column: 0)
+        // Excel writes SHRFMLA between a filled-down formula and its STRING.
+        let shared = biffWorkbook(cells: stringFormula + biffRecord(0x04BC, Data(repeating: 0, count: 10)) + string)
+        XCTAssertEqual(try XLSReader.read(data: makeCompoundFile(stream: shared)).sheets[0].value(at: a1), .string("A"))
+        // A STRING that doesn't follow its FORMULA, or none at all: an empty result, not a failed open.
+        let displaced = biffWorkbook(cells: stringFormula + biffNumber(2, row: 1) + string)
+        let workbook = try XLSReader.read(data: makeCompoundFile(stream: displaced))
+        XCTAssertEqual(workbook.sheets[0].value(at: a1), .string(""))
+        XCTAssertEqual(workbook.sheets[0].value(at: CellAddress(row: 1, column: 0)), .number(2))
         let missing = biffWorkbook(cells: stringFormula)
-        XCTAssertThrowsError(try XLSReader.read(data: makeCompoundFile(stream: missing)))
+        XCTAssertEqual(try XLSReader.read(data: makeCompoundFile(stream: missing)).sheets[0].value(at: a1), .string(""))
+    }
+
+    func testXLSContinueAfterSkippedRecordsAndNamedContent() throws {
+        // A comment's text box (TXO) runs on in CONTINUE records; so does a drawing.
+        let picture = biffRecord(0x005D, Data([0x15, 0, 0x12, 0, 0x08, 0] + [UInt8](repeating: 0, count: 16)))
+        let txo = biffRecord(0x01B6, Data(repeating: 0, count: 18)) + biffRecord(0x003C, Data([0, 65, 66]))
+        let note = biffRecord(0x001C, Data(repeating: 0, count: 12))
+        let stream = biffWorkbook(cells: biffNumber(7) + picture + biffRecord(0x003C, Data(count: 8)) + txo + note,
+                                  extraGlobals: biffRecord(0x00EB, Data(count: 8)) + biffRecord(0x003C, Data(count: 8)))
+        var warnings: [String] = []
+        let workbook = try XLSReader.read(data: makeCompoundFile(stream: stream), unsupportedContent: &warnings)
+        XCTAssertEqual(workbook.sheets[0].value(at: CellAddress(row: 0, column: 0)), .number(7))
+        XCTAssertEqual(warnings, ["1 image", "comments"])
     }
 
     func testXLSNestedChartDoesNotEndTheWorksheetOrOverwriteCells() throws {
@@ -138,7 +160,7 @@ final class CompoundFileReaderTests: XCTestCase {
         let workbook = try XLSReader.read(data: makeCompoundFile(stream: stream), unsupportedContent: &warnings)
         XCTAssertEqual(workbook.sheets[0].value(at: CellAddress(row: 0, column: 0)), .number(7))
         XCTAssertEqual(workbook.sheets[0].value(at: CellAddress(row: 1, column: 0)), .number(8))
-        XCTAssertTrue(warnings.contains { $0.contains("charts") })
+        XCTAssertEqual(warnings, ["1 chart"])
     }
 
     func testXLSStringRejectsMissingExtendedMetadata() {

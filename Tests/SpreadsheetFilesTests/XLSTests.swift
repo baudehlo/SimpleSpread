@@ -30,7 +30,7 @@ struct XLSTests {
         #expect(sheet.value(at: address("B6")) == .number(1.23456789))
         #expect(sheet.value(at: address("D6")) == .string("café"))
         #expect(sheet.mergedRanges == [CellRange(a1: "A1:D2")!])
-        #expect(sheet.columnWidths[0] == 145)
+        #expect(sheet.columnWidths[0] == 108.75) // 145 px, as points
         #expect(sheet.rowHeights[0] == 30)
         #expect(sheet.hiddenRows.contains(6))
         #expect(sheet.hiddenColumns.contains(4))
@@ -75,7 +75,7 @@ struct XLSTests {
         let workbook = try XLSReader.read(data: fixture("layout-and-tab-order"))
         #expect(workbook.sheets.map(\.name) == ["PhysicalSecond", "PhysicalFirst"])
         let sheet = workbook.sheets[1]
-        #expect(sheet.defaultRowHeight == 20)
+        #expect(abs(sheet.defaultRowHeight - 20 * 22 / 15) < 0.001) // 20 pt, scaled as XLSX
         #expect(sheet.value(at: address("A4")) == .string("control \u{0080}"))
         #expect(sheet.frozenRows == 0)
         #expect(sheet.frozenColumns == 0)
@@ -99,7 +99,7 @@ struct XLSTests {
         #expect(sheet.value(at: address("A4")).isEmpty)
         #expect(sheet.value(at: address("A5")) == .string("缓存结果"))
         #expect(sheet.cells.values.allSatisfy { $0.formula == nil })
-        #expect(warnings.contains { $0.contains("cached values") })
+        #expect(warnings == ["formulas", "print settings"]) // xlwt writes a page header and footer
     }
 
     @Test func editAndSaveAsXLSXPreservesImportedContent() throws {
