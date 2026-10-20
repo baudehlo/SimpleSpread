@@ -85,7 +85,7 @@ final class BrowserModel: ObservableObject {
         }
     }
 
-    /// 打开工作簿；文本和旧版 Excel 文件先导入为 XLSX 副本，并关闭当前文档。
+    /// Closes the current document before opening a workbook, importing text and legacy Excel files as XLSX copies.
     func open(_ url: URL, legacyImport: LegacyImportMetadata? = nil) {
         documentLog.info("open \(url.lastPathComponent, privacy: .private)")
         if let current = session {
@@ -153,7 +153,8 @@ final class BrowserModel: ObservableObject {
         }
     }
 
-    /// 将文本或旧版 Excel 导入独立 XLSX，再交给 UIDocument，避免自动保存覆盖源文件。
+    /// Imports text or legacy Excel as a separate XLSX before handing it to UIDocument,
+    /// preventing autosave from overwriting the source file.
     private func importFile(_ url: URL) {
         FileLoader.open(url) { [weak self] document in
             let name = document.suggestedFileName ?? (url.deletingPathExtension().lastPathComponent + ".xlsx")

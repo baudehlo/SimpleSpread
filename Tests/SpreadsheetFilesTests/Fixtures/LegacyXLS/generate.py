@@ -1,4 +1,4 @@
-"""生成无业务数据的 BIFF8 回归样本；只在重新生成样本时需要 xlwt/xlrd。
+"""Generate synthetic BIFF8 regression fixtures; xlwt/xlrd are needed only to regenerate them.
 
 python3 -m venv /tmp/simplespread-xls-fixtures
 /tmp/simplespread-xls-fixtures/bin/pip install xlwt==1.3.0 xlrd==2.0.2
@@ -123,7 +123,7 @@ def layout_and_tab_order():
             break
     indexes = [index for index, (kind, _) in enumerate(records) if kind == 0x0085]
     assert len(indexes) == 2
-    # 只更换 tab 顺序；物理子流位置和 BOUNDSHEET 指针保持不变。
+    # Change only tab order; physical substream positions and BOUNDSHEET pointers stay unchanged.
     records[indexes[0]], records[indexes[1]] = records[indexes[1]], records[indexes[0]]
     reordered = b"".join(payload for _, payload in records) + stream[position:]
     path = OUTPUT / "layout-and-tab-order.xls"
@@ -163,7 +163,7 @@ def formula_caches():
                 trailing = struct.pack("<HH", 0x0207, len(string)) + string
         output.extend(struct.pack("<HH", kind, len(payload)) + payload + trailing)
     path = OUTPUT / "formula-caches.xls"
-    # xlwt 不求值；这里显式写入各缓存类型，并交由 xlrd 独立核验。
+    # xlwt does not evaluate formulas; populate each cache type and verify it independently with xlrd.
     XlsDoc().save(str(path), bytes(output))
     check = xlrd.open_workbook(path).sheet_by_index(0)
     assert check.cell_value(0, 0) == 3
@@ -177,4 +177,4 @@ business_export()
 dates_1904()
 layout_and_tab_order()
 formula_caches()
-print("已生成并用 xlrd 独立核对四个 BIFF8 样本。")
+print("Generated four BIFF8 fixtures and independently verified them with xlrd.")

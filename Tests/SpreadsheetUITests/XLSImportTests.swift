@@ -5,7 +5,7 @@ import Testing
 @testable import SpreadsheetUI
 
 @MainActor
-@Suite("旧版 Excel 导入")
+@Suite("Legacy Excel import")
 struct XLSImportTests {
     @Test func legacyImportBecomesAnUnsavedXLSXAndWarnsAboutDroppedContent() {
         let source = URL(fileURLWithPath: "/imports/Quarterly.xls")
@@ -31,7 +31,7 @@ struct XLSImportTests {
         #expect(document.notice?.detail.contains("macros") == true)
         #expect(document.notice?.detail.contains("original file is unchanged") == true)
         guard case .choose(let lossNote) = DocumentSaving.plan(for: document) else {
-            Issue.record("XLS 导入必须提供 XLSX 保存位置。")
+            Issue.record("XLS imports must offer an XLSX save location.")
             return
         }
         #expect(lossNote?.contains("Quarterly.xlsx") == true)

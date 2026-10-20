@@ -8,7 +8,7 @@ public final class LoadedFile: @unchecked Sendable {
     let workbook: Workbook
     let engine: CalculationEngine
     let isTextImport: Bool
-    /// BIFF8 导入文件不能写回源文件，只能另存为 XLSX。
+    /// BIFF8 imports must be saved as XLSX copies, never written back to the source.
     let isLegacyImport: Bool
     /// More rows than a sheet holds; the rest were not loaded.
     let truncatedRows: Bool

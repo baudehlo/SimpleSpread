@@ -321,7 +321,7 @@ struct FileCommands: Commands {
 
     @MainActor private func openDocument() {
         let panel = NSOpenPanel()
-        // 部分 CSV/TSV 文件在磁盘上识别为 public.plain-text，因此一并允许纯文本类型。
+        // Some CSV/TSV files are identified as public.plain-text on disk, so allow plain text too.
         panel.allowedContentTypes = [xlsxType, xlsType, .commaSeparatedText, .tabSeparatedText,
                                      .plainText, .text]
         panel.allowsOtherFileTypes = true

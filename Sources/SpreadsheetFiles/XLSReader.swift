@@ -18,7 +18,8 @@ public enum XLSError: Error, LocalizedError, Equatable {
     }
 }
 
-/// 将 BIFF8 工作簿的有限内容读入 SimpleSpread 模型；未承载的内容会通过 unsupportedContent 报告。
+/// Imports supported BIFF8 workbook content into the SimpleSpread model,
+/// reporting content that cannot be preserved through `unsupportedContent`.
 public enum XLSReader {
     private static let maxInputBytes = 256 * 1024 * 1024
     private static let maxCells = 1_000_000

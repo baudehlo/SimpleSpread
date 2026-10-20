@@ -170,12 +170,12 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// File extensions treated as delimited-text imports (sniffed on load).
     nonisolated public static let textImportExtensions: Set<String> = ["csv", "tsv", "txt", "tab"]
-    /// 旧版 Excel 文件只作为输入读取，最终保存为 XLSX 副本。
+    /// Legacy Excel files are read-only inputs; edits are saved as XLSX copies.
     nonisolated public static let legacyImportExtensions: Set<String> = ["xls"]
-    /// 文档是否由 Excel 97–2003 文件导入而来。
+    /// Whether this document was imported from an Excel 97–2003 file.
     public internal(set) var isLegacyImport = false
 
-    /// 旧版 Excel 导入时，说明有限导入范围、公式缓存语义和源文件保护。
+    /// Explains import limitations, cached formula values, and source protection for legacy Excel files.
     static func legacyImportNotice(unsupportedContent: [String]) -> DocumentNotice {
         let limitations = unsupportedContent.isEmpty
             ? ""
@@ -1610,7 +1610,8 @@ public final class SpreadsheetDocument: ObservableObject {
     nonisolated static func load(url: URL,
                                  progress: @escaping @Sendable (Double?, LoadPhase) -> Void = { _, _ in },
                                  shouldContinue: @escaping @Sendable () -> Bool = { true }) throws -> LoadedFile {
-        // Files 浏览器交付的外部导入 URL 需要在整个读取期间持有访问权限，包括失败和取消路径。
+        // Hold access to external URLs from the Files browser for the entire read,
+        // releasing it on completion, failure, or cancellation.
         let scopedAccess = url.startAccessingSecurityScopedResource()
         defer { if scopedAccess { url.stopAccessingSecurityScopedResource() } }
         // Mapped: a 2 GB CSV is read only as far as the row limit.
@@ -1662,7 +1663,7 @@ public final class SpreadsheetDocument: ObservableObject {
     static func make(from loaded: LoadedFile, url: URL) -> SpreadsheetDocument {
         let doc = SpreadsheetDocument(workbook: loaded.workbook, engine: loaded.engine)
         if loaded.isTextImport || loaded.isLegacyImport {
-            // 文本和旧版 Excel 导入均作为未保存的 XLSX 文档，避免写回源文件。
+            // Text and legacy Excel imports become unsaved XLSX documents to protect the source file.
             doc.suggestedFileName = url.deletingPathExtension().lastPathComponent + ".xlsx"
             doc.isLegacyImport = loaded.isLegacyImport
             if loaded.isLegacyImport {

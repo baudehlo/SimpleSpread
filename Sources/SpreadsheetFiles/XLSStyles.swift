@@ -203,7 +203,8 @@ struct BIFFString {
     }
 }
 
-/// SST 字符串跨 CONTINUE 记录时，续段首字节是该段的压缩标志，不属于字符串内容。
+/// When SST character data spans CONTINUE records, the first byte of each
+/// continuation is its compression flag, not part of the string.
 struct BIFFSSTCursor {
     private let segments: [Data]
     private var segment = 0
