@@ -152,6 +152,7 @@ public final class DocumentStore: ObservableObject {
 // MARK: - Menu commands
 
 let xlsxType = UTType(filenameExtension: "xlsx") ?? .data
+let xlsType = UTType(filenameExtension: "xls") ?? .data
 
 /// Run a menu command on the focused document. Commands act on committed
 /// cells, so any typing still in the cell editor or formula bar is written

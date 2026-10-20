@@ -25,7 +25,7 @@ PB=/usr/libexec/PlistBuddy
 "$PB" -c "Add :NSHighResolutionCapable    bool   true"                "$PLIST"
 "$PB" -c "Add :NSPrincipalClass           string NSApplication"       "$PLIST"
 "$PB" -c "Add :LSMinimumSystemVersion     string 14.0"                "$PLIST"
-# Document types: xlsx (editor) and csv (opened as an import).
+# Document types: xlsx, legacy xls (imported to xlsx), and csv.
 "$PB" -c "Add :CFBundleDocumentTypes array"                            "$PLIST"
 "$PB" -c "Add :CFBundleDocumentTypes:0:CFBundleTypeName string Excel Workbook" "$PLIST"
 "$PB" -c "Add :CFBundleDocumentTypes:0:CFBundleTypeRole string Editor" "$PLIST"
@@ -37,3 +37,8 @@ PB=/usr/libexec/PlistBuddy
 "$PB" -c "Add :CFBundleDocumentTypes:1:LSHandlerRank string Default" "$PLIST"
 "$PB" -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes array"       "$PLIST"
 "$PB" -c "Add :CFBundleDocumentTypes:1:LSItemContentTypes:0 string public.comma-separated-values-text" "$PLIST"
+"$PB" -c "Add :CFBundleDocumentTypes:2:CFBundleTypeName string Excel 97-2003 Workbook" "$PLIST"
+"$PB" -c "Add :CFBundleDocumentTypes:2:CFBundleTypeRole string Viewer" "$PLIST"
+"$PB" -c "Add :CFBundleDocumentTypes:2:LSHandlerRank string Alternate" "$PLIST"
+"$PB" -c "Add :CFBundleDocumentTypes:2:LSItemContentTypes array"       "$PLIST"
+"$PB" -c "Add :CFBundleDocumentTypes:2:LSItemContentTypes:0 string com.microsoft.excel.xls" "$PLIST"

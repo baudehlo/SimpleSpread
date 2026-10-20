@@ -321,10 +321,8 @@ struct FileCommands: Commands {
 
     @MainActor private func openDocument() {
         let panel = NSOpenPanel()
-        // Accept XLSX plus any delimited-text type. Some CSV/TSV files resolve
-        // to public.plain-text on disk, so allowing plain text (and matching by
-        // extension) keeps them selectable instead of greyed out.
-        panel.allowedContentTypes = [xlsxType, .commaSeparatedText, .tabSeparatedText,
+        // 部分 CSV/TSV 文件在磁盘上识别为 public.plain-text，因此一并允许纯文本类型。
+        panel.allowedContentTypes = [xlsxType, xlsType, .commaSeparatedText, .tabSeparatedText,
                                      .plainText, .text]
         panel.allowsOtherFileTypes = true
         panel.allowsMultipleSelection = false

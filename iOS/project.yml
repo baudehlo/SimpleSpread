@@ -75,6 +75,10 @@ targets:
             CFBundleTypeRole: Viewer
             LSHandlerRank: Alternate
             LSItemContentTypes: [public.comma-separated-values-text, public.tab-separated-values-text]
+          - CFBundleTypeName: Excel 97-2003 Workbook
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [com.microsoft.excel.xls]
         # No encryption beyond what iOS itself provides.
         ITSAppUsesNonExemptEncryption: false
   SimpleSpreadUITests:

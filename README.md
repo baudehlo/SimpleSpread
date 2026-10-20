@@ -19,6 +19,9 @@ touch, with a trackpad or mouse, and with a hardware keyboard. See
 
 ## Features
 
+- **旧版 XLS 导入**：打开 Excel 97–2003 / BIFF8 文件，保留常见值、合并表头和
+  基本格式；公式按缓存值读取并提示限制，编辑后另存为 XLSX，原始文件不变。
+  详见 [导入范围与限制](docs/LEGACY-XLS.md)。
 - **XLSX native**: reads and writes OOXML SpreadsheetML interoperable with
   Excel, Numbers, and Google Sheets — including a from-scratch ZIP layer,
   shared strings, styles, number formats, formulas with cached values,

@@ -170,6 +170,23 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// File extensions treated as delimited-text imports (sniffed on load).
     nonisolated public static let textImportExtensions: Set<String> = ["csv", "tsv", "txt", "tab"]
+    /// 旧版 Excel 文件只作为输入读取，最终保存为 XLSX 副本。
+    nonisolated public static let legacyImportExtensions: Set<String> = ["xls"]
+    /// 文档是否由 Excel 97–2003 文件导入而来。
+    public internal(set) var isLegacyImport = false
+
+    /// 旧版 Excel 导入时，说明有限导入范围、公式缓存语义和源文件保护。
+    static func legacyImportNotice(unsupportedContent: [String]) -> DocumentNotice {
+        let limitations = unsupportedContent.isEmpty
+            ? ""
+            : " The file also contains \(DocumentSaving.list(unsupportedContent)) that SimpleSpread cannot preserve."
+        return DocumentNotice(
+            message: "This Excel 97–2003 workbook was opened as an XLSX copy.",
+            detail: "Only cell values and basic formatting are imported; charts, images, macros, and other "
+                + "advanced workbook features are not carried over. Formulas, if present, were opened using "
+                + "their cached values.\(limitations) Save edits as XLSX; the original file is unchanged.")
+    }
+
 
     // MARK: - Display / edit strings
 
@@ -1593,11 +1610,15 @@ public final class SpreadsheetDocument: ObservableObject {
     nonisolated static func load(url: URL,
                                  progress: @escaping @Sendable (Double?, LoadPhase) -> Void = { _, _ in },
                                  shouldContinue: @escaping @Sendable () -> Bool = { true }) throws -> LoadedFile {
+        // Files 浏览器交付的外部导入 URL 需要在整个读取期间持有访问权限，包括失败和取消路径。
+        let scopedAccess = url.startAccessingSecurityScopedResource()
+        defer { if scopedAccess { url.stopAccessingSecurityScopedResource() } }
         // Mapped: a 2 GB CSV is read only as far as the row limit.
         let data = try Data(contentsOf: url, options: .alwaysMapped)
         let ext = url.pathExtension.lowercased()
         let baseName = url.deletingPathExtension().lastPathComponent
         let isTextImport = textImportExtensions.contains(ext)
+        let isLegacyImport = legacyImportExtensions.contains(ext)
         let workbook: Workbook
         var truncated = false
         var unsupported: [String] = []
@@ -1610,6 +1631,15 @@ public final class SpreadsheetDocument: ObservableObject {
             }
             if report.cancelled { throw CancellationError() }
             truncated = report.truncated
+        } else if isLegacyImport {
+            do {
+                workbook = try XLSReader.read(data: data, unsupportedContent: &unsupported) { fraction in
+                    progress(fraction, .reading)
+                    return shouldContinue()
+                }
+            } catch XLSError.cancelled {
+                throw CancellationError()
+            }
         } else {
             do {
                 workbook = try XLSXReader.read(data: data, unsupportedContent: &unsupported) { fraction in
@@ -1623,17 +1653,22 @@ public final class SpreadsheetDocument: ObservableObject {
         guard shouldContinue() else { throw CancellationError() }
         progress(nil, .calculating)
         let engine = CalculationEngine(workbook: workbook)
-        return LoadedFile(workbook: workbook, engine: engine, isTextImport: isTextImport, truncatedRows: truncated,
+        return LoadedFile(workbook: workbook, engine: engine, isTextImport: isTextImport,
+                          isLegacyImport: isLegacyImport, truncatedRows: truncated,
                           unsupportedContent: unsupported)
     }
 
     /// The document for a loaded file (main thread).
     static func make(from loaded: LoadedFile, url: URL) -> SpreadsheetDocument {
         let doc = SpreadsheetDocument(workbook: loaded.workbook, engine: loaded.engine)
-        if loaded.isTextImport {
-            // Delimited-text opens as an unsaved XLSX-native document: never
-            // write back over the source file. Save-As pre-fills <base>.xlsx.
+        if loaded.isTextImport || loaded.isLegacyImport {
+            // 文本和旧版 Excel 导入均作为未保存的 XLSX 文档，避免写回源文件。
             doc.suggestedFileName = url.deletingPathExtension().lastPathComponent + ".xlsx"
+            doc.isLegacyImport = loaded.isLegacyImport
+            if loaded.isLegacyImport {
+                doc.unsupportedContent = loaded.unsupportedContent
+                doc.notice = legacyImportNotice(unsupportedContent: doc.unsupportedContent)
+            }
         } else {
             doc.fileURL = url
             doc.unsupportedContent = loaded.unsupportedContent

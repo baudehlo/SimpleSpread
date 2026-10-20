@@ -50,7 +50,8 @@ let package = Package(
         // keys, menus, reading the screen), over real-sized files. Slow:
         // run locally with scripts/ui-tests.sh (SIMPLESPREAD_UI_TESTS=1),
         // not in CI. See Tests/SpreadsheetAppUITests/README.md.
-        .testTarget(name: "SpreadsheetAppUITests", dependencies: ["SpreadsheetUI", "SpreadsheetFiles", "SpreadsheetCore"]),
+        .testTarget(name: "SpreadsheetAppUITests", dependencies: ["SpreadsheetUI", "SpreadsheetFiles", "SpreadsheetCore"],
+                    exclude: ["README.md"]),
     ],
     swiftLanguageModes: [.v6]
 )

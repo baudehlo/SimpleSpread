@@ -40,6 +40,10 @@ struct SimpleSpreadAppMain: App {
 
 // MARK: - Browser
 
+struct LegacyImportMetadata: Sendable {
+    let unsupportedContent: [String]
+}
+
 /// One window's browser and the document open over it.
 @MainActor
 final class BrowserModel: ObservableObject {
@@ -48,7 +52,7 @@ final class BrowserModel: ObservableObject {
     /// URLs to open once the browser exists (a launch from the Files app).
     private var pending: [URL] = []
 
-    static let openableTypes: [UTType] = [xlsxType, .commaSeparatedText, .tabSeparatedText]
+    static let openableTypes: [UTType] = [xlsxType, xlsType, .commaSeparatedText, .tabSeparatedText]
 
     func attach(_ browser: UIDocumentBrowserViewController) {
         self.browser = browser
@@ -81,23 +85,25 @@ final class BrowserModel: ObservableObject {
         }
     }
 
-    /// Open a spreadsheet, or convert a CSV to one, closing whatever is open.
-    func open(_ url: URL) {
+    /// 打开工作簿；文本和旧版 Excel 文件先导入为 XLSX 副本，并关闭当前文档。
+    func open(_ url: URL, legacyImport: LegacyImportMetadata? = nil) {
         documentLog.info("open \(url.lastPathComponent, privacy: .private)")
         if let current = session {
             current.close { [weak self] closed in
-                if closed { self?.open(url) }
+                if closed { self?.open(url, legacyImport: legacyImport) }
             }
             return
         }
-        if SpreadsheetDocument.textImportExtensions.contains(url.pathExtension.lowercased()) {
-            importText(url)
+        let ext = url.pathExtension.lowercased()
+        if SpreadsheetDocument.textImportExtensions.contains(ext)
+            || SpreadsheetDocument.legacyImportExtensions.contains(ext) {
+            importFile(url)
         } else {
-            openSpreadsheet(url)
+            openSpreadsheet(url, legacyImport: legacyImport)
         }
     }
 
-    private func openSpreadsheet(_ url: URL) {
+    private func openSpreadsheet(_ url: URL, legacyImport: LegacyImportMetadata? = nil) {
         let file = SpreadsheetFile(fileURL: url)
         // Files from other apps' places (iCloud Drive, a picker) are reached
         // through security-scoped access, held while the file is open.
@@ -136,21 +142,28 @@ final class BrowserModel: ObservableObject {
                     }
                     return
                 }
+                if let legacyImport {
+                    document.isLegacyImport = true
+                    document.unsupportedContent = legacyImport.unsupportedContent
+                    document.notice = SpreadsheetDocument.legacyImportNotice(
+                        unsupportedContent: legacyImport.unsupportedContent)
+                }
                 self?.show(OpenFile(file: file, document: document, browser: self))
             }
         }
     }
 
-    /// A CSV opens as a new spreadsheet beside it (never written back over
-    /// the text file, as on the Mac), then that spreadsheet is opened.
-    private func importText(_ url: URL) {
+    /// 将文本或旧版 Excel 导入独立 XLSX，再交给 UIDocument，避免自动保存覆盖源文件。
+    private func importFile(_ url: URL) {
         FileLoader.open(url) { [weak self] document in
-            let name = url.deletingPathExtension().lastPathComponent + ".xlsx"
+            let name = document.suggestedFileName ?? (url.deletingPathExtension().lastPathComponent + ".xlsx")
             let temp = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
             try? FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
             let target = temp.appendingPathComponent(name)
             let snapshot = document.makeSaveSnapshot()
+            let metadata = document.isLegacyImport
+                ? LegacyImportMetadata(unsupportedContent: document.unsupportedContent) : nil
             BackgroundFileTask.run(
                 title: "Converting…", panelTitle: "Opening \(url.lastPathComponent)", fileName: name, window: nil,
                 work: { progress, shouldContinue in
@@ -160,7 +173,7 @@ final class BrowserModel: ObservableObject {
                 completion: { result in
                     switch result {
                     case .success:
-                        self?.place(target, nextTo: url)
+                        self?.place(target, nextTo: url, legacyImport: metadata)
                     case .failure(let error) where error is CancellationError:
                         break
                     case .failure(let error):
@@ -172,12 +185,12 @@ final class BrowserModel: ObservableObject {
 
     /// Put a new file beside `neighbour` (or, where that isn't allowed, in
     /// SimpleSpread's own folder) and open it.
-    private func place(_ file: URL, nextTo neighbour: URL) {
+    private func place(_ file: URL, nextTo neighbour: URL, legacyImport: LegacyImportMetadata? = nil) {
         guard let browser else { return }
         browser.importDocument(at: file, nextToDocumentAt: neighbour, mode: .move) { [weak self] placed, error in
             MainActor.assumeIsolated {
                 if let placed {
-                    self?.open(placed)
+                    self?.open(placed, legacyImport: legacyImport)
                     return
                 }
                 // A read-only folder: keep it in On My iPad › SimpleSpread.
@@ -185,7 +198,7 @@ final class BrowserModel: ObservableObject {
                 let target = Self.unusedURL(for: file.lastPathComponent, in: documents)
                 do {
                     try FileManager.default.moveItem(at: file, to: target)
-                    self?.open(target)
+                    self?.open(target, legacyImport: legacyImport)
                 } catch {
                     Alerts.show("Could not open \(neighbour.lastPathComponent)", detail: error.localizedDescription)
                 }
@@ -372,11 +385,15 @@ final class OpenFile: ObservableObject, Identifiable {
         file.refreshSaveState()
         guard document.isModified, savingLosesContent, !askedAboutLoss else { return }
         askedAboutLoss = true
-        let alert = UIAlertController(
-            title: "“\(displayName)” has content SimpleSpread can’t save",
-            message: "Saving your changes will remove its \(DocumentSaving.list(document.unsupportedContent)). "
-                + "Save them to a copy to keep the original as it is. Until you choose, nothing is saved.",
-            preferredStyle: .alert)
+        let title = document.isLegacyImport
+            ? "This XLSX copy cannot preserve all imported content"
+            : "“\(displayName)” has content SimpleSpread can’t save"
+        let message = document.isLegacyImport
+            ? "The original Excel 97–2003 file is unchanged. Saving this XLSX copy will not retain its "
+                + "\(DocumentSaving.list(document.unsupportedContent)). Until you choose, nothing is saved."
+            : "Saving your changes will remove its \(DocumentSaving.list(document.unsupportedContent)). "
+                + "Save them to a copy to keep the original as it is. Until you choose, nothing is saved."
+        let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
         alert.addAction(UIAlertAction(title: "Save a Copy…", style: .default) { [weak self] _ in
             self?.saveCopy(switching: true)
         })
@@ -415,10 +432,14 @@ final class OpenFile: ObservableObject, Identifiable {
         document.commitPendingEdit()
         file.refreshSaveState()
         if document.isModified, savingLosesContent {
-            let alert = UIAlertController(
-                title: "Save the changes to “\(displayName)”?",
-                message: "Saving will remove its \(DocumentSaving.list(document.unsupportedContent)), which SimpleSpread can’t save.",
-                preferredStyle: .alert)
+            let title = document.isLegacyImport
+                ? "Save the changes to “\(displayName)” as XLSX?"
+                : "Save the changes to “\(displayName)”?"
+            let message = document.isLegacyImport
+                ? "The original Excel 97–2003 file is unchanged. This XLSX copy cannot preserve its "
+                    + "\(DocumentSaving.list(document.unsupportedContent))."
+                : "Saving will remove its \(DocumentSaving.list(document.unsupportedContent)), which SimpleSpread can’t save."
+            let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             alert.addAction(UIAlertAction(title: "Save a Copy…", style: .default) { [weak self] _ in
                 self?.saveCopy(switching: false) { saved in if saved { self?.finishClose(completion) } }
             })
