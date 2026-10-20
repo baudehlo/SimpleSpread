@@ -19,6 +19,10 @@ touch, with a trackpad or mouse, and with a hardware keyboard. See
 
 ## Features
 
+- **Legacy XLS import**: opens Excel 97–2003 / BIFF8 files, preserving common
+  cell values, merged headers, and basic formatting. Formulas use cached values,
+  with import limitations shown on opening. Save edits as XLSX without changing
+  the original file. See [import support and limitations](docs/LEGACY-XLS.md).
 - **XLSX native**: reads and writes OOXML SpreadsheetML interoperable with
   Excel, Numbers, and Google Sheets — including a from-scratch ZIP layer,
   shared strings, styles, number formats, formulas with cached values,

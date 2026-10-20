@@ -8,16 +8,20 @@ public final class LoadedFile: @unchecked Sendable {
     let workbook: Workbook
     let engine: CalculationEngine
     let isTextImport: Bool
+    /// BIFF8 imports must be saved as XLSX copies, never written back to the source.
+    let isLegacyImport: Bool
     /// More rows than a sheet holds; the rest were not loaded.
     let truncatedRows: Bool
     /// What the file holds that saving will not write back ("3 charts", …).
     let unsupportedContent: [String]
 
-    init(workbook: Workbook, engine: CalculationEngine, isTextImport: Bool, truncatedRows: Bool,
+    init(workbook: Workbook, engine: CalculationEngine, isTextImport: Bool, isLegacyImport: Bool = false,
+         truncatedRows: Bool,
          unsupportedContent: [String] = []) {
         self.workbook = workbook
         self.engine = engine
         self.isTextImport = isTextImport
+        self.isLegacyImport = isLegacyImport
         self.truncatedRows = truncatedRows
         self.unsupportedContent = unsupportedContent
     }

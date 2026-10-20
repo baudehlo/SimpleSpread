@@ -170,6 +170,26 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// File extensions treated as delimited-text imports (sniffed on load).
     nonisolated public static let textImportExtensions: Set<String> = ["csv", "tsv", "txt", "tab"]
+    /// Legacy Excel files are read-only inputs; edits are saved as XLSX copies.
+    nonisolated public static let legacyImportExtensions: Set<String> = ["xls"]
+    /// Whether this document was imported from an Excel 97–2003 file.
+    public internal(set) var isLegacyImport = false
+
+    /// Explains import limitations, cached formula values, and source protection for legacy Excel files.
+    static func legacyImportNotice(unsupportedContent: [String]) -> DocumentNotice {
+        var detail = ""
+        if unsupportedContent.contains(XLSReader.formulasLabel) {
+            detail += "Formulas show their last calculated values and won’t recalculate. "
+        }
+        let others = unsupportedContent.filter { $0 != XLSReader.formulasLabel }
+        if !others.isEmpty {
+            detail += "Its \(DocumentSaving.list(others)) couldn’t be brought over. "
+        }
+        return DocumentNotice(
+            message: "This Excel 97–2003 workbook was opened as an XLSX copy.",
+            detail: detail + "Save your edits as an XLSX file; the original file is not changed.")
+    }
+
 
     // MARK: - Display / edit strings
 
@@ -1593,11 +1613,16 @@ public final class SpreadsheetDocument: ObservableObject {
     nonisolated static func load(url: URL,
                                  progress: @escaping @Sendable (Double?, LoadPhase) -> Void = { _, _ in },
                                  shouldContinue: @escaping @Sendable () -> Bool = { true }) throws -> LoadedFile {
+        // Hold access to external URLs from the Files browser for the entire read,
+        // releasing it on completion, failure, or cancellation.
+        let scopedAccess = url.startAccessingSecurityScopedResource()
+        defer { if scopedAccess { url.stopAccessingSecurityScopedResource() } }
         // Mapped: a 2 GB CSV is read only as far as the row limit.
         let data = try Data(contentsOf: url, options: .alwaysMapped)
         let ext = url.pathExtension.lowercased()
         let baseName = url.deletingPathExtension().lastPathComponent
         let isTextImport = textImportExtensions.contains(ext)
+        let isLegacyImport = legacyImportExtensions.contains(ext)
         let workbook: Workbook
         var truncated = false
         var unsupported: [String] = []
@@ -1610,6 +1635,15 @@ public final class SpreadsheetDocument: ObservableObject {
             }
             if report.cancelled { throw CancellationError() }
             truncated = report.truncated
+        } else if isLegacyImport {
+            do {
+                workbook = try XLSReader.read(data: data, unsupportedContent: &unsupported) { fraction in
+                    progress(fraction, .reading)
+                    return shouldContinue()
+                }
+            } catch XLSError.cancelled {
+                throw CancellationError()
+            }
         } else {
             do {
                 workbook = try XLSXReader.read(data: data, unsupportedContent: &unsupported) { fraction in
@@ -1623,17 +1657,22 @@ public final class SpreadsheetDocument: ObservableObject {
         guard shouldContinue() else { throw CancellationError() }
         progress(nil, .calculating)
         let engine = CalculationEngine(workbook: workbook)
-        return LoadedFile(workbook: workbook, engine: engine, isTextImport: isTextImport, truncatedRows: truncated,
+        return LoadedFile(workbook: workbook, engine: engine, isTextImport: isTextImport,
+                          isLegacyImport: isLegacyImport, truncatedRows: truncated,
                           unsupportedContent: unsupported)
     }
 
     /// The document for a loaded file (main thread).
     static func make(from loaded: LoadedFile, url: URL) -> SpreadsheetDocument {
         let doc = SpreadsheetDocument(workbook: loaded.workbook, engine: loaded.engine)
-        if loaded.isTextImport {
-            // Delimited-text opens as an unsaved XLSX-native document: never
-            // write back over the source file. Save-As pre-fills <base>.xlsx.
+        if loaded.isTextImport || loaded.isLegacyImport {
+            // Text and legacy Excel imports become unsaved XLSX documents to protect the source file.
             doc.suggestedFileName = url.deletingPathExtension().lastPathComponent + ".xlsx"
+            doc.isLegacyImport = loaded.isLegacyImport
+            if loaded.isLegacyImport {
+                doc.unsupportedContent = loaded.unsupportedContent
+                doc.notice = legacyImportNotice(unsupportedContent: doc.unsupportedContent)
+            }
         } else {
             doc.fileURL = url
             doc.unsupportedContent = loaded.unsupportedContent
