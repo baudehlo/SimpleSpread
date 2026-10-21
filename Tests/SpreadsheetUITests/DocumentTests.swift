@@ -1,5 +1,9 @@
 import Foundation
 import Testing
+#if os(macOS)
+import AppKit
+import Combine
+#endif
 @testable import SpreadsheetCore
 @testable import SpreadsheetFiles
 @testable import SpreadsheetUI
@@ -584,9 +588,9 @@ struct ClipboardFillTests {
 
 #if os(macOS)
 @MainActor
-@Suite("Open requests")
+@Suite("Open requests", .serialized)
 struct OpenRequestTests {
-    /// Every window receives the open notification; only one may act on it,
+    /// Every window receives pending requests; only one may act on each,
     /// or N open windows open N copies of the file.
     @Test func onlyTheFirstWindowClaimsARequest() {
         let request = OpenRequest(url: URL(fileURLWithPath: "/tmp/a.csv"))
@@ -600,6 +604,80 @@ struct OpenRequestTests {
         let request = OpenRequest(url: URL(fileURLWithPath: "/tmp/a.csv"))
         let opened = (0..<5).filter { _ in request.claim() }.count
         #expect(opened == 1)
+    }
+
+    @Test func requestBeforeFirstWindowIsDeliveredWhenItSubscribes() {
+        let url = URL(fileURLWithPath: "/tmp/cold-start.xlsx")
+        OpenRequest.post(url)
+
+        var opened: [URL] = []
+        let window = OpenRequest.publisher.sink { requests in
+            opened += requests.filter { $0.claim() }.map(\.url)
+        }
+        defer { window.cancel() }
+        #expect(opened == [url])
+    }
+
+    @Test func launchURLsWaitForTheFirstWindowInOrder() {
+        let urls = ["/tmp/first.xls", "/tmp/second.xlsx"].map { URL(fileURLWithPath: $0) }
+        let delegate = AppDelegate()
+        delegate.application(NSApplication.shared, open: urls)
+
+        var opened: [URL] = []
+        let window = OpenRequest.publisher.sink { requests in
+            opened += requests.filter { $0.claim() }.map(\.url)
+        }
+        defer { window.cancel() }
+        #expect(opened == urls)
+    }
+
+    @Test func activeWindowsOpenEachRequestExactlyOnce() {
+        var opened: [URL] = []
+        let windows = (0..<5).map { _ in
+            OpenRequest.publisher.sink { requests in
+                opened += requests.filter { $0.claim() }.map(\.url)
+            }
+        }
+        defer { windows.forEach { $0.cancel() } }
+
+        let url = URL(fileURLWithPath: "/tmp/warm-start.xls")
+        OpenRequest.post(url)
+        #expect(opened == [url])
+        // A second user request for the same URL still opens the file again.
+        OpenRequest.post(url)
+        #expect(opened == [url, url])
+    }
+
+    @Test func newWindowsDoNotReplayHandledRequests() {
+        let url = URL(fileURLWithPath: "/tmp/handled.xlsx")
+        OpenRequest.post(url)
+        var firstOpened: [URL] = []
+        let firstWindow = OpenRequest.publisher.sink { requests in
+            firstOpened += requests.filter { $0.claim() }.map(\.url)
+        }
+        firstWindow.cancel()
+
+        var laterRequests: [OpenRequest] = []
+        let laterWindow = OpenRequest.publisher.sink { laterRequests += $0 }
+        defer { laterWindow.cancel() }
+        #expect(firstOpened == [url])
+        #expect(laterRequests.isEmpty)
+    }
+
+    @Test func requestsBetweenWindowSubscriptionsAreRetained() {
+        let firstWindow = OpenRequest.publisher.sink { requests in
+            for request in requests { _ = request.claim() }
+        }
+        firstWindow.cancel()
+
+        let url = URL(fileURLWithPath: "/tmp/between-windows.xlsx")
+        OpenRequest.post(url)
+        var opened: [URL] = []
+        let nextWindow = OpenRequest.publisher.sink { requests in
+            opened += requests.filter { $0.claim() }.map(\.url)
+        }
+        defer { nextWindow.cancel() }
+        #expect(opened == [url])
     }
 }
 #endif

@@ -1,6 +1,7 @@
 #if os(macOS)
 import SwiftUI
 import AppKit
+import Combine
 import SpreadsheetCore
 import UniformTypeIdentifiers
 
@@ -24,16 +25,17 @@ struct SimpleSpreadAppMain: App {
                 .frame(minWidth: 640, minHeight: 400)
                 // Finder double-click / `open <file>` / drag-onto-icon: route
                 // each URL through the same open flow the File menu uses.
-                .onReceive(NotificationCenter.default.publisher(for: .simpleSpreadOpenURL)) { note in
-                    // Every open window gets this notification. Only the first
+                .onReceive(OpenRequest.publisher) { requests in
+                    // Every open window receives pending requests. Only the first
                     // one to claim the request opens the file; without this, N
                     // windows opened N copies.
-                    guard let request = note.object as? OpenRequest, request.claim() else { return }
-                    let url = request.url
-                    // Loads in the background, with progress for big files.
-                    FileLoader.open(url) { doc in
-                        RecentFilesManager.shared.record(url)
-                        openWindow(value: DocumentStore.shared.register(doc))
+                    for request in requests where request.claim() {
+                        let url = request.url
+                        // Loads in the background, with progress for big files.
+                        FileLoader.open(url) { doc in
+                            RecentFilesManager.shared.record(url)
+                            openWindow(value: DocumentStore.shared.register(doc))
+                        }
                     }
                 }
         } defaultValue: {
@@ -52,14 +54,19 @@ struct SimpleSpreadAppMain: App {
     }
 }
 
-extension Notification.Name {
-    static let simpleSpreadOpenURL = Notification.Name("SimpleSpreadOpenURL")
-}
-
-/// One request to open a file. Posted to every window; the first window to
-/// `claim()` it does the open, the rest ignore it.
+/// One request to open a file. Retained until a window claims it, including
+/// requests delivered before SwiftUI creates the first window at launch.
 @MainActor
 final class OpenRequest {
+    private static var pending: [OpenRequest] = []
+    private static let arrivals = CurrentValueSubject<Void, Never>(())
+
+    /// The initial signal lets a new window consume requests received before
+    /// it subscribed. Read the queue afresh so handled requests are not replayed.
+    static var publisher: AnyPublisher<[OpenRequest], Never> {
+        arrivals.map { pending }.eraseToAnyPublisher()
+    }
+
     let url: URL
     private var claimed = false
 
@@ -71,28 +78,22 @@ final class OpenRequest {
     func claim() -> Bool {
         if claimed { return false }
         claimed = true
+        Self.pending.removeAll { $0 === self }
         return true
     }
 
     /// Ask the open windows to open `url` (exactly once).
     static func post(_ url: URL) {
-        NotificationCenter.default.post(name: .simpleSpreadOpenURL, object: OpenRequest(url: url))
+        pending.append(OpenRequest(url: url))
+        arrivals.send(())
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    /// URLs delivered before a scene is listening (e.g. launch-to-open).
-    private var queuedURLs: [URL] = []
-    private var ready = false
-
     /// Finder double-click, `open <file>`, drag-onto-Dock-icon.
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            if ready {
-                OpenRequest.post(url)
-            } else {
-                queuedURLs.append(url)
-            }
+            OpenRequest.post(url)
         }
     }
 
@@ -107,16 +108,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Running as a bare SwiftPM binary (no bundle): become a regular app.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-
-        // A scene is now listening; flush any launch-time open requests.
-        ready = true
-        let pending = queuedURLs
-        queuedURLs.removeAll()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            for url in pending {
-                OpenRequest.post(url)
-            }
-        }
 
         // Sparkle schedules its own automatic checks (per the Info.plist
         // SUEnableAutomaticChecks / SUScheduledCheckInterval settings); no
