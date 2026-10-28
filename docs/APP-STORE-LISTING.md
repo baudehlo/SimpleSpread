@@ -20,7 +20,7 @@ Rules this text follows:
 
 ## Subtitle (30)
 
-    Fast, native spreadsheets
+    Native XLSX Spreadsheet
 
 ## Promotional text (170)
 
@@ -30,10 +30,17 @@ Can be changed at any time without a new build.
 
 ## Keywords (100)
 
-Commas, no spaces. The name and subtitle words are already indexed, so they
-aren't repeated.
+Commas, no spaces. App Store search reads the name, subtitle and keywords
+(not the description), and the name and subtitle words are already indexed,
+so they aren't repeated here.
 
-    xlsx,csv,formula,pivot,chart,budget,table,workbook,data,invoice,finance,calculate,ledger,sum
+    xls,csv,sheets,office,formula,pivot,chart,budget,workbook,table,invoice,finance,calculate,ledger,sum
+
+"excel" is left out on purpose: App Review guideline 2.3.7 bars other
+companies' trademarks from the name, subtitle and keywords, and a rejection
+on the first submission would hold up the launch. It can be tried in a later
+update (swap out "ledger,sum"); if that update is rejected, remove it and
+resubmit.
 
 ## Description (4000)
 
@@ -88,7 +95,7 @@ words of what changed for the user.
 - Age rating: none of the content applies, so 4+.
 - App Privacy: Data Not Collected.
 - Copyright: 2026 1001494310 ONTARIO INC.
-- Price: $9.99 (USD tier), all countries.
+- Price: $14.99 (USD), all countries.
 
 ## Notes for App Review
 
