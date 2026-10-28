@@ -17,6 +17,14 @@ the Files browser, edits them in place, and saves as you go. It works by
 touch, with a trackpad or mouse, and with a hardware keyboard. See
 [docs/IPAD.md](docs/IPAD.md).
 
+## Getting it
+
+- **[App Store](https://apps.apple.com/app/simplespread/id6824562767)**: one
+  purchase covers Mac and iPad, with updates through the App Store. It's the
+  same app, and buying it supports the work on it.
+- **[GitHub Releases](https://github.com/baudehlo/SimpleSpread/releases/latest)**:
+  a free download for the Mac (macOS 14 or later) that updates itself.
+
 ## Features
 
 - **Legacy XLS import**: opens Excel 97–2003 / BIFF8 files, preserving common
