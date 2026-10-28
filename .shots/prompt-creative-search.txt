@@ -1,0 +1,19 @@
+Create one 3456x2304 (3:2) App Store search result image for the app "SimpleSpread". It is shown small in search results, so it must read instantly at thumbnail size. It must match the attached approved screenshots exactly in style: same green gradient, same typography, same app UI.
+
+Visual direction:
+- Background: soft vertical gradient, deep spreadsheet green #2F6B47 at the top easing to fresh green #5FAF7E and then to near-white mint #EEF7F1 at the bottom. Very faint thin white spreadsheet grid lines at low opacity. Fully opaque, no transparency.
+- Layout: huge white headline centred near the top on one line, a white subtitle under it, a row of three white pill chips, then a large silver iPad in portrait orientation centred below (its width about 38% of the image width, standing slightly left of centre) showing SimpleSpread exactly as in the attached iPad screenshot, its lower part running off the bottom edge. Behind it, offset to the upper right and partly hidden, a macOS SimpleSpread window as in the attached Mac screenshot (the "Sales by region" column chart with blue, orange and grey bars). Soft large shadows.
+- Chips: white rounded pills with dark green text and a small green check mark: "Native XLSX", "No account", "No subscription".
+
+Typography:
+- Headline: very bold rounded geometric sans-serif, pure white, enormous, readable at thumbnail size
+- Subtitle: regular sans-serif, white at 90% opacity, about 40% of the headline size
+- Render every quoted string exactly, letter for letter
+
+EXACT HEADLINE: "Native XLSX Spreadsheet"
+EXACT SUBTITLE: "For iPad and Mac. Buy once."
+
+Constraints:
+- keep all text at least 160px from every edge
+- no prices, no App Store badges, no download buttons, no ratings, no awards, no people, no hands, no logos of other companies
+- no lorem ipsum; on-screen app text is only the real text from the attached screenshots

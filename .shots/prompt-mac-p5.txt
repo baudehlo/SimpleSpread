@@ -1,0 +1,37 @@
+Create one 2880x1808 landscape Mac App Store marketing screenshot for "SimpleSpread". It is one of a matching set of six; keep the style exactly as described so the set looks consistent.
+
+Campaign:
+- Goal: make a Mac owner stop scrolling and buy
+- Category: Productivity (spreadsheet app for Mac and iPad)
+- Core promise: edit your spreadsheets on the Mac, bought once, no account
+- Differentiator: XLSX is the app's native file format. No import, no export, no conversion.
+
+Visual direction (same as the attached approved iPad screenshot):
+- Background: a soft vertical gradient, deep spreadsheet green #2F6B47 at the top easing to fresh green #5FAF7E and then to near-white mint #EEF7F1 at the bottom. Very faint thin white spreadsheet grid lines across the background at low opacity.
+- Layout: large white headline centred near the top on one line, a smaller white subtitle under it, then a large macOS app window centred below (about 78% of the image width), its lower part running off the bottom edge of the image. The window has a soft large shadow, rounded corners, and the red, yellow and green window buttons at the top left. No Mac hardware, no laptop frame, no desktop wallpaper, no menu bar, no Dock.
+- One real UI element lifts out of the window as a white card with a soft drop shadow and a very slight tilt, overlapping the window edge.
+
+Typography:
+- Headline: very bold rounded geometric sans-serif, pure white, huge, readable at thumbnail size
+- Subtitle: regular weight sans-serif, white at 90% opacity, about one third of the headline size
+- Render every quoted string exactly, letter for letter
+
+The window must reproduce the attached SimpleSpread Mac screenshot faithfully: title "Untitled — Edited" in the title bar; a light toolbar of grey icons (undo, redo, format painter, eraser, $, %, decimal buttons, "Automatic", "Helvetica Neue", "12", B I U S, colour wells, alignment icons, merge, filter, Σ); a formula bar showing a cell name and "f(x)"; a white grid with grey column letters A B C D... and row numbers; a sheet tab "Sheet1" at the bottom left and a "100%" zoom control at the bottom right. Do not invent other buttons, menus, sidebars or features.
+
+This screenshot:
+- EXACT HEADLINE: "Find the rows that matter"
+- EXACT SUBTITLE: "Sort and filter in a couple of clicks"
+- Window shows: the filter screenshot: the invoice table at the top (header row 1 "Item" "Qty" "Unit Price" "Total", then rows 3 to 8 as in the reference), a pale yellow merged cell reading "Merged & centered" across F4:H4, and from row 12 a filtered table with headers "Fruit" (its filter button blue, active) and "Qty". Visible rows alternate "Fig" and "Apple" with Qty 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40; their row numbers are blue and are exactly 14, 16, 18, 20, 22, 24, 26, 28, 30, 32, 34, 36, 38, 40.
+- Breakout element: the header cells "Fruit" and "Qty" with their filter buttons lifted out as a white card with a soft shadow, the blue "Fruit" filter button enlarged, overlapping the left edge of the window.
+
+Constraints:
+- keep all text at least 120px from every edge
+- no App Store badges, no download buttons, no ratings, no awards, no laurels, no people, no hands, no logos of other companies
+- no lorem ipsum; all on-screen text is the real text listed above
+- row numbers down the left of the grid are exactly the ones listed, in order
+
+REVISION INSTRUCTIONS
+Change:
+- the subtitle reads exactly "Sort and filter in a couple of clicks"
+Preserve:
+- everything else in the attached earlier version: headline, layout, window contents, the filtered Fruit and Qty rows and their blue row numbers 14 to 40, and the lifted "Fruit" / "Qty" card

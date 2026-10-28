@@ -1,0 +1,34 @@
+Create one 2048x2736 portrait App Store marketing screenshot for "SimpleSpread" on iPad. It is one of a matching set of three; keep the style exactly as described so the set looks consistent.
+
+Campaign:
+- Goal: make an iPad owner stop scrolling and buy
+- Category: Productivity (spreadsheet app for iPad and Mac)
+- Audience: iPad owners who get .xlsx spreadsheets from work, school or clients and want to edit them without a subscription or an account
+- Core promise: edit your spreadsheets on iPad, bought once, no account
+- Differentiator: XLSX is the app's native file format. No import, no export, no conversion.
+
+Visual direction (layout modelled on the attached Spark reference screenshots, colours are SimpleSpread's own):
+- Style: clean, premium, calm, bright
+- Background: a soft vertical gradient, deep spreadsheet green #2F6B47 at the top easing to fresh green #5FAF7E and then to near-white mint #EEF7F1 at the bottom. Very faint thin white spreadsheet grid lines across the background at low opacity.
+- Layout: large white headline centred near the top, a smaller white subtitle under it, then the hero visual described below.
+
+Typography:
+- Headline: very bold rounded geometric sans-serif, pure white, huge, two lines, readable at thumbnail size
+- Subtitle: regular weight sans-serif, white at 90% opacity, about one third of the headline size
+- Render every quoted string exactly, letter for letter
+
+There is no iPad or app screen in this image.
+
+
+This screenshot (closer of set 2), text-led, no iPad:
+- EXACT HEADLINE: "Your data stays yours"
+- EXACT SUBTITLE: "No account. No tracking. Never online."
+- Hero visual: the attached SimpleSpread app icon (a white spreadsheet grid with a darker green header row and two pale green cells, inside a rounded green square) shown large in the centre of the image, about 900px wide, with a soft shadow. A small white circular badge with a green padlock overlaps its lower right corner.
+- Below the icon, three white rounded pill chips in a column, dark green text, each with a small green check mark: "Your files stay where you put them", "Nothing collected", "One purchase, Mac and iPad".
+- The gradient and faint grid lines continue as in the other screenshots.
+
+Constraints:
+- keep all text at least 120px from every edge
+- no App Store badges, no download buttons, no ratings, no awards, no laurels, no people, no hands, no logos of other companies
+- no lorem ipsum; all on-screen text is the real text listed above
+- row numbers down the left of the grid, where shown, are exactly the ones listed, in order

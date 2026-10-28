@@ -1,0 +1,206 @@
+{
+  "appName": "SimpleSpread",
+  "appStoreUrl": "",
+  "devices": [
+    "ipad"
+  ],
+  "locales": [
+    "en"
+  ],
+  "panelCount": 3,
+  "brandColors": {
+    "primary": "#2F6B47",
+    "secondary": "#4E9A6B",
+    "accent": "#DFF1E6",
+    "text": "#FFFFFF"
+  },
+  "generation": {
+    "provider": "openai",
+    "quality": "high",
+    "timeoutMs": 900000,
+    "partialImages": 0,
+    "outputFormat": "png",
+    "visualStyle": "independent"
+  },
+  "aso": {
+    "title": "SimpleSpread",
+    "subtitle": "Fast, native spreadsheets",
+    "description": "",
+    "keywords": "",
+    "genres": [],
+    "developer": "MZ Industries",
+    "version": "2.0.4",
+    "releaseNotes": ""
+  },
+  "ratings": {
+    "score": 0,
+    "reviewCount": 0
+  },
+  "scrapedAssets": {
+    "iconUrl": "",
+    "screenshotUrls": [],
+    "screenshotSource": "itunes",
+    "screenshotsByDevice": {},
+    "scrapedAt": ""
+  },
+  "strategyBrief": {
+    "researchSources": {
+      "appStoreUrl": false,
+      "repo": true,
+      "appScreenshots": true,
+      "inspo": true
+    },
+    "appSummary": "A native spreadsheet for Mac and iPad that opens and saves .xlsx files, with 157 functions, charts, pivot tables, sort and filter. No account, no subscription, never connects to the internet. One purchase covers Mac and iPad.",
+    "category": "Productivity",
+    "targetAudience": "iPad and Mac owners who get .xlsx files from work, school or clients and want to open, edit and chart them without an Office subscription or an account",
+    "marketMaturity": "established",
+    "competitors": [
+      {
+        "name": "Microsoft Excel",
+        "whyTheyCompete": "the default for .xlsx",
+        "visualPattern": "brand green, dense feature tiles",
+        "copyPattern": "power and collaboration",
+        "gapToExploit": "needs a Microsoft account and a subscription to edit on large iPads"
+      },
+      {
+        "name": "Apple Numbers",
+        "whyTheyCompete": "free and preinstalled",
+        "visualPattern": "colourful templates",
+        "copyPattern": "beautiful spreadsheets",
+        "gapToExploit": "converts .xlsx to its own format; formulas and layouts change"
+      },
+      {
+        "name": "Google Sheets",
+        "whyTheyCompete": "free, familiar",
+        "visualPattern": "plain UI captures",
+        "copyPattern": "collaborate anywhere",
+        "gapToExploit": "needs a Google account and the cloud; files leave the device"
+      }
+    ],
+    "positioning": {
+      "corePromise": "Open and edit your spreadsheets on iPad and Mac, bought once, with no account",
+      "differentiator": "XLSX is the native file format (no import, no export, no conversion); pay once for Mac and iPad, no subscription or account",
+      "proofPoints": [
+        "One purchase covers Mac and iPad",
+        "157 functions",
+        "Opens and saves .xlsx",
+        "Never connects to the internet",
+        "Opens a 20,000-row workbook in 1.4 s on Mac"
+      ]
+    },
+    "voice": {
+      "tone": "plain, confident, practical",
+      "marketWords": [
+        "spreadsheet",
+        "Native XLSX",
+        "formulas",
+        "charts",
+        "no subscription"
+      ],
+      "reviewPhrases": [
+        "just want to open a spreadsheet",
+        "without a subscription",
+        "no sign in"
+      ],
+      "tabooWords": [
+        "stunning",
+        "seamless",
+        "AI",
+        "revolutionary",
+        "powerful",
+        "opens",
+        "import",
+        "export",
+        "compatible"
+      ]
+    },
+    "visualTheme": {
+      "styleFamily": "clean-premium",
+      "mood": "calm, bright, trustworthy; inspired by Spark's layout: big white headline top-centre on a soft gradient, short subtitle, device below cut off by the bottom edge, one UI card breaking out of the screen with a soft shadow",
+      "palette": {
+        "primary": "#2F6B47",
+        "secondary": "#5FAF7E",
+        "accent": "#DFF1E6",
+        "text": "#FFFFFF"
+      },
+      "motifs": [
+        "soft green-to-mint vertical gradient fading to near-white at the bottom",
+        "faint spreadsheet grid lines in the background",
+        "one floating UI card per panel taken from the real app"
+      ]
+    },
+    "panelArc": [
+      "hero",
+      "core",
+      "closer"
+    ]
+  },
+  "benefits": [
+    {
+      "headline": "Spreadsheets without the subscription",
+      "subtitle": "Buy once for iPad and Mac",
+      "approach": "pain",
+      "panelType": "ProductTour",
+      "feature": "pricing, universal purchase",
+      "arcPosition": "hero",
+      "showDevice": true,
+      "textPosition": "top",
+      "breakoutElements": "three small white pill chips: \"Native XLSX\", \"No account\", \"No subscription\""
+    },
+    {
+      "headline": "Charts that keep up",
+      "subtitle": "They redraw as your numbers change",
+      "approach": "moment",
+      "panelType": "ProductTour",
+      "feature": "charts",
+      "arcPosition": "core",
+      "showDevice": true,
+      "textPosition": "top",
+      "breakoutElements": "the Sales by region column chart card lifted out of the screen"
+    },
+    {
+      "headline": "Native XLSX. No converting.",
+      "subtitle": "Open, edit and save the same .xlsx file",
+      "approach": "outcome",
+      "panelType": "ProductTour",
+      "feature": "xlsx editing",
+      "arcPosition": "closer",
+      "showDevice": true,
+      "textPosition": "top",
+      "breakoutElements": "a file chip \"Invoice.xlsx\" with a small green \"Saved as .xlsx\" tick, and the formula bar \"=D6+D7\" lifted out"
+    },
+    {
+      "headline": "Formulas you already know",
+      "subtitle": "157 functions, SUMIFS to XLOOKUP",
+      "approach": "outcome",
+      "panelType": "ProductTour",
+      "feature": "formula engine",
+      "arcPosition": "hero",
+      "showDevice": true,
+      "textPosition": "top",
+      "breakoutElements": "a formula bar pill reading \"=SUM(D2:D4)\""
+    },
+    {
+      "headline": "Find the rows that matter",
+      "subtitle": "Sort and filter in a couple of taps",
+      "approach": "moment",
+      "panelType": "ProductTour",
+      "feature": "sort and filter",
+      "arcPosition": "core",
+      "showDevice": true,
+      "textPosition": "top",
+      "breakoutElements": "the filter button on the Fruit header highlighted"
+    },
+    {
+      "headline": "Your data stays yours",
+      "subtitle": "No account. No tracking. Never online.",
+      "approach": "pain",
+      "panelType": "TypographicCloser",
+      "feature": "privacy",
+      "arcPosition": "closer",
+      "showDevice": false,
+      "textPosition": "top",
+      "breakoutElements": "the SimpleSpread app icon large in the centre with a small lock badge"
+    }
+  ]
+}

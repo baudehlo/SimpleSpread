@@ -1,0 +1,8 @@
+# Generated images stay local (about 170 MB); the uploaded finals live in
+# App Store Connect. The strategy (config.json), manifest and prompts are kept.
+runs/
+*.png
+*.jpg
+*.jpeg
+*.webp
+.DS_Store

@@ -1,0 +1,29 @@
+Create one 2880x1808 landscape Mac App Store marketing screenshot for "SimpleSpread". It is one of a matching set of six; keep the style exactly as described so the set looks consistent.
+
+Campaign:
+- Goal: make a Mac owner stop scrolling and buy
+- Category: Productivity (spreadsheet app for Mac and iPad)
+- Core promise: edit your spreadsheets on the Mac, bought once, no account
+- Differentiator: XLSX is the app's native file format. No import, no export, no conversion.
+
+Visual direction (same as the attached approved iPad screenshot):
+- Background: a soft vertical gradient, deep spreadsheet green #2F6B47 at the top easing to fresh green #5FAF7E and then to near-white mint #EEF7F1 at the bottom. Very faint thin white spreadsheet grid lines across the background at low opacity.
+- Layout: large white headline centred near the top on one line, a smaller white subtitle under it, then the hero visual described below.
+
+Typography:
+- Headline: very bold rounded geometric sans-serif, pure white, huge, readable at thumbnail size
+- Subtitle: regular weight sans-serif, white at 90% opacity, about one third of the headline size
+- Render every quoted string exactly, letter for letter
+
+There is no app window in this image.
+
+This screenshot, text-led, no window:
+- EXACT HEADLINE: "Your data stays yours"
+- EXACT SUBTITLE: "No account. No tracking. Never online."
+- Hero visual: the attached SimpleSpread app icon (a white spreadsheet grid with a darker green header row and two pale green cells, inside a rounded green square) large on the left half, about 700px wide, with a soft shadow and a small white circular badge with a green padlock on its lower right corner. On the right half, three white rounded pill chips stacked, dark green text, each with a small green check mark: "Your files stay where you put them", "Nothing collected", "One purchase, Mac and iPad".
+
+Constraints:
+- keep all text at least 120px from every edge
+- no App Store badges, no download buttons, no ratings, no awards, no laurels, no people, no hands, no logos of other companies
+- no lorem ipsum; all on-screen text is the real text listed above
+- row numbers down the left of the grid are exactly the ones listed, in order

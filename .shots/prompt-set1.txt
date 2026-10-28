@@ -1,0 +1,47 @@
+Create one 6144x2732 App Store marketing composite for "SimpleSpread" with 3 equal vertical panels (each 2048x2732) and no visible seams, dividers or borders between them.
+
+Campaign:
+- Goal: make an iPad owner stop scrolling and buy
+- Category: Productivity (spreadsheet app for iPad and Mac)
+- Audience: iPad owners who get .xlsx spreadsheets from work, school or clients and want to edit them without a subscription or an account
+- Core promise: edit your spreadsheets on iPad, bought once, no account
+- Differentiator: XLSX is the app's native file format. No import, no export, no conversion.
+
+Visual direction (layout modelled on the attached Spark reference screenshots, colours are SimpleSpread's own):
+- Style: clean, premium, calm, bright
+- Background: one continuous soft vertical gradient across all three panels, deep spreadsheet green #2F6B47 at the top easing to fresh green #5FAF7E and then to near-white mint #EEF7F1 at the bottom. Very faint thin white spreadsheet grid lines across the background at low opacity.
+- Each panel: large white headline centred near the top, a smaller white subtitle under it, then a modern iPad Pro (thin uniform dark bezels, rounded corners, no home button, held upright) centred below, large, its lower part running off the bottom edge of the panel.
+- One real UI element per panel lifts out of the iPad screen as a white card with a soft drop shadow and a very slight tilt, overlapping the device edge, as in the Spark references.
+
+Typography:
+- Headline: very bold rounded geometric sans-serif, pure white, huge, two lines, readable at thumbnail size
+- Subtitle: regular weight sans-serif, white at 90% opacity, about one third of the headline size
+- Render every quoted string exactly, letter for letter
+
+The iPad screens must reproduce the attached SimpleSpread iPad screenshots faithfully: an iPadOS app with a light grey toolbar of blue icons (undo, redo, format painter, eraser, $, %, decimal buttons, "Automatic", "Helvetica...", "12", B I U S, colour wells, alignment icons), a formula bar showing a cell name and "f(x)", a white grid with grey column letters A B C D... and row numbers 1 2 3..., system font text in the cells, and a sheet tab "Sheet1" at the bottom left. Do not invent other buttons, menus, sidebars or features.
+
+Panels:
+
+Panel 1 (hero):
+- EXACT HEADLINE: "Spreadsheets without the subscription"
+- EXACT SUBTITLE: "Buy once for iPad and Mac"
+- Screen shows: the charts screenshot: a small table with headers "North", "South", "West" and numbers, a clustered column chart titled "Sales by region" with blue, orange and grey bars for Jan to Jun and legend "North", "South", "West", a line chart and a pie chart titled "North", and on the right a light grey "Chart" panel with "Type", "Column", "Clustered", "Stacked", "100%", "Data", "Labels", "Legend".
+- Breakout elements: three white rounded pill chips with dark green text floating in a row just above the iPad, slightly overlapping its top edge: "Native XLSX", "No account", "No subscription". Each chip has a small green check mark before its text.
+
+Panel 2 (core):
+- EXACT HEADLINE: "Charts that keep up"
+- EXACT SUBTITLE: "They redraw as your numbers change"
+- Screen shows: the same charts screen, framed lower so the grid and the "Sales by region" chart fill the screen.
+- Breakout element: the "Sales by region" clustered column chart (blue, orange and grey bars, months Jan to Jun, legend "North", "South", "West") lifted out of the screen as a large white card with a soft shadow, tilted about 3 degrees, overlapping the left edge of the iPad. A small cell card beside it shows a number "181" with a tiny upward green arrow.
+
+Panel 3 (closer):
+- EXACT HEADLINE: "Native XLSX. No converting."
+- EXACT SUBTITLE: "Open, edit and save the same .xlsx file"
+- Screen shows: the invoice screenshot: columns "Item", "Qty", "Unit Price", "Total"; rows "Widgets" 12 "$2.50" "$30.00", "Gadgets" 3 "$14.99" "$44.97", "Gizmos" 45 "$0.75" "$33.75"; then "Subtotal" "$108.72", "Tax (8%)" "$8.70", "Grand Total" "$117.42" with the Grand Total cell selected in blue; "Ordered" "1/15/2026" and "Status" "review" to the right. Formula bar shows "D8" and "=D6+D7".
+- Breakout elements: the formula bar strip reading "D8   f(x)  =D6+D7" lifted out as a white card; and below it a white file card with a green spreadsheet document icon and the text "Invoice.xlsx", with a small green tick and the words "Saved as .xlsx".
+
+Constraints:
+- each panel crops cleanly to 2048x2732; keep all text at least 120px from every panel edge
+- nothing important crosses the two crop lines at x=2048 and x=4096
+- no App Store badges, no download buttons, no ratings, no awards, no laurels, no people, no hands, no logos of other companies
+- no lorem ipsum; all on-screen text is the real text listed above
