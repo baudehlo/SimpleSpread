@@ -70,6 +70,16 @@ struct LogicalFunctionTests {
 
 @Suite("Text functions")
 struct TextFunctionTests {
+    @Test func hyperlinkShowsItsLabel() {
+        #expect(evalString("HYPERLINK(\"https://example.com\",\"Example\")") == "Example")
+        #expect(evalString("HYPERLINK(\"https://example.com\")") == "https://example.com")
+        #expect(evalString("HYPERLINK(\"https://example.com\",A1)") == "https://example.com") // blank label
+        #expect(evalNumber("HYPERLINK(\"https://example.com\",42)") == 42)
+        #expect(evalError("HYPERLINK(1/0,\"x\")") == .div0)
+        #expect(evalError("HYPERLINK(\"https://example.com\",NA())") == .na)
+        #expect(evalString("HYPERLINK(A1,\"Docs\")", cells: ["A1": "example.com"]) == "Docs")
+    }
+
     @Test func concatenateAndJoin() {
         #expect(evalString("CONCATENATE(\"a\",\"b\",1)") == "ab1")
         #expect(evalString("CONCAT(\"x\",\"y\")") == "xy")

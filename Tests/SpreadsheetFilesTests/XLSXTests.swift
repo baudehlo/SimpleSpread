@@ -54,6 +54,20 @@ struct XLSXRoundTripTests {
         }
     }
 
+    @Test func hyperlinkFormulaRoundTripsWithoutPrefix() throws {
+        let wb = Workbook.newDocument()
+        let engine = CalculationEngine(workbook: wb)
+        let addr = AbsoluteAddress(sheetID: wb.sheets[0].id, address: CellAddress(a1: "A1")!)
+        engine.setCellFormula("HYPERLINK(\"https://example.com\",\"Example\")", at: addr)
+        let data = try XLSXWriter.data(for: wb)
+        let xml = String(decoding: try ZipArchiveReader(data: data).contents(named: "xl/worksheets/sheet1.xml"), as: UTF8.self)
+        #expect(xml.contains("HYPERLINK"))
+        #expect(!xml.contains("_xlfn.HYPERLINK"))
+        let read = try roundTrip(wb)
+        #expect(read.sheets[0].cell(at: addr.address).formula == "HYPERLINK(\"https://example.com\",\"Example\")")
+        #expect(read.sheets[0].value(at: addr.address) == .string("Example"))
+    }
+
     @Test func formulasRoundTripWithCachedValues() throws {
         let wb = Workbook.newDocument()
         let engine = CalculationEngine(workbook: wb)

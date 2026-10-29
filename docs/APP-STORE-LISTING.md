@@ -26,7 +26,7 @@ Rules this text follows:
 
 Can be changed at any time without a new build.
 
-    Open Excel files, work them with 157 functions, then chart and pivot the results, in an app that starts in under a second. One purchase covers Mac and iPad.
+    Open Excel files, work them with 158 functions, then chart and pivot the results, in an app that starts in under a second. One purchase covers Mac and iPad.
 
 ## Keywords (100)
 
@@ -53,7 +53,7 @@ resubmit.
     • Imports CSV safely: it works out the delimiter and the text encoding, keeps leading zeros, and never runs a formula hidden in the data.
 
     FORMULAS
-    • 157 functions, including SUMIFS, XLOOKUP, VLOOKUP, INDEX and MATCH, TEXTJOIN, NETWORKDAYS and IRR.
+    • 158 functions, including SUMIFS, XLOOKUP, VLOOKUP, INDEX and MATCH, TEXTJOIN, NETWORKDAYS and IRR.
     • The same results and rules as Google Sheets, with Excel's operator precedence.
     • Fill handle, Fill Down and Fill Right, with references that adjust as they should.
 

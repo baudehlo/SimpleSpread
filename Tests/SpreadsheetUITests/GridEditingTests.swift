@@ -27,6 +27,24 @@ struct GridEditingTests {
                          keyCode: keyCode)!
     }
 
+    // MARK: Hyperlinks
+
+    @Test func hyperlinkIsFoundUnderThePointer() {
+        let (doc, grid) = makeGrid()
+        doc.commitInput("=HYPERLINK(\"https://example.com\",\"Example\")", at: a("B2"))
+        doc.commitInput("plain", at: a("C2"))
+        let geometry = grid.controller.geometry
+        func center(_ a1: String) -> CGPoint {
+            let rect = geometry.cellRect(a(a1))
+            return CGPoint(x: rect.midX, y: rect.midY)
+        }
+        #expect(grid.controller.hyperlink(at: center("B2"))?.absoluteString == "https://example.com")
+        #expect(grid.controller.hyperlink(at: center("C2")) == nil)
+        #expect(grid.controller.hyperlink(in: a("B2")) != nil)
+        #expect(grid.controller.linkMenuItems(for: URL(string: "https://example.com")!).map(\.title)
+                == ["Open Link", "Copy Link"])
+    }
+
     // MARK: The editor's target (#7)
 
     @Test func editCommitsToTheSheetItWasTypedOn() {

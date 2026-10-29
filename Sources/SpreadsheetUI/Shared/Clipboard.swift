@@ -75,6 +75,16 @@ enum SystemPasteboard {
         #endif
     }
 
+    /// Plain text alone (a copied link).
+    static func write(text: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #else
+        UIPasteboard.general.string = text
+        #endif
+    }
+
     /// A picture (a copied chart), as PNG.
     static func write(png: Data) {
         #if os(macOS)
