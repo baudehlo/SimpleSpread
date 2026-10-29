@@ -423,6 +423,59 @@ public final class CalculationEngine {
         asts[addr] != nil || workbook.sheet(withID: addr.sheetID)?.cells[addr.address]?.formula != nil
     }
 
+    // MARK: Hyperlinks
+
+    /// True if the cell's formula is a HYPERLINK call (the grid draws it as a link).
+    public func isHyperlink(at addr: AbsoluteAddress) -> Bool {
+        hyperlinkTarget(at: addr) != nil
+    }
+
+    /// The URL a HYPERLINK formula at `addr` opens, or nil. Only a formula
+    /// whose outermost call is HYPERLINK is a link (as in Google Sheets); the
+    /// URL argument is evaluated in the cell's context, so it follows the
+    /// cells it reads.
+    public func hyperlinkURL(at addr: AbsoluteAddress) -> URL? {
+        guard let target = hyperlinkTarget(at: addr) else { return nil }
+        let context = EvalContext(workbook: workbook, sheetID: addr.sheetID, address: addr.address, clock: clock)
+        guard case .string(let text) = FormulaEvaluator.evaluate(target, context: context) else { return nil }
+        return Self.hyperlinkURL(from: text)
+    }
+
+    /// A link's text as a URL a click may open: `http://` is assumed when
+    /// there's no scheme (as in Sheets), and only web and mail links are
+    /// allowed, so a workbook can't launch files or other apps.
+    public static func hyperlinkURL(from text: String) -> URL? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains(where: \.isWhitespace) else { return nil }
+        let lower = trimmed.lowercased()
+        let hasScheme = ["http://", "https://", "mailto:"].contains { lower.hasPrefix($0) }
+        // Any other "scheme:" is refused rather than read as a host; a colon
+        // and digits after a host name are a port ("example.com:8080").
+        if !hasScheme, let colon = lower.firstIndex(of: ":") {
+            let host = lower[..<colon]
+            let isPort = (host.contains(".") || host == "localhost")
+                && lower[lower.index(after: colon)...].first?.isNumber == true
+            if !isPort { return nil }
+        }
+        guard let url = URL(string: hasScheme ? trimmed : "http://" + trimmed),
+              let scheme = url.scheme?.lowercased(), ["http", "https", "mailto"].contains(scheme) else { return nil }
+        if scheme != "mailto", url.host?.isEmpty ?? true { return nil }
+        return url
+    }
+
+    /// The URL argument of the cell's outermost HYPERLINK call.
+    private func hyperlinkTarget(at addr: AbsoluteAddress) -> FormulaExpr? {
+        var expr = asts[addr]
+        while let e = expr {
+            switch e {
+            case .paren(let inner), .definedName(_, let inner): expr = inner
+            case .function("HYPERLINK", let args) where !args.isEmpty: return args[0]
+            default: return nil
+            }
+        }
+        return nil
+    }
+
     // MARK: Graph maintenance
 
     private func installFormula(_ text: String, at addr: AbsoluteAddress, replacing: Bool = true) {

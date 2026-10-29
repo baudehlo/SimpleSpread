@@ -97,6 +97,11 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
         }
         window?.makeFirstResponder(self)
         let point = convert(event.locationInWindow, from: nil)
+        // ⌘-click opens a HYPERLINK cell; a plain click only selects it.
+        if event.modifierFlags.contains(.command), let url = controller.hyperlink(at: point) {
+            LinkOpener.open(url)
+            return
+        }
         let result = controller.press(at: point, extend: event.modifierFlags.contains(.shift),
                                       clickCount: event.clickCount)
         if case .showFilter(let columnOffset, let cell) = result {
@@ -117,11 +122,12 @@ final class SpreadsheetGridView: NSView, NSTextFieldDelegate {
 
     // MARK: Context menu
 
-    /// Right-click on a chart (edit, copy, delete), or on a row/column
-    /// header (insert, delete, hide or unhide).
+    /// Right-click on a chart (edit, copy, delete), on a row/column
+    /// header (insert, delete, hide or unhide), or on a link cell (open, copy).
     override func menu(for event: NSEvent) -> NSMenu? {
         let point = convert(event.locationInWindow, from: nil)
-        guard let sections = controller.chartMenu(at: point) ?? controller.headerMenu(at: point) else {
+        let link = controller.hyperlink(at: point).map { [controller.linkMenuItems(for: $0)] }
+        guard let sections = controller.chartMenu(at: point) ?? controller.headerMenu(at: point) ?? link else {
             return nil
         }
         let menu = NSMenu()

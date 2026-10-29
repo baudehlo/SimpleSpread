@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import SpreadsheetCore
 
@@ -330,5 +331,34 @@ struct WorkbookOperationTests {
         #expect(WorkbookOperations.translatedFormula("A1+$B$1", byRows: 2, columns: 1) == "B3+$B$1")
         #expect(WorkbookOperations.translatedFormula("A1", byRows: -5, columns: 0) == "#REF!")
         #expect(WorkbookOperations.translatedFormula("1+", byRows: 1, columns: 0) == "1+") // unparseable unchanged
+    }
+
+    // MARK: Hyperlinks
+
+    @Test func hyperlinkURLFollowsTheFormula() {
+        let h = Harness(cells: ["A1": "https://example.com/a", "B1": "=HYPERLINK(A1,\"Link\")",
+                                "B2": "=(HYPERLINK(\"example.com:8080/x\"))", "B3": "=UPPER(HYPERLINK(A1))",
+                                "B4": "=A1"])
+        func url(_ a1: String) -> URL? {
+            h.engine.hyperlinkURL(at: AbsoluteAddress(sheetID: h.sheetID, address: CellAddress(a1: a1)!))
+        }
+        #expect(url("B1")?.absoluteString == "https://example.com/a")
+        #expect(url("B2")?.absoluteString == "http://example.com:8080/x") // no scheme: http
+        #expect(url("B3") == nil) // HYPERLINK isn't the outermost call
+        #expect(url("B4") == nil)
+        #expect(url("A1") == nil)
+        #expect(h.engine.isHyperlink(at: AbsoluteAddress(sheetID: h.sheetID, address: CellAddress(a1: "B1")!)))
+        h.set("A1", "https://example.org/b")
+        #expect(url("B1")?.absoluteString == "https://example.org/b")
+    }
+
+    @Test func hyperlinkURLAllowsOnlyWebAndMailLinks() {
+        #expect(CalculationEngine.hyperlinkURL(from: " HTTPS://example.com ")?.absoluteString == "HTTPS://example.com")
+        #expect(CalculationEngine.hyperlinkURL(from: "mailto:someone@example.com") != nil)
+        #expect(CalculationEngine.hyperlinkURL(from: "www.example.com")?.absoluteString == "http://www.example.com")
+        for refused in ["javascript:alert(1)", "file:///etc/passwd", "ftp://example.com", "tel:123",
+                        "x-apple-reminder://", "", "two words", "https://"] {
+            #expect(CalculationEngine.hyperlinkURL(from: refused) == nil, "\(refused)")
+        }
     }
 }

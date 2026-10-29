@@ -1,6 +1,6 @@
 # SimpleSpread — Function Reference
 
-157 built-in functions. Names are case-insensitive; arguments in square
+158 built-in functions. Names are case-insensitive; arguments in square
 brackets are optional; `...` is variadic. Semantics follow Google Sheets /
 Excel shared behavior (see docs/RESEARCH.md for the coercion and criteria
 rules that apply across all functions).
@@ -94,7 +94,7 @@ Rules that apply across the library:
 | TRUE(), FALSE() | |
 | SWITCH(subject, case1, val1, ..., [default]) | Case-insensitive equality; lazy |
 
-## Text (26)
+## Text (27)
 
 | Function | Notes |
 |---|---|
@@ -117,6 +117,7 @@ Rules that apply across the library:
 | CHAR(n), CODE(text) | Unicode scalars |
 | T(value) | Text passes through, else "" |
 | REGEXMATCH / REGEXEXTRACT / REGEXREPLACE(text, pattern, [replacement]) | ICU regex (NSRegularExpression), not RE2; EXTRACT returns first capture group if present, miss → #N/A; REPLACE supports $1 templates |
+| HYPERLINK(url, [link_label]) | Shows the label (or the URL when it's omitted or blank; a number label stays a number). The cell is drawn as a link; ⌘-click it on the Mac, or use Open Link in its context menu, to open the URL. Only when HYPERLINK is the formula's outermost call. A URL without a scheme gets `http://`; only http, https and mailto links open |
 
 ## Date & time (24)
 

@@ -454,6 +454,28 @@ final class GridController {
         let action: () -> Void
     }
 
+    /// The URL of the HYPERLINK formula in the cell at a view point (the
+    /// top-left cell of a merge), or nil.
+    func hyperlink(at point: CGPoint) -> URL? {
+        guard document != nil else { return nil }
+        let geometry = self.geometry
+        guard geometry.region(at: point) == .cells, chart(at: point) == nil else { return nil }
+        return hyperlink(in: geometry.address(at: point))
+    }
+
+    /// The URL of the HYPERLINK formula in a cell of the active sheet, or nil.
+    func hyperlink(in address: CellAddress) -> URL? {
+        guard let document else { return nil }
+        let cell = document.activeSheet.mergedRange(containing: address)?.start ?? address
+        return document.engine.hyperlinkURL(at: AbsoluteAddress(sheetID: document.activeSheetID, address: cell))
+    }
+
+    /// "Open Link" and "Copy Link" for a link cell's context menu.
+    func linkMenuItems(for url: URL) -> [MenuItem] {
+        [MenuItem(title: "Open Link") { LinkOpener.open(url) },
+         MenuItem(title: "Copy Link") { SystemPasteboard.write(text: url.absoluteString) }]
+    }
+
     /// The menu for a right-click (or long press) on a row or column
     /// header: insert, delete, hide or unhide, in sections. Like Excel,
     /// pressing outside the current selection selects that row/column
