@@ -544,6 +544,12 @@ struct GridRenderer {
             .foregroundColor: Self.textColor(for: style),
         ]
         if style.underline { attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue }
+        // A HYPERLINK formula looks like a link unless the cell sets its own colour.
+        if cell.formula != nil, cell.value.errorValue == nil,
+           document.engine.isHyperlink(at: AbsoluteAddress(sheetID: document.activeSheetID, address: address)) {
+            attributes[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            if style.textColor == nil { attributes[.foregroundColor] = SystemColors.link }
+        }
         if style.strikethrough { attributes[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
 
         let paragraph = NSMutableParagraphStyle()

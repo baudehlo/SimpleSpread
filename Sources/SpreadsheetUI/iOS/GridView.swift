@@ -671,7 +671,8 @@ extension GridView: UIContextMenuInteractionDelegate {
         if SpreadsheetDocument.pasteboardHasContent {
             clipboard.append(Item(title: "Paste") { [weak c] in c?.paste() })
         }
-        return [
+        let link = c.document.flatMap { c.hyperlink(in: $0.selection.activeCell) }
+        return (link.map { [c.linkMenuItems(for: $0)] } ?? []) + [
             clipboard,
             [doc("Fill Down") { $0.fillDown() },
              doc("Fill Right") { $0.fillRight() },

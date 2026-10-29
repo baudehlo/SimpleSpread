@@ -2,7 +2,7 @@
 
 A native spreadsheet app for the Mac and iPad, written entirely in Swift. Native file format
 is XLSX; CSV imports and exports. The formula engine covers Google Sheets'
-core feature set — 157 functions, real coercion semantics, incremental
+core feature set — 158 functions, real coercion semantics, incremental
 recalculation. The spreadsheet stack (model, formula engine, XLSX/ZIP/CSV I/O,
 grid) is built from scratch with no third-party libraries; the sole external
 dependency is [Sparkle](https://sparkle-project.org) for software updates
@@ -158,7 +158,7 @@ cd iOS && xcodegen && open SimpleSpread.xcodeproj  # the iPad app
   testing strategy, roadmap.
 - [docs/RESEARCH.md](docs/RESEARCH.md) — the feature-set research (formula
   semantics, XLSX internals, editing UX, CSV) the implementation follows.
-- [docs/FUNCTIONS.md](docs/FUNCTIONS.md) — all 157 functions with semantics
+- [docs/FUNCTIONS.md](docs/FUNCTIONS.md) — all 158 functions with semantics
   notes and known deviations.
 - [docs/PIVOTS.md](docs/PIVOTS.md) — using pivot tables: creating, the
   Fields panel, grouping, refreshing, and Excel features not supported.

@@ -89,7 +89,7 @@ Sources/
     FormulaEvaluator.swift    EvalValue, resolved ranges, operator semantics
     Coercion.swift            the coercion table + criteria evaluator
     FunctionRegistry.swift    registry, GridArg, shared arg helpers
-    Functions*.swift          9 category files, 157 functions
+    Functions*.swift          9 category files, 158 functions
     CalculationEngine.swift   dependency graph, dirty propagation, cycles
     RangeDependencyIndex.swift large-range dependents: per-column interval trees
     WorkbookOperations.swift  structural edits with formula rewriting

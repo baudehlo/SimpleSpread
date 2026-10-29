@@ -32,6 +32,7 @@ enum SystemColors {
     static var controlBackground: PlatformColor { .controlBackgroundColor }
     static var separator: PlatformColor { .separatorColor }
     static var accent: PlatformColor { .controlAccentColor }
+    static var link: PlatformColor { .linkColor }
     static var text: PlatformColor { .textColor }
     static var label: PlatformColor { .labelColor }
     static var secondaryLabel: PlatformColor { .secondaryLabelColor }
@@ -42,6 +43,7 @@ enum SystemColors {
     static var controlBackground: PlatformColor { .systemBackground }
     static var separator: PlatformColor { .separator }
     static var accent: PlatformColor { .tintColor }
+    static var link: PlatformColor { .link }
     static var text: PlatformColor { .label }
     static var label: PlatformColor { .label }
     static var secondaryLabel: PlatformColor { .secondaryLabel }
@@ -56,6 +58,18 @@ enum SystemColors {
         }
         #else
         UIColor { traits in traits.userInterfaceStyle == .dark ? dark : light }
+        #endif
+    }
+}
+
+/// Opening a link from a cell in the default browser or mail app.
+@MainActor
+enum LinkOpener {
+    static func open(_ url: URL) {
+        #if os(macOS)
+        NSWorkspace.shared.open(url)
+        #else
+        UIApplication.shared.open(url)
         #endif
     }
 }

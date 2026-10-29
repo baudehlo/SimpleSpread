@@ -235,6 +235,15 @@ enum TextFunctions {
                                                         withTemplate: replacement)
             return .string(result)
         },
+        // The label (or the URL); the grid opens the URL from the formula
+        // (CalculationEngine.hyperlinkURL). A number label stays a number.
+        .eager("HYPERLINK", min: 1, max: 2) { args, _ in
+            let url = try strArg(args[0])
+            guard args.count > 1 else { return .string(url) }
+            let label = try args[1].toScalar()
+            if case .error(let e) = label { throw e }
+            return label.isEmpty ? .string(url) : label
+        },
     ]
 
     private static func joinAll(_ args: [EvalValue], separator: String) throws -> String {
