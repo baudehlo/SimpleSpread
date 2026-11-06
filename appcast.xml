@@ -6,6 +6,14 @@
     <description>Software updates for SimpleSpread.</description>
     <language>en</language>
     <item>
+      <title>Version 2.2.1</title>
+      <sparkle:version>2.2.1</sparkle:version>
+      <sparkle:shortVersionString>2.2.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+      <pubDate>Fri, 06 Nov 2026 18:33:37 +0000</pubDate>
+      <enclosure url="https://github.com/baudehlo/SimpleSpread/releases/download/v2.2.1/SimpleSpread-v2.2.1.dmg" type="application/octet-stream" sparkle:edSignature="DWxOFWHtJYF9TGEuDiSyrXclsXoh7XbPFmnam86ypSdmsLqGpYvyPP1fBsd4nuju2dxgArTbnYcWNPkcnnwIAw==" length="4298670" />
+    </item>
+    <item>
       <title>Version 2.2.0</title>
       <sparkle:version>2.2.0</sparkle:version>
       <sparkle:shortVersionString>2.2.0</sparkle:shortVersionString>
