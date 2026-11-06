@@ -268,6 +268,10 @@ struct DocumentWindowHook: NSViewRepresentable {
         var document: SpreadsheetDocument?
         private var proxy: DocumentWindowDelegate?
 
+        /// Every hook in a window, so the document a window shows can be
+        /// found without going through its delegate (which SwiftUI swaps).
+        nonisolated(unsafe) static let all = NSHashTable<HookView>.weakObjects()
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             install()
@@ -275,6 +279,7 @@ struct DocumentWindowHook: NSViewRepresentable {
 
         func install() {
             guard let window, let document else { return }
+            Self.all.add(self)
             // SwiftUI may swap its delegate; re-wrap whenever we're not in front.
             if let proxy, window.delegate === proxy {
                 proxy.document = document
@@ -299,6 +304,26 @@ struct DocumentWindowHook: NSViewRepresentable {
     func updateNSView(_ view: HookView, context: Context) {
         view.document = document
         view.install()
+    }
+
+    /// The visible (or minimized) window showing `document`.
+    @MainActor
+    static func window(showing document: SpreadsheetDocument) -> NSWindow? {
+        HookView.all.allObjects.first { $0.document === document && ($0.window?.isVisible == true
+            || $0.window?.isMiniaturized == true) }?.window
+    }
+
+    /// The documents in visible (or minimized) windows, front-most first.
+    @MainActor
+    static func windowDocuments() -> [SpreadsheetDocument] {
+        let hooks = HookView.all.allObjects
+        var seen = Set<ObjectIdentifier>()
+        return NSApp.orderedWindows.compactMap { window -> SpreadsheetDocument? in
+            guard window.isVisible || window.isMiniaturized,
+                  let document = hooks.first(where: { $0.window === window })?.document,
+                  seen.insert(ObjectIdentifier(document)).inserted else { return nil }
+            return document
+        }
     }
 }
 #endif

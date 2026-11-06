@@ -429,35 +429,50 @@ public final class SpreadsheetDocument: ObservableObject {
     /// was opened on.
     public func commitInput(_ text: String, at address: CellAddress, sheetID: Int? = nil) {
         let sheetID = sheetID ?? activeSheetID
-        guard let sheet = workbook.sheet(withID: sheetID) else { return }
+        guard workbook.sheet(withID: sheetID) != nil else { return }
         if sheetID == activeSheetID {
             guard !refuseIfPivot(CellRange(address)) else { return }
         } else if let table = workbook.pivotTables(intersecting: CellRange(address), onSheet: sheetID).first {
             refusePivotEdit(table)
             return
         }
-        // Committing the editor's text unchanged is not an edit: no write,
-        // no undo step, no "modified" (and nothing to re-parse lossily).
-        guard text != editString(at: address, sheetID: sheetID) else { return }
-        let currentStyle = workbook.style(at: sheet.styleIndex(at: address))
-        let parsed = ValueParser.parse(text, textFormat: currentStyle.numberFormat.isTextFormat)
-        let snaps = snapshot([address], sheetID: sheetID)
-        let abs = AbsoluteAddress(sheetID: sheetID, address: address)
-        if let formula = parsed.formulaText {
-            engine.setCellFormula(formula, at: abs)
-        } else {
-            engine.setCellValue(parsed.value, at: abs)
+        commitInputs([(address, text)], sheetID: sheetID, actionName: "Typing")
+    }
+
+    /// Commit typed input into many cells of one sheet, parsed as typing
+    /// is, recalculated once and undone as one step. Text equal to what a
+    /// cell's editor would show is skipped (no write, nothing to re-parse
+    /// lossily). Callers check pivot tables first. Returns the number of
+    /// cells written.
+    @discardableResult
+    func commitInputs(_ inputs: [(CellAddress, String)], sheetID: Int, actionName: String) -> Int {
+        guard let sheet = workbook.sheet(withID: sheetID) else { return 0 }
+        let changed = inputs.filter { $0.1 != editString(at: $0.0, sheetID: sheetID) }
+        guard !changed.isEmpty else { return 0 }
+        let snaps = snapshot(changed.map(\.0), sheetID: sheetID)
+        var entries: [(AbsoluteAddress, CellValue, String?)] = []
+        var formats: [(CellAddress, CellStyle)] = []
+        entries.reserveCapacity(changed.count)
+        for (address, text) in changed {
+            let currentStyle = workbook.style(at: sheet.styleIndex(at: address))
+            let parsed = ValueParser.parse(text, textFormat: currentStyle.numberFormat.isTextFormat)
+            entries.append((AbsoluteAddress(sheetID: sheetID, address: address), parsed.value, parsed.formulaText))
+            // Apply an inferred format only when the cell is still General.
+            if let suggested = parsed.suggestedFormat, currentStyle.numberFormat.isGeneral {
+                var newStyle = currentStyle
+                newStyle.numberFormat = suggested
+                formats.append((address, newStyle))
+            }
         }
-        // Apply an inferred format only when the cell is still General.
-        if let suggested = parsed.suggestedFormat, currentStyle.numberFormat.isGeneral {
-            var newStyle = currentStyle
-            newStyle.numberFormat = suggested
+        engine.setCells(entries)
+        for (address, style) in formats {
             var cell = sheet.cell(at: address)
-            cell.styleIndex = workbook.storableStyleIndex(workbook.styleIndex(for: newStyle), at: address, in: sheet)
+            cell.styleIndex = workbook.storableStyleIndex(workbook.styleIndex(for: style), at: address, in: sheet)
             sheet.setCell(cell, at: address)
         }
-        registerCellUndo(snaps, actionName: "Typing")
+        registerCellUndo(snaps, actionName: actionName)
         markChanged()
+        return changed.count
     }
 
     /// Delete contents (not formatting) of the selected range.

@@ -51,6 +51,9 @@ struct SimpleSpreadAppMain: App {
             DataCommands()
             FormatCommands()
         }
+        Settings {
+            AppSettingsView()
+        }
     }
 }
 
@@ -105,6 +108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         FontChoices.prepare()
         MainActor.assumeIsolated { AppearanceSetting.shared.apply() }
+        // The MCP server for AI agents, if the user turned it on (never for
+        // the headless hooks, which may run beside the real app).
+        let env = ProcessInfo.processInfo.environment
+        if env["SIMPLESPREAD_SCREENSHOT"] == nil, env["SIMPLESPREAD_OPEN"] == nil {
+            MainActor.assumeIsolated { AgentAccess.shared.startIfEnabled() }
+        }
         // Running as a bare SwiftPM binary (no bundle): become a regular app.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)

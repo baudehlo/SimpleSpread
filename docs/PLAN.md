@@ -589,6 +589,23 @@ sync flush, joined into one ordinary stream (level 6 size, ~8× faster).
   and Sort walk the stored cells, not every address in the rectangle.
 - Windows: `WindowGroup(for: Int)` + DocumentStore registry; File→New/Open
   spawn windows; documents own their UndoManager.
+- Agents (MCP, docs/AGENTS.md; Mac only, kept out of the iPad build): an
+  opt-in Streamable HTTP server inside the app (`MCPHTTPServer`, Network.framework, POST-only JSON replies, 127.0.0.1,
+  bearer token, Host/Origin checks) dispatching JSON-RPC (`MCPEndpoint`) to
+  tools (`MCPTools`) that call SpreadsheetDocument on the main actor, so an
+  agent's edit draws, recalculates and undoes like the user's. Each call is
+  one undo step; edits switch to the sheet they change; a refusal the
+  document would show as an alert becomes the tool's error. Cell writes go
+  through `commitInputs` (typing's parser, one recalc), which `commitInput`
+  now uses too. Named undo groups are opened only for edits sure to change
+  something: UndoManager keeps empty groups, and `setActionName` outside a
+  group raises with `groupsByEvent` off. Settings ▸ Agents (`AgentAccess`)
+  holds the switch, port and token; the sandbox needs `network.server`.
+  Tools are async (`save_document` waits for BackgroundSaver) and typed
+  `@MainActor`: an async closure type without it runs off the main thread.
+  Save writes only `DocumentSaving.plan == .write`; close refuses unsaved
+  work and closes through `performClose` a moment later, so the reply is
+  sent before closing the last window quits the app.
 - Headless hooks: `SIMPLESPREAD_SCREENSHOT` renders the real window to PNG
   and exits (CI smoke test); `SIMPLESPREAD_DEMO` seeds sample content.
 

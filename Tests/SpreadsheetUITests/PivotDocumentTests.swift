@@ -7,7 +7,7 @@ import Testing
 /// A document with Data!A1:B4 feeding a pivot table drawn at Report!B5:C8,
 /// with one report filter in row 3 (so it occupies B3:C8).
 @MainActor
-private func makePivotDocument(rowField: Int = 0) -> SpreadsheetDocument {
+func makePivotDocument(rowField: Int = 0) -> SpreadsheetDocument {
     let wb = Workbook()
     let data = wb.addSheet(named: "Data")
     let report = wb.addSheet(named: "Report")

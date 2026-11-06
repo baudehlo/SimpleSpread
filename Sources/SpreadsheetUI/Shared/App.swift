@@ -141,6 +141,11 @@ public final class DocumentStore: ObservableObject {
         return id
     }
 
+    /// The id a document is registered under (the window's value).
+    public func id(of document: SpreadsheetDocument) -> Int? {
+        documents.first { $0.value === document }?.key
+    }
+
     public func document(for id: Int) -> SpreadsheetDocument {
         if let doc = documents[id] { return doc }
         let doc = SpreadsheetDocument()

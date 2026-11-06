@@ -104,6 +104,9 @@ touch, with a trackpad or mouse, and with a hardware keyboard. See
   border, alignment and merge controls, Sort & Filter, and AutoSum (Σ: Sum,
   plus Average, Count, Max and Min from its menu), laid out in the order
   Excel's Home tab and the Google Sheets toolbar share.
+- **AI agents (MCP)**: turn on Settings ▸ Agents and an agent such as
+  Claude Code can read and edit the spreadsheets open in your windows while
+  you watch. See [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Performance
 
@@ -164,6 +167,8 @@ cd iOS && xcodegen && open SimpleSpread.xcodeproj  # the iPad app
   Fields panel, grouping, refreshing, and Excel features not supported.
 - [docs/IPAD.md](docs/IPAD.md) — the iPad app: how the code is shared,
   building, testing, and the App Store.
+- [docs/AGENTS.md](docs/AGENTS.md) — letting AI agents edit open
+  spreadsheets over MCP: setup, tools, security.
 
 ## CI & releases
 
