@@ -1,3 +1,4 @@
+#if os(macOS) // the MCP server is Mac only
 import Foundation
 import Testing
 @testable import SpreadsheetCore
@@ -421,3 +422,4 @@ struct MCPServerTests {
     /// Keeps the live server alive for the length of its test.
     nonisolated(unsafe) static var running: MCPHTTPServer?
 }
+#endif
