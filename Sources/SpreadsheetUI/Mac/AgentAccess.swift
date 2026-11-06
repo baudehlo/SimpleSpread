@@ -43,6 +43,9 @@ final class AgentAccess: ObservableObject {
                 // last window quits, and the reply must get out first.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { window.performClose(nil) }
                 return true
+            },
+            snapshot: { document in
+                DocumentWindowHook.window(showing: document).flatMap { Self.png(of: $0) }
             })
         return MCPEndpoint(tools: tools)
     }()
@@ -116,6 +119,29 @@ final class AgentAccess: ObservableObject {
           }
         }
         """
+    }
+
+    /// A window as the user sees it (title bar and toolbar too), drawn by
+    /// the app itself, so it needs no screen-recording permission. Scaled
+    /// down to `maxSide` pixels, the size models take images at; a Retina
+    /// window is twice that.
+    static func png(of window: NSWindow, maxSide: CGFloat = 1568) -> Data? {
+        guard let view = window.contentView?.superview ?? window.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let scale = min(1, maxSide / CGFloat(max(rep.pixelsWide, rep.pixelsHigh, 1)))
+        guard scale < 1 else { return rep.representation(using: .png, properties: [:]) }
+        let width = Int(CGFloat(rep.pixelsWide) * scale), height = Int(CGFloat(rep.pixelsHigh) * scale)
+        guard let small = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height,
+                                           bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+                                           colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: small) else { return nil }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        context.imageInterpolation = .high
+        rep.draw(in: NSRect(x: 0, y: 0, width: width, height: height))
+        NSGraphicsContext.restoreGraphicsState()
+        return small.representation(using: .png, properties: [:])
     }
 
     /// The documents in open windows, front-most first.

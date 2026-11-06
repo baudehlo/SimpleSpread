@@ -146,6 +146,55 @@ struct MCPServerTests {
         #expect(tooBig.stringValue?.contains("at most") == true)
     }
 
+    @Test func csvAndDatesAgentsCanUse() async throws {
+        let doc = SpreadsheetDocument()
+        let tools = tools(doc)
+        _ = try await call(tools, "write_cells", ["start": "A1", "values": [
+            ["Item", "Price", "Ordered"], ["Widget, large", "$2.50", "1/15/2026"], ["Gadget", 3, "1/15/2026 13:30"],
+        ]])
+        // JSON: dates as text that reads back as the same date.
+        let (json, _) = try await call(tools, "read_range")
+        #expect(json["values"]?.arrayValue?[1] == ["Widget, large", 2.5, "2026-01-15"])
+        #expect(json["values"]?.arrayValue?[2].arrayValue?[2] == "2026-01-15 13:30:00")
+        _ = try await call(tools, "write_cells", ["start": "D2", "values": [["2026-01-15", "2026-01-15 13:30:00"]]])
+        #expect(doc.activeSheet.value(at: a("D2")) == doc.activeSheet.value(at: a("C2")))
+        #expect(doc.activeSheet.value(at: a("E2")) == doc.activeSheet.value(at: a("C3")))
+
+        // CSV: a metadata item, then the CSV itself.
+        let result = await tools.call("read_range", arguments: ["format": "csv", "range": "A1:C3"])
+        let items = try #require(result["content"]?.arrayValue)
+        #expect(items.count == 2)
+        let info = try JSONValue.parse(Data(try #require(items[0]["text"]?.stringValue).utf8))
+        #expect(info["range"] == "A1:C3")
+        #expect(items[1]["text"] == "Item,Price,Ordered\n\"Widget, large\",2.5,2026-01-15\nGadget,3,2026-01-15 13:30:00\n")
+        let shown = await tools.call("read_range", arguments: ["format": "csv", "range": "B2", "include_formatted": true])
+        #expect(shown["content"]?.arrayValue?[1]["text"] == "$2.50\n")
+
+        // Past JSON's limit, CSV still reads it.
+        _ = try await call(tools, "write_cells", ["start": "BZ200", "values": [["end"]]])
+        let (_, jsonTooBig) = try await call(tools, "read_range", ["range": "A1:BZ200"])
+        #expect(jsonTooBig)
+        let big = await tools.call("read_range", arguments: ["format": "csv", "range": "A1:BZ200"])
+        #expect(big["isError"] == false)
+        let (_, badFormat) = try await call(tools, "read_range", ["format": "xml"])
+        #expect(badFormat)
+    }
+
+    @Test func screenshotsAreImages() async throws {
+        let doc = SpreadsheetDocument()
+        let tools = tools(doc)
+        let (_, noWindow) = try await call(tools, "screenshot")
+        #expect(noWindow)
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        tools.windows.snapshot = { _ in png }
+        let result = await tools.call("screenshot", arguments: ["range": "C3:D4"])
+        let items = try #require(result["content"]?.arrayValue)
+        #expect(items[1]["type"] == "image")
+        #expect(items[1]["mimeType"] == "image/png")
+        #expect(items[1]["data"] == .string(png.base64EncodedString()))
+        #expect(doc.selection.range == CellRange(a1: "C3:D4"))
+    }
+
     @Test func rangesInEveryForm() {
         #expect(MCPTools.parseRange("B2") == CellRange(a1: "B2"))
         #expect(MCPTools.parseRange("D4:B2") == CellRange(a1: "B2:D4"))

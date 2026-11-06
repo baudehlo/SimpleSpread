@@ -311,13 +311,17 @@ public enum CSV {
         /// dates exported ISO 8601. When false, the cell's display string is
         /// exported instead.
         public var machineReadable: Bool
+        /// Between an ISO date and its time: ISO's "T", or " ", which
+        /// SimpleSpread reads back as a date when typed.
+        public var dateTimeSeparator: String
 
         public init(delimiter: Character = ",", lineEnding: String = "\r\n",
-                    includeBOM: Bool = true, machineReadable: Bool = true) {
+                    includeBOM: Bool = true, machineReadable: Bool = true, dateTimeSeparator: String = "T") {
             self.delimiter = delimiter
             self.lineEnding = lineEnding
             self.includeBOM = includeBOM
             self.machineReadable = machineReadable
+            self.dateTimeSeparator = dateTimeSeparator
         }
     }
 
@@ -326,19 +330,8 @@ public enum CSV {
                               options: ExportOptions = ExportOptions()) -> Data {
         var out = ""
         if let used = sheet.usedRange {
-            let range = CellRange(start: CellAddress(row: 0, column: 0), end: used.end)
-            for r in range.start.row...range.end.row {
-                var fields: [String] = []
-                for c in range.start.column...range.end.column {
-                    let addr = CellAddress(row: r, column: c)
-                    let cell = sheet.cell(at: addr)
-                    let style = workbook.style(at: sheet.styleIndex(at: addr))
-                    fields.append(exportField(value: cell.value, style: style, options: options))
-                }
-                out += fields.map { quoteField($0, delimiter: options.delimiter) }
-                    .joined(separator: String(options.delimiter))
-                out += options.lineEnding
-            }
+            out = text(of: CellRange(start: CellAddress(row: 0, column: 0), end: used.end),
+                       in: sheet, workbook: workbook, options: options)
         }
         var data = Data()
         if options.includeBOM {
@@ -348,7 +341,26 @@ public enum CSV {
         return data
     }
 
-    static func exportField(value: CellValue, style: CellStyle, options: ExportOptions) -> String {
+    /// A range's computed values as CSV text (no BOM), one line per row.
+    public static func text(of range: CellRange, in sheet: Sheet, workbook: Workbook,
+                            options: ExportOptions = ExportOptions()) -> String {
+        var out = ""
+        for r in range.start.row...range.end.row {
+            var fields: [String] = []
+            for c in range.start.column...range.end.column {
+                let addr = CellAddress(row: r, column: c)
+                let cell = sheet.cell(at: addr)
+                let style = workbook.style(at: sheet.styleIndex(at: addr))
+                fields.append(exportField(value: cell.value, style: style, options: options))
+            }
+            out += fields.map { quoteField($0, delimiter: options.delimiter) }
+                .joined(separator: String(options.delimiter))
+            out += options.lineEnding
+        }
+        return out
+    }
+
+    public static func exportField(value: CellValue, style: CellStyle, options: ExportOptions) -> String {
         switch value {
         case .empty:
             return ""
@@ -361,7 +373,7 @@ public enum CSV {
         case .number(let n):
             if options.machineReadable {
                 if style.numberFormat.isDateTime {
-                    return isoDateString(serial: n)
+                    return isoDateString(serial: n, separator: options.dateTimeSeparator)
                 }
                 return XLSXWriter.serialNumberString(n)
             }
@@ -369,7 +381,7 @@ public enum CSV {
         }
     }
 
-    static func isoDateString(serial: Double) -> String {
+    static func isoDateString(serial: Double, separator: String = "T") -> String {
         guard let comps = ExcelDate.components(fromSerial: serial) else {
             return XLSXWriter.serialNumberString(serial)
         }
@@ -380,7 +392,8 @@ public enum CSV {
             return String(format: "%02d:%02d:%02d", comps.hour, comps.minute, Int(comps.second.rounded()))
         }
         if hasTime {
-            return datePart + String(format: "T%02d:%02d:%02d", comps.hour, comps.minute, Int(comps.second.rounded()))
+            return datePart + separator
+                + String(format: "%02d:%02d:%02d", comps.hour, comps.minute, Int(comps.second.rounded()))
         }
         return datePart
     }

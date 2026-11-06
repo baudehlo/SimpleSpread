@@ -1,6 +1,7 @@
 #if os(macOS)
 import Foundation
 import SpreadsheetCore
+import SpreadsheetFiles
 
 /// The tools an AI agent calls over MCP to read and edit the spreadsheets
 /// open in SimpleSpread. Every edit goes through SpreadsheetDocument, as the
@@ -26,6 +27,13 @@ public final class MCPTools {
         init(_ message: String) { self.message = message }
     }
 
+    /// What a tool returns: JSON (most tools), or MCP content items as
+    /// they are (CSV text, an image).
+    enum Output {
+        case json(JSONValue)
+        case content([JSONValue])
+    }
+
     struct Tool {
         let name: String
         let description: String
@@ -33,7 +41,7 @@ public final class MCPTools {
         let required: [String]
         /// MainActor: an async function type without it would run the tool
         /// off the main thread, against documents the UI is drawing.
-        let run: @MainActor (MCPTools, Arguments) async throws -> JSONValue
+        let run: @MainActor (MCPTools, Arguments) async throws -> Output
     }
 
     /// What the tools need from the windows (the Mac app's AgentAccess
@@ -45,10 +53,14 @@ public final class MCPTools {
         var didSave: @MainActor (URL) -> Void = { _ in }
         /// Close the window showing a document; false when there is none.
         var close: @MainActor (SpreadsheetDocument) -> Bool = { _ in false }
+        /// A PNG of the window showing a document; nil when there is none.
+        var snapshot: @MainActor (SpreadsheetDocument) -> Data? = { _ in nil }
     }
 
     /// The most cells one call reads or writes.
     static let cellLimit = 10_000
+    /// CSV is far smaller than JSON per cell, so it reads more.
+    static let csvCellLimit = 100_000
 
     /// The open documents, front-most first.
     let openDocuments: @MainActor () -> [OpenDocument]
@@ -92,14 +104,19 @@ public final class MCPTools {
         Tool(name: "list_documents",
              description: "List the spreadsheets open in SimpleSpread, front-most first: id, name, file path, "
                 + "unsaved changes, sheets with the range each uses, the sheet showing and the user's selection.",
-             properties: [:], required: [], run: { tools, _ in try tools.listDocuments() }),
+             properties: [:], required: [], run: { tools, _ in .json(try tools.listDocuments()) }),
         Tool(name: "read_range",
-             description: "Read cells: their values, any formulas, and (optionally) the text the grid shows. "
-                + "Without `range`, reads the sheet's used range. At most \(cellLimit) cells per call.",
+             description: "Read cells. JSON (the default) gives values, any formulas and optionally the text the grid "
+                + "shows; dates and times come as \"2026-01-15\", \"2026-01-15 13:30:00\" or \"13:30:00\", which "
+                + "write_cells reads back as dates. CSV gives just the values, compactly, for reading a whole table. "
+                + "Without `range`, reads the sheet's used range. At most \(cellLimit) cells per call as JSON, "
+                + "\(csvCellLimit) as CSV.",
              properties: properties([
                 ("range", ["type": "string", "description": "Cells to read, e.g. \"A1:D20\", \"B:B\" or \"selection\"."]),
-                ("include_formatted", ["type": "boolean",
-                                       "description": "Also return each cell's text as formatted in the grid (\"$4.50\", \"1/15/2026\")."]),
+                ("format", ["type": "string", "enum": ["json", "csv"], "description": "json (default) or csv."]),
+                ("include_formatted", ["type": "boolean", "description": .string(
+                    "JSON: also return each cell's text as formatted in the grid (\"$4.50\", \"1/15/2026\"). "
+                    + "CSV: write that text instead of the values.")]),
              ]),
              required: [], run: { tools, args in try tools.readRange(args) }),
         Tool(name: "write_cells",
@@ -112,11 +129,11 @@ public final class MCPTools {
                 ("values", ["type": "array", "description": "Rows of cell values.",
                             "items": ["type": "array", "items": ["type": ["string", "number", "boolean", "null"]]]]),
              ]),
-             required: ["start", "values"], run: { tools, args in try tools.writeCells(args) }),
+             required: ["start", "values"], run: { tools, args in .json(try tools.writeCells(args)) }),
         Tool(name: "clear_range",
              description: "Clear the values and formulas in a range, keeping its formatting.",
              properties: properties([("range", ["type": "string", "description": "Cells to clear."])]),
-             required: ["range"], run: { tools, args in try tools.clearRange(args) }),
+             required: ["range"], run: { tools, args in .json(try tools.clearRange(args)) }),
         Tool(name: "format_range",
              description: "Format a range. Pass only what should change.",
              properties: properties([
@@ -136,72 +153,79 @@ public final class MCPTools {
                 ("vertical_alignment", ["type": "string", "enum": ["top", "middle", "bottom"]]),
                 ("wrap_text", ["type": "boolean"]),
              ]),
-             required: ["range"], run: { tools, args in try tools.formatRange(args) }),
+             required: ["range"], run: { tools, args in .json(try tools.formatRange(args)) }),
         Tool(name: "insert_rows",
              description: "Insert blank rows above a row. Formulas, charts and pivot tables below move down.",
              properties: properties([
                 ("row", ["type": "integer", "description": "The 1-based row the new rows go above."]),
                 ("count", ["type": "integer", "description": "How many rows (default 1)."]),
              ]),
-             required: ["row"], run: { tools, args in try tools.structural(args, rows: true, insert: true) }),
+             required: ["row"], run: { tools, args in .json(try tools.structural(args, rows: true, insert: true)) }),
         Tool(name: "delete_rows",
              description: "Delete rows, starting at a row. Formulas that referred to them become #REF!.",
              properties: properties([
                 ("row", ["type": "integer", "description": "The first 1-based row to delete."]),
                 ("count", ["type": "integer", "description": "How many rows (default 1)."]),
              ]),
-             required: ["row"], run: { tools, args in try tools.structural(args, rows: true, insert: false) }),
+             required: ["row"], run: { tools, args in .json(try tools.structural(args, rows: true, insert: false)) }),
         Tool(name: "insert_columns",
              description: "Insert blank columns to the left of a column.",
              properties: properties([
                 ("column", ["type": "string", "description": "The column letter the new columns go before, e.g. \"C\"."]),
                 ("count", ["type": "integer", "description": "How many columns (default 1)."]),
              ]),
-             required: ["column"], run: { tools, args in try tools.structural(args, rows: false, insert: true) }),
+             required: ["column"], run: { tools, args in .json(try tools.structural(args, rows: false, insert: true)) }),
         Tool(name: "delete_columns",
              description: "Delete columns, starting at a column. Formulas that referred to them become #REF!.",
              properties: properties([
                 ("column", ["type": "string", "description": "The first column letter to delete, e.g. \"C\"."]),
                 ("count", ["type": "integer", "description": "How many columns (default 1)."]),
              ]),
-             required: ["column"], run: { tools, args in try tools.structural(args, rows: false, insert: false) }),
+             required: ["column"], run: { tools, args in .json(try tools.structural(args, rows: false, insert: false)) }),
         Tool(name: "set_column_width",
              description: "Set the width of one or more columns, in points (the default is 100).",
              properties: properties([
                 ("columns", ["type": "string", "description": "A column (\"B\") or columns (\"B:D\")."]),
                 ("width", ["type": "number", "description": "Width in points, 12 to 2000."]),
              ]),
-             required: ["columns", "width"], run: { tools, args in try tools.setColumnWidth(args) }),
+             required: ["columns", "width"], run: { tools, args in .json(try tools.setColumnWidth(args)) }),
         Tool(name: "add_sheet",
              description: "Add a sheet at the end of the workbook and show it.",
              properties: properties([("name", ["type": "string", "description": "Its name (default Sheet<n>)."])],
                                     sheet: false),
-             required: [], run: { tools, args in try tools.addSheet(args) }),
+             required: [], run: { tools, args in .json(try tools.addSheet(args)) }),
         Tool(name: "rename_sheet",
              description: "Rename a sheet. Formulas that refer to it are updated. Returns the name given, "
                 + "which differs when the name was taken or had characters sheet names can't hold.",
              properties: properties([("name", ["type": "string", "description": "The new name."])]),
-             required: ["sheet", "name"], run: { tools, args in try tools.renameSheet(args) }),
+             required: ["sheet", "name"], run: { tools, args in .json(try tools.renameSheet(args)) }),
         Tool(name: "delete_sheet",
              description: "Delete a sheet. Formulas that referred to it become #REF!. A workbook keeps at least one sheet.",
              properties: properties([]),
-             required: ["sheet"], run: { tools, args in try tools.deleteSheet(args) }),
+             required: ["sheet"], run: { tools, args in .json(try tools.deleteSheet(args)) }),
         Tool(name: "save_document",
              description: "Save a document to its .xlsx file. Only a document that already has one, and that "
                 + "saving won't lose anything from, can be saved this way; otherwise the error says what to ask "
                 + "the user to do (Save As, or decide about content SimpleSpread can't write back).",
              properties: properties([], sheet: false),
-             required: [], run: { tools, args in try await tools.saveDocument(args) }),
+             required: [], run: { tools, args in .json(try await tools.saveDocument(args)) }),
         Tool(name: "close_document",
              description: "Close a document's window. Refused while it has unsaved changes (save it first, or "
                 + "leave it to the user): this never discards work. Closing the last window quits SimpleSpread, "
                 + "which ends this connection.",
              properties: properties([], sheet: false),
-             required: ["document"], run: { tools, args in try tools.closeDocument(args) }),
+             required: ["document"], run: { tools, args in .json(try tools.closeDocument(args)) }),
+        Tool(name: "screenshot",
+             description: "A picture of the document's window as the user sees it: cells with their formatting, "
+                + "charts, the row and column headers, the selection. Use it to check how something looks. With "
+                + "`range`, first selects those cells and scrolls to them (this moves the user's view, as "
+                + "select_range does).",
+             properties: properties([("range", ["type": "string", "description": "Cells to show first (optional)."])]),
+             required: [], run: { tools, args in try await tools.screenshot(args) }),
         Tool(name: "select_range",
              description: "Select cells in the window and scroll them into view, to show the user something.",
              properties: properties([("range", ["type": "string", "description": "Cells to select."])]),
-             required: ["range"], run: { tools, args in try tools.selectRange(args) }),
+             required: ["range"], run: { tools, args in .json(try tools.selectRange(args)) }),
     ]
 
     var definitions: [JSONValue] {
@@ -224,7 +248,12 @@ public final class MCPTools {
         }
         do {
             guard case .object = arguments else { throw ToolError("Arguments must be an object.") }
-            return Self.toolResult(try await tool.run(self, Arguments(arguments)).encodedString, isError: false)
+            switch try await tool.run(self, Arguments(arguments)) {
+            case .json(let value):
+                return Self.toolResult(value.encodedString, isError: false)
+            case .content(let items):
+                return ["content": .array(items), "isError": false]
+            }
         } catch let error as ToolError {
             return Self.toolResult(error.message, isError: true)
         } catch {
@@ -391,27 +420,35 @@ public final class MCPTools {
         }
     }
 
-    static func json(_ value: CellValue) -> JSONValue {
+    /// Dates and times as text that reads back as the same date when typed.
+    static let dateOptions = CSV.ExportOptions(dateTimeSeparator: " ")
+
+    static func json(_ value: CellValue, style: CellStyle) -> JSONValue {
         switch value {
         case .empty: return .null
-        case .number(let n): return .number(n)
+        case .number(let n):
+            if style.numberFormat.isDateTime {
+                return .string(CSV.exportField(value: value, style: style, options: dateOptions))
+            }
+            return .number(n)
         case .string(let s): return .string(s)
         case .bool(let b): return .bool(b)
         case .error(let e): return .string(e.rawValue)
         }
     }
 
-    static func values(of range: CellRange, in sheet: Sheet) -> JSONValue {
+    static func values(of range: CellRange, in sheet: Sheet, workbook: Workbook) -> JSONValue {
         .array((range.start.row...range.end.row).map { row in
             .array((range.start.column...range.end.column).map { column in
-                json(sheet.value(at: CellAddress(row: row, column: column)))
+                let address = CellAddress(row: row, column: column)
+                return json(sheet.value(at: address), style: workbook.style(at: sheet.styleIndex(at: address)))
             })
         })
     }
 
-    static func checkSize(_ range: CellRange) throws {
-        guard range.cellCount <= cellLimit else {
-            throw ToolError("\(range.a1) has \(range.cellCount) cells; read or write at most \(cellLimit) per call.")
+    static func checkSize(_ range: CellRange, limit: Int = cellLimit) throws {
+        guard range.cellCount <= limit else {
+            throw ToolError("\(range.a1) has \(range.cellCount) cells; read or write at most \(limit) per call.")
         }
     }
 
@@ -438,18 +475,22 @@ public final class MCPTools {
         })
     }
 
-    func readRange(_ args: Arguments) throws -> JSONValue {
+    func readRange(_ args: Arguments) throws -> Output {
         let open = try document(args)
         let doc = open.document
+        let format = try args.string("format")?.lowercased() ?? "json"
+        guard format == "json" || format == "csv" else { throw ToolError("`format` must be json or csv.") }
+        let limit = format == "csv" ? Self.csvCellLimit : Self.cellLimit
+        let formatted = try args.bool("include_formatted") == true
         let sheet: Sheet
         var range: CellRange?
         if let text = try args.string("range") {
             let (found, requested) = try self.range(text, sheetName: try args.string("sheet"), in: doc)
             sheet = found
             // Whole columns or rows: the part that holds anything.
-            if requested.cellCount > Self.cellLimit, let used = sheet.usedRange {
+            if requested.cellCount > limit, let used = sheet.usedRange {
                 range = SpreadsheetDocument.intersection(requested, used)
-            } else if requested.cellCount > Self.cellLimit {
+            } else if requested.cellCount > limit {
                 range = nil
             } else {
                 range = requested
@@ -459,14 +500,24 @@ public final class MCPTools {
             range = sheet.usedRange
         }
         var result: [String: JSONValue] = ["document": .number(Double(open.id)), "sheet": .string(sheet.name)]
+        if let range { try Self.checkSize(range, limit: limit) }
+        if format == "csv" {
+            // The CSV as a text item of its own, not escaped inside JSON.
+            result["range"] = range.map { .string($0.a1) } ?? .null
+            result["format"] = "csv"
+            let options = CSV.ExportOptions(lineEnding: "\n", includeBOM: false, machineReadable: !formatted,
+                                            dateTimeSeparator: " ")
+            let csv = range.map { CSV.text(of: $0, in: sheet, workbook: doc.workbook, options: options) } ?? ""
+            return .content([["type": "text", "text": .string(JSONValue.object(result).encodedString)],
+                             ["type": "text", "text": .string(csv)]])
+        }
         guard let range else {
             result["range"] = .null
             result["values"] = []
-            return .object(result)
+            return .json(.object(result))
         }
-        try Self.checkSize(range)
         result["range"] = .string(range.a1)
-        result["values"] = Self.values(of: range, in: sheet)
+        result["values"] = Self.values(of: range, in: sheet, workbook: doc.workbook)
         let rows = range.start.row...range.end.row, columns = range.start.column...range.end.column
         let formulas: [JSONValue] = rows.map { row in
             .array(columns.map { column in
@@ -476,7 +527,7 @@ public final class MCPTools {
         if formulas.contains(where: { $0.arrayValue?.contains { !$0.isNull } ?? false }) {
             result["formulas"] = .array(formulas)
         }
-        if try args.bool("include_formatted") == true {
+        if formatted {
             result["formatted"] = .array(rows.map { row in
                 .array(columns.map { column in
                     let address = CellAddress(row: row, column: column)
@@ -486,7 +537,7 @@ public final class MCPTools {
                 })
             })
         }
-        return .object(result)
+        return .json(.object(result))
     }
 
     func writeCells(_ args: Arguments) throws -> JSONValue {
@@ -523,7 +574,7 @@ public final class MCPTools {
             written = doc.commitInputs(inputs, sheetID: sheet.id, actionName: "Agent Edit")
         }
         return ["sheet": .string(sheet.name), "range": .string(target.a1), "cells_changed": .number(Double(written)),
-                "values": Self.values(of: target, in: sheet)]
+                "values": Self.values(of: target, in: sheet, workbook: doc.workbook)]
     }
 
     func clearRange(_ args: Arguments) throws -> JSONValue {
@@ -771,6 +822,24 @@ public final class MCPTools {
         var result: [String: JSONValue] = ["closed": .string(doc.displayName), "id": .number(Double(open.id))]
         if quits { result["note"] = "That was the last window, so SimpleSpread quits." }
         return .object(result)
+    }
+
+    func screenshot(_ args: Arguments) async throws -> Output {
+        let doc = try document(args).document
+        if try args.string("range") != nil {
+            _ = try selectRange(args)
+        } else if let name = try args.string("sheet") {
+            activate(try sheet(named: name, in: doc), in: doc)
+        }
+        // Let the window catch up first: the scroll, a sheet switch, the
+        // last edit all draw on a later turn of the run loop.
+        try? await Task.sleep(for: .milliseconds(250))
+        guard let png = windows.snapshot(doc) else {
+            throw ToolError("Couldn't capture the window showing “\(doc.displayName)”.")
+        }
+        let info: JSONValue = ["sheet": .string(doc.activeSheet.name), "selection": .string(doc.selection.range.a1)]
+        return .content([["type": "text", "text": .string(info.encodedString)],
+                         ["type": "image", "data": .string(png.base64EncodedString()), "mimeType": "image/png"]])
     }
 
     func selectRange(_ args: Arguments) throws -> JSONValue {

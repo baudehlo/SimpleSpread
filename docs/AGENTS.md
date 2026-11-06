@@ -32,7 +32,7 @@ The setting is remembered; the server starts with the app while it's on.
 | Tool | What it does |
 | --- | --- |
 | `list_documents` | Open documents (front-most first): id, name, path, unsaved changes, sheets and their used ranges, the sheet showing, the selection |
-| `read_range` | Values, formulas and (optionally) formatted text of a range; default the used range |
+| `read_range` | A range's values, formulas and (optionally) formatted text as JSON, or its values as CSV; default the used range |
 | `write_cells` | Write a block of cells. Text is read as typed: `=SUM(B2:B9)`, `12%`, `$4.50`, `1/15/2026`; `'00123` stays text; `null` leaves a cell alone |
 | `clear_range` | Clear values and formulas, keeping formatting |
 | `format_range` | Bold/italic/underline/strikethrough, number format (preset or code), font, size, text and fill colour, alignment, wrap |
@@ -40,6 +40,7 @@ The setting is remembered; the server starts with the app while it's on.
 | `set_column_width` | Column widths in points |
 | `add_sheet`, `rename_sheet`, `delete_sheet` | Sheets; renames update formulas |
 | `select_range` | Select and scroll to cells, to show you something |
+| `screenshot` | A picture of the document's window as you see it (cells, formatting, charts), optionally after scrolling to a range |
 | `save_document` | Save to the document's own .xlsx file, when that loses nothing |
 | `close_document` | Close a document's window, when it has no unsaved changes |
 
@@ -58,8 +59,15 @@ Behaviour worth knowing:
 - **Same protections as your edits**: cells inside a pivot table can't be
   written, and rows or columns can't be inserted through one. The agent gets
   the reason as an error; no alert appears in your window.
-- **At most 10,000 cells** are read or written per call. A bigger range
-  (whole columns, say) is cut down to the part of the sheet in use.
+- **At most 10,000 cells** are read or written per call (100,000 when
+  reading CSV). A bigger range (whole columns, say) is cut down to the part
+  of the sheet in use.
+- **Dates read as dates.** `read_range` gives dates and times as
+  `2026-01-15`, `2026-01-15 13:30:00` or `13:30:00` (not serial numbers),
+  in JSON and CSV alike, and `write_cells` reads those back as dates.
+- **Screenshots** are drawn by SimpleSpread itself, so they need no
+  screen-recording permission, and are at most 1568 pixels on the long
+  side. Taking one with a `range` moves your view there.
 - **Saving is limited to what loses nothing.** `save_document` writes over
   the document's own .xlsx file. It refuses a document that has never been
   saved, or came from a CSV or Excel 97–2003 file (you choose where with
