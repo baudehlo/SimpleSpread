@@ -382,6 +382,160 @@ struct MCPServerTests {
         #expect(last["note"]?.stringValue?.contains("quits") == true)
     }
 
+    // MARK: - Charts and pivot tables
+
+    /// Month, region and sales: a table to chart and pivot.
+    func makeSalesDocument() -> SpreadsheetDocument {
+        let doc = SpreadsheetDocument()
+        let rows = [["Month", "Region", "Sales"], ["1/15/2026", "North", "120"], ["1/20/2026", "South", "90"],
+                    ["2/10/2026", "North", "135"], ["2/12/2026", "South", "95"], ["3/3/2026", "North", "150"]]
+        for (r, row) in rows.enumerated() {
+            for (c, text) in row.enumerated() { doc.commitInput(text, at: CellAddress(row: r, column: c)) }
+        }
+        doc.undoManager.removeAllActions()
+        return doc
+    }
+
+    @Test func chartsInsertChangeAndDeleteAsOneStepEach() async throws {
+        let doc = SpreadsheetDocument()
+        for (r, row) in [["Month", "North", "South"], ["Jan", "120", "90"], ["Feb", "135", "95"]].enumerated() {
+            for (c, text) in row.enumerated() { doc.commitInput(text, at: CellAddress(row: r, column: c)) }
+        }
+        doc.undoManager.removeAllActions()
+        let tools = tools(doc)
+        let selection = doc.selection.range
+
+        let (_, noNumbers) = try await call(tools, "insert_chart", ["range": "A1:A3", "type": "column"])
+        #expect(noNumbers)
+        let (inserted, failed) = try await call(tools, "insert_chart", [
+            "range": "A1", "type": "column", "title": "Sales", "position": "E2", "legend": "right",
+        ])
+        #expect(!failed)
+        #expect(inserted["type"] == "column")
+        #expect(inserted["title"] == "Sales")
+        #expect(inserted["legend"] == "right")
+        #expect(inserted["data_range"] == "Sheet1!A1:C3") // one cell stands for its table
+        #expect(inserted["series"]?.arrayValue?.compactMap { $0["name"]?.stringValue } == ["North", "South"])
+        #expect(inserted["position"]?["cell"] == "E2")
+        #expect(doc.undoManager.undoActionName == "Agent Insert Chart")
+        #expect(doc.selection.range == selection && doc.selectedChartID == nil) // the user's selection stays
+        let id = try #require(inserted["id"]?.stringValue)
+
+        let (listed, _) = try await call(tools, "list_documents")
+        #expect(listed.arrayValue?.first?["sheets"]?.arrayValue?.first?["charts"]?.arrayValue?.count == 1)
+
+        let (changed, changeFailed) = try await call(tools, "update_chart", [
+            "chart": .string(id), "type": "line", "colors": ["#FF0000"], "width": 300, "value_axis_title": "Units",
+        ])
+        #expect(!changeFailed)
+        #expect(changed["type"] == "line")
+        #expect(changed["series"]?.arrayValue?.first?["color"] == "#FF0000")
+        #expect(changed["value_axis_title"] == "Units")
+        #expect(changed["position"]?["width"] == 300)
+        #expect(doc.undoManager.undoActionName == "Agent Change Chart")
+        doc.undoManager.undo() // type, colour, title and size together
+        #expect(doc.activeCharts.first?.settings?.kind == .column)
+        #expect(doc.undoManager.undoActionName == "Agent Insert Chart")
+
+        let (_, stacksPie) = try await call(tools, "update_chart", ["type": "pie", "grouping": "stacked"])
+        #expect(stacksPie)
+        let (deleted, deleteFailed) = try await call(tools, "delete_chart", ["chart": .string(id)])
+        #expect(!deleteFailed && deleted["sheet"] == "Sheet1")
+        #expect(doc.activeCharts.isEmpty)
+        doc.undoManager.undo()
+        #expect(doc.activeCharts.count == 1)
+    }
+
+    @Test func pivotTablesAreBuiltInOneStep() async throws {
+        let doc = makeSalesDocument()
+        let tools = tools(doc)
+        let (_, badField) = try await call(tools, "create_pivot_table", ["source": "A1:C6", "rows": ["Area"]])
+        #expect(badField)
+        #expect(doc.workbook.pivotTables.isEmpty && doc.workbook.sheets.count == 1 && !doc.undoManager.canUndo)
+
+        let (created, failed) = try await call(tools, "create_pivot_table", [
+            "source": "A:C", "rows": ["Region"], "values": ["Sales"],
+        ])
+        #expect(!failed)
+        #expect(created["rows"] == ["Region"])
+        #expect(created["values"]?.arrayValue?.first?["name"] == "Sum of Sales")
+        #expect(created["source"] == "Sheet1!A1:C6") // whole columns: as far as the data goes
+        #expect(doc.undoManager.undoActionName == "Agent Insert PivotTable")
+        let report = doc.activeSheet
+        #expect(report.name != "Sheet1")
+        func column(_ c: Int) -> [CellValue] { (2...5).map { report.value(at: CellAddress(row: $0, column: c)) } }
+        #expect(column(0) == [.string("Row Labels"), .string("North"), .string("South"), .string("Grand Total")])
+        #expect(column(1) == [.string("Sum of Sales"), .number(405), .number(185), .number(590)])
+
+        let (updated, updateFailed) = try await call(tools, "update_pivot_table", [
+            "values": [["field": "Sales", "summary": "average", "name": "Average sale"]], "show_items": ["Region": ["north"]],
+        ])
+        #expect(!updateFailed)
+        #expect(updated["values"]?.arrayValue?.first?["summary"] == "average")
+        #expect(column(0) == [.string("Row Labels"), .string("North"), .string("Grand Total"), .empty])
+        #expect(column(1) == [.string("Average sale"), .number(135), .number(135), .empty])
+        #expect(doc.undoManager.undoActionName == "Agent Change PivotTable")
+
+        // Source edits show after a refresh.
+        let (_, writeFailed) = try await call(tools, "write_cells", ["start": "Sheet1!C2", "values": [[150]]])
+        #expect(!writeFailed)
+        #expect(report.value(at: a("B4")) == .number(135))
+        let (_, refreshFailed) = try await call(tools, "refresh_pivot_tables")
+        #expect(!refreshFailed)
+        #expect(report.value(at: a("B4")) == .number(145))
+
+        let (listed, _) = try await call(tools, "list_pivot_tables")
+        #expect(listed["pivot_tables"]?.arrayValue?.first?["items"]?["Region"] == ["North", ["item": "South", "hidden": true]])
+
+        let (_, deleteFailed) = try await call(tools, "delete_pivot_table", ["pivot": "PivotTable1"])
+        #expect(!deleteFailed)
+        #expect(doc.workbook.pivotTables.isEmpty && report.value(at: a("A3")) == .empty)
+        doc.undoManager.undo()
+        #expect(doc.workbook.pivotTables.count == 1 && doc.workbook.sheets[1].value(at: a("A3")) == .string("Row Labels"))
+    }
+
+    @Test func pivotTablesAskBeforeOverwritingWithoutAnAlert() async throws {
+        let doc = makeSalesDocument()
+        doc.commitInput("mine", at: a("F5"))
+        doc.undoManager.removeAllActions()
+        var asked = 0
+        doc.confirm = { _, _, _ in asked += 1; return true }
+        let tools = tools(doc)
+        let (refused, failed) = try await call(tools, "create_pivot_table", [
+            "source": "A1:C6", "destination": "E3", "rows": ["Region"], "values": ["Sales"],
+        ])
+        #expect(failed)
+        #expect(refused.stringValue?.contains("replace: true") == true)
+        #expect(asked == 0) // the user was never asked
+        #expect(doc.workbook.pivotTables.isEmpty && doc.activeSheet.value(at: a("F5")) == .string("mine"))
+        #expect(!doc.undoManager.canUndo)
+        let (_, onItsData) = try await call(tools, "create_pivot_table", ["source": "A1:C6", "destination": "B2", "rows": ["Region"]])
+        #expect(onItsData)
+
+        let (_, replaced) = try await call(tools, "create_pivot_table", [
+            "source": "A1:C6", "destination": "E3", "rows": ["Region"], "values": ["Sales"], "replace": true,
+        ])
+        #expect(!replaced)
+        #expect(asked == 0)
+        #expect(doc.activeSheet.value(at: a("F5")) == .number(185))
+        #expect(doc.confirm != nil) // the app's own question is back
+    }
+
+    @Test func pivotDatesGroupIntoMonthsAndYears() async throws {
+        let doc = makeSalesDocument()
+        let tools = tools(doc)
+        _ = try await call(tools, "create_pivot_table", ["source": "A1:C6", "rows": ["Month"], "values": ["Sales"]])
+        let (grouped, failed) = try await call(tools, "group_pivot_field", ["field": "Month", "dates": ["years", "months"]])
+        #expect(!failed)
+        #expect(grouped["fields"]?.arrayValue?.contains("Years") == true)
+        // Excel's groups: before the first date, the months, after the last.
+        let months = grouped["items"]?["Month"]?.arrayValue?.compactMap(\.stringValue) ?? []
+        #expect(Array(months.dropFirst().prefix(3)) == ["Jan", "Feb", "Mar"] && months.count == 14)
+        #expect(doc.undoManager.undoActionName == "Agent Group")
+        let (_, ungroupFailed) = try await call(tools, "group_pivot_field", ["field": "Years", "ungroup": true])
+        #expect(!ungroupFailed)
+    }
+
     // MARK: - HTTP
 
     func request(_ method: String = "POST", path: String = "/mcp", headers: [String: String] = [:]) -> MCPHTTPServer.Request {

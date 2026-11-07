@@ -22,9 +22,12 @@ public final class MCPTools {
         }
     }
 
-    struct ToolError: Error {
+    /// LocalizedError: thrown through the document (a pivot's `configure`),
+    /// it comes back as the notice's detail.
+    struct ToolError: LocalizedError {
         let message: String
         init(_ message: String) { self.message = message }
+        var errorDescription: String? { message }
     }
 
     /// What a tool returns: JSON (most tools), or MCP content items as
@@ -78,7 +81,10 @@ public final class MCPTools {
         style: "B2", "A1:D20", whole columns "A:C", whole rows "3:5", "Sheet2!A1:B4", or "selection" \
         for the user's selected cells. Text written to a cell is read as if typed: "=SUM(B2:B9)" is a \
         formula, "12%", "$4.50" and "1/15/2026" become numbers with that format, and a leading \
-        apostrophe keeps text as text ("'00123"). Edits stay unsaved until save_document (or the user) \
+        apostrophe keeps text as text ("'00123"). Charts and pivot tables have tools of their own; a pivot \
+        table's cells can't be written, and it doesn't follow its source data until refresh_pivot_tables. \
+        An edit that would overwrite cells is refused unless you pass `replace: true`, so ask the user \
+        first when their data is in the way. Edits stay unsaved until save_document (or the user) \
         saves them. These tools can't open files; with a shell, `open -a SimpleSpread <file>` opens one \
         (it then appears in list_documents once loaded).
         """
@@ -100,10 +106,13 @@ public final class MCPTools {
         return Dictionary(all + extra, uniquingKeysWith: { _, last in last })
     }
 
-    static let all: [Tool] = [
+    static let all: [Tool] = cellTools + chartTools + pivotTools
+
+    static let cellTools: [Tool] = [
         Tool(name: "list_documents",
              description: "List the spreadsheets open in SimpleSpread, front-most first: id, name, file path, "
-                + "unsaved changes, sheets with the range each uses, the sheet showing and the user's selection.",
+                + "unsaved changes, sheets with the range each uses and their charts and pivot tables, the sheet "
+                + "showing and the user's selection.",
              properties: [:], required: [], run: { tools, _ in .json(try tools.listDocuments()) }),
         Tool(name: "read_range",
              description: "Read cells. JSON (the default) gives values, any formulas and optionally the text the grid "
@@ -398,8 +407,22 @@ public final class MCPTools {
     /// Without, the document's own command names its step. An edit the
     /// document refuses anyway raises a notice for the window to show; here
     /// it becomes the tool's error instead, and the user sees no alert.
-    func edit(_ doc: SpreadsheetDocument, _ actionName: String? = nil, _ body: () -> Void) throws {
+    /// A question the edit would ask the user (replace these cells?) is
+    /// answered with `replace` instead; refused, the error says to pass it.
+    func edit(_ doc: SpreadsheetDocument, _ actionName: String? = nil, replace: Bool = false,
+              _ body: () -> Void) throws {
         let notice = doc.notice
+        let confirm = doc.confirm, confirmLater = doc.confirmLater
+        var question: String?
+        doc.confirm = { message, detail, _ in
+            question = [message, detail].filter { !$0.isEmpty }.joined(separator: " ")
+            return replace
+        }
+        doc.confirmLater = nil
+        defer {
+            doc.confirm = confirm
+            doc.confirmLater = confirmLater
+        }
         if let actionName {
             doc.undoManager.beginUndoGrouping()
             body()
@@ -411,6 +434,9 @@ public final class MCPTools {
         if let raised = doc.notice, raised != notice {
             doc.notice = notice
             throw ToolError([raised.message, raised.detail].filter { !$0.isEmpty }.joined(separator: " "))
+        }
+        if let question, !replace {
+            throw ToolError("Nothing changed: \(question) Pass `replace: true` to go ahead.")
         }
     }
 
@@ -467,6 +493,10 @@ public final class MCPTools {
                     var info: [String: JSONValue] = ["name": .string(sheet.name),
                                                      "used_range": sheet.usedRange.map { .string($0.a1) } ?? .null]
                     if sheet.isHidden { info["hidden"] = true }
+                    let charts = self.charts(on: sheet, in: doc)
+                    if !charts.isEmpty { info["charts"] = .array(charts.map { .string($0.name) }) }
+                    let pivots = doc.workbook.pivotTables.filter { $0.sheetID == sheet.id }
+                    if !pivots.isEmpty { info["pivot_tables"] = .array(pivots.map { .string($0.name) }) }
                     return .object(info)
                 }),
             ]

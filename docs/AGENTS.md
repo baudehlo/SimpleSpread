@@ -31,7 +31,7 @@ The setting is remembered; the server starts with the app while it's on.
 
 | Tool | What it does |
 | --- | --- |
-| `list_documents` | Open documents (front-most first): id, name, path, unsaved changes, sheets and their used ranges, the sheet showing, the selection |
+| `list_documents` | Open documents (front-most first): id, name, path, unsaved changes, sheets with their used ranges, charts and pivot tables, the sheet showing, the selection |
 | `read_range` | A range's values, formulas and (optionally) formatted text as JSON, or its values as CSV; default the used range |
 | `write_cells` | Write a block of cells. Text is read as typed: `=SUM(B2:B9)`, `12%`, `$4.50`, `1/15/2026`; `'00123` stays text; `null` leaves a cell alone |
 | `clear_range` | Clear values and formulas, keeping formatting |
@@ -39,6 +39,14 @@ The setting is remembered; the server starts with the app while it's on.
 | `insert_rows`, `delete_rows`, `insert_columns`, `delete_columns` | Structural edits; formulas adjust as for the user's own |
 | `set_column_width` | Column widths in points |
 | `add_sheet`, `rename_sheet`, `delete_sheet` | Sheets; renames update formulas |
+| `list_charts` | A sheet's charts: type, title, legend, data range, each series' cells and colour, position and size |
+| `insert_chart` | A column, bar, line, area, pie, doughnut or scatter chart of a block of cells, made as Insert ▸ Chart makes it, with title, legend, axis titles, colours, place and size |
+| `update_chart`, `delete_chart` | Change any of those (or the data range), move, resize or delete a chart |
+| `list_pivot_tables` | Pivot tables: source, the fields on rows, columns, filters and values, each field's items, layout |
+| `create_pivot_table` | A pivot table over a table of data, with its fields set up, on a new sheet or at a cell |
+| `update_pivot_table` | Fields, summaries (sum, average, count, …), show values as a percentage, which items show, layout, grand totals |
+| `group_pivot_field` | Group dates by years, quarters, months or days, or numbers into ranges; or ungroup |
+| `refresh_pivot_tables`, `delete_pivot_table` | Recompute pivot tables after their data changes; delete one and clear its cells |
 | `select_range` | Select and scroll to cells, to show you something |
 | `screenshot` | A picture of the document's window as you see it (cells, formatting, charts), optionally after scrolling to a range |
 | `save_document` | Save to the document's own .xlsx file, when that loses nothing |
@@ -59,6 +67,14 @@ Behaviour worth knowing:
 - **Same protections as your edits**: cells inside a pivot table can't be
   written, and rows or columns can't be inserted through one. The agent gets
   the reason as an error; no alert appears in your window.
+- **Nothing is overwritten unasked.** An edit that would replace cells in the
+  way (a pivot table growing over data, say) fails unless the agent passes
+  `replace: true`; agents are told to check with you first. You're never
+  shown a question an agent caused.
+- **Pivot tables don't follow their data by themselves**, as in Excel: after
+  changing the source, the agent calls `refresh_pivot_tables`. Pivot tables
+  from Excel with features SimpleSpread keeps but can't recompute are listed
+  as not editable.
 - **At most 10,000 cells** are read or written per call (100,000 when
   reading CSV). A bigger range (whole columns, say) is cut down to the part
   of the sheet in use.
@@ -119,7 +135,8 @@ so give it only to agents you trust.
   `ping`, `tools/list`, `tools/call`; protocol revisions 2024-11-05 to
   2025-11-25).
 - `MCPTools.swift`: the tools, calling `SpreadsheetDocument` on the main
-  actor.
+  actor; `MCPTools+ChartsAndPivots.swift`: the chart and pivot table tools,
+  over the same commands as the Chart panel and PivotTable Fields panel.
 - `Mac/AgentAccess.swift`: Settings ▸ Agents and the server's lifecycle.
 - Tests: `Tests/SpreadsheetUITests/MCPServerTests.swift`, including a request
   over a live socket.

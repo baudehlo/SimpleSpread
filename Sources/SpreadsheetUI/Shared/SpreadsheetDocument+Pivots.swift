@@ -61,8 +61,12 @@ extension SpreadsheetDocument {
     }
 
     /// Insert a pivot table over `source` (on the active sheet) and select it.
+    /// `configure` sets up its fields before it is first laid out (agents
+    /// make a finished table in one step); what it throws is the notice.
     @discardableResult
-    public func insertPivotTable(source: CellRange, destination: PivotDestination = .newSheet) -> Bool {
+    public func insertPivotTable(source: CellRange, destination: PivotDestination = .newSheet,
+                                 actionName: String = "Insert PivotTable",
+                                 configure: ((inout PivotDefinition, PivotCacheData) throws -> Void)? = nil) -> Bool {
         let sourceSheetID = activeSheetID
         // Everything that can fail or be refused happens before the workbook
         // changes, so a refusal leaves nothing to undo.
@@ -91,7 +95,9 @@ extension SpreadsheetDocument {
                                         detail: "Choose an empty area or a new sheet.")
                 return false
             }
-            if !conflicts.cells.isEmpty {
+            // With fields, the area isn't known until the table is laid out;
+            // that is checked (and asked about) then instead.
+            if !conflicts.cells.isEmpty, configure == nil {
                 guard askToConfirm("There’s already data where the pivot table needs to go. Replace it?",
                                    Self.overwriteDetail(conflicts.cells), "Replace", retry: { [weak self] in
                                        self?.insertPivotTable(source: source, destination: destination)
@@ -111,13 +117,47 @@ extension SpreadsheetDocument {
         do {
             let index = try workbook.createPivotTable(sourceSheetID: sourceSheetID, source: source,
                                                       destinationSheetID: target.sheetID, at: target.at, data: data)
+            if let configure, var definition = workbook.pivotTables[index].definition {
+                try configure(&definition, data)
+                workbook.pivotTables[index].definition = definition
+            }
             let result = try workbook.computePivotTable(at: index)
+            if configure != nil, case .existing = destination {
+                // Laying out clears the placeholder area as well as the table's own.
+                let placeholder = workbook.pivotTables[index].occupiedRange
+                let occupied = workbook.pivotPlacement(for: index, result: result).occupied
+                guard occupied.end.isValid, !(target.sheetID == sourceSheetID && occupied.intersects(source)) else {
+                    before.workbook.restore(into: workbook)
+                    notice = DocumentNotice(message: "There isn’t room for the pivot table there.",
+                                            detail: "It would run over its own data or off the sheet. Choose another place, or a new sheet.")
+                    return false
+                }
+                let a = workbook.pivotAreaConflicts(onSheet: target.sheetID, area: placeholder, except: index)
+                let b = workbook.pivotAreaConflicts(onSheet: target.sheetID, area: occupied, except: index)
+                if let other = (a.tables + b.tables).first {
+                    before.workbook.restore(into: workbook)
+                    notice = DocumentNotice(message: "The pivot table would overlap “\(other)”.",
+                                            detail: "Choose an empty area or a new sheet.")
+                    return false
+                }
+                let cells = Array(Set(a.cells + b.cells)).sorted()
+                if !cells.isEmpty {
+                    guard askToConfirm("There’s already data where the pivot table needs to go. Replace it?",
+                                       Self.overwriteDetail(cells), "Replace", retry: { [weak self] in
+                                           self?.insertPivotTable(source: source, destination: destination,
+                                                                  actionName: actionName, configure: configure)
+                                       }) else {
+                        before.workbook.restore(into: workbook)
+                        return false
+                    }
+                }
+            }
             workbook.applyPivotLayout(at: index, result: result)
             activeSheetID = target.sheetID
             selection = SelectionState()
             selection.select(workbook.pivotTables[index].location.start)
             engine.rebuildAll()
-            registerSnapshotUndo(before, actionName: "Insert PivotTable")
+            registerSnapshotUndo(before, actionName: actionName)
             markChanged()
             return true
         } catch {
@@ -128,6 +168,23 @@ extension SpreadsheetDocument {
             notice = DocumentNotice(message: "Couldn’t create the pivot table.", detail: Self.reason(error))
             return false
         }
+    }
+
+    /// Remove a pivot table and clear its cells, as one undoable step (what
+    /// selecting all of it and pressing Delete does).
+    public func deletePivotTable(_ index: Int, actionName: String = "Delete PivotTable") {
+        guard workbook.pivotTables.indices.contains(index) else { return }
+        let before = takeSnapshot()
+        let table = workbook.pivotTables[index]
+        let area = table.occupiedRange
+        workbook.removePivotTables { $0.sheetID == table.sheetID && $0.name == table.name }
+        if let sheet = workbook.sheet(withID: table.sheetID) {
+            for address in sheet.cells.keys where area.contains(address) && !sheet.cell(at: address).isDefault {
+                engine.clearCell(at: AbsoluteAddress(sheetID: table.sheetID, address: address))
+            }
+        }
+        registerSnapshotUndo(before, actionName: actionName)
+        markChanged()
     }
 
     static func overwriteDetail(_ cells: [CellAddress]) -> String {
