@@ -350,11 +350,20 @@ struct SheetChartView: View {
             valueAxes(content.chartXAxis { AxisMarks { _ in AxisTick(); AxisValueLabel() } })
         default:
             // Lines and areas: plotted by position, labelled with the categories.
+            // Lines sit in the middle of each category, as Excel draws them
+            // (the `between` its charts are written with). Areas run edge to
+            // edge, so the end labels are anchored inside the plot: centred
+            // on the edge, the last one was dropped.
+            let between = chart.kind != .area
+            let last = Double(max(1, p.count - 1))
             valueAxes(content
-                .chartXScale(domain: 0...Double(max(1, p.count - 1)))
+                .chartXScale(domain: between ? -0.5...(Double(max(1, p.count)) - 0.5) : 0...last)
                 .chartXAxis {
                     AxisMarks(values: p.labelPositions) { value in
-                        AxisValueLabel { Text(p.label(at: value.as(Double.self))) }
+                        let x = value.as(Double.self) ?? 0
+                        AxisValueLabel(anchor: between ? .top : x == 0 ? .topLeading : x >= last ? .topTrailing : .top) {
+                            Text(p.label(at: value.as(Double.self)))
+                        }
                     }
                 })
         }
