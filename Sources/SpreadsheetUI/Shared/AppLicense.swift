@@ -90,11 +90,12 @@ public final class AppLicense: ObservableObject {
     nonisolated static let firstFreeMacVersion = [2, 4, 0]
     nonisolated static let firstFreeIPadBuild = 5
     /// Also counted as bought: a first download before this date (the day
-    /// the price goes to Free). Covers a Mac customer's first iPad install,
-    /// should the App Store report that platform's own version.
+    /// 2.4.0 was built; the release date isn't known then, and earlier is
+    /// the safe side). Covers a Mac customer's first iPad install, should
+    /// the App Store report that platform's own version.
     nonisolated static let freeSince = DateComponents(
         calendar: Calendar(identifier: .gregorian), timeZone: TimeZone(identifier: "UTC"),
-        year: 2026, month: 12, day: 1).date!
+        year: 2026, month: 11, day: 9).date!
 
     /// Whether an original download (see AppTransaction) was of the paid app.
     nonisolated static func boughtWhenPaid(originalAppVersion: String, originalPurchaseDate: Date) -> Bool {

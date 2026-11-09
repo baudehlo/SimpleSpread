@@ -58,10 +58,13 @@ downloaded. Anything before the first free version counts as bought:
 - iPad: CFBundleVersion (the build number, the workflow's run number) below
   **5**.
 - Either platform: an original download before `AppLicense.freeSince`
-  (2026-12-01 UTC as committed). **Set it to the day the price goes to Free
-  before building the release.** Too late only gives the unlock to a few
-  early free downloads; too early is caught by the version check on the
-  platform they bought.
+  (2026-11-09 UTC, the day 2.4.0 was built). The release day can't be known
+  at build time because App Review takes weeks, so it's set to the build
+  day instead. Too late would give the unlock to every free download until
+  that date; too early is caught by the version check on the platform they
+  bought. The one gap: someone who buys 2.3.0 on the Mac while 2.4.0 is in
+  review and later installs on iPad for the first time, if the App Store
+  reports the iPad's own build number. Send them a promo code.
 
 In TestFlight and Xcode, `originalAppVersion` is always "1.0", so the check
 is skipped there (`environment != .production`). It's unit-tested
@@ -69,6 +72,11 @@ is skipped there (`environment != .production`). It's unit-tested
 to send unlock promo codes if a paying customer writes in.
 
 ## App Store Connect setup
+
+Steps 1 to 3 below were done on 2026-11-09 through the App Store Connect API: "Unlock" (Apple ID 6832754438) and
+"14-day Trial" (6832754477), en-CA and en-US text, all territories, the review note, the unlock window as the
+review screenshot, both Ready to Submit. Family Sharing is on for the Unlock (it can't be turned off again) and off for the trial. They still have to be
+added to the 2.4.0 version page once that version and its build exist.
 
 1. **In-App Purchases ▸ +**, Non-Consumable:
    - Reference name "Unlock", Product ID `com.kikiplan.simplespread.unlock`,
