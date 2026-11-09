@@ -92,6 +92,7 @@ extension SpreadsheetDocument {
 
     /// Like applyStyleToSelection, but the mutation sees each address.
     func applyStyleToSelectionAt(_ actionName: String, _ mutate: (CellAddress, inout CellStyle) -> Void) {
+        guard !refuseIfReadOnly() else { return }
         let range = selection.range
         guard !refuseIfPivot(range) else { return }
         applyStyle(to: range, actionName: actionName, addressDependent: true, mutate)
@@ -115,6 +116,7 @@ extension SpreadsheetDocument {
     /// Merge the selection. Like Excel, only the upper-left value of each
     /// merged range survives, after a confirmation when others would go.
     public func mergeSelection(_ kind: MergeKind) {
+        guard !refuseIfReadOnly() else { return }
         let range = selection.range
         guard !range.isSingleCell, !refuseIfPivot(range) else { return }
         let sheet = activeSheet
@@ -162,6 +164,7 @@ extension SpreadsheetDocument {
     }
 
     public func unmergeSelection() {
+        guard !refuseIfReadOnly() else { return }
         let range = selection.range
         let sheet = activeSheet
         guard sheet.mergedRanges.contains(where: { $0.intersects(range) }) else { return }
@@ -205,12 +208,14 @@ extension SpreadsheetDocument {
     // MARK: - Hidden rows
 
     public func hideRows(_ rows: ClosedRange<Int>) {
+        guard !refuseIfReadOnly() else { return }
         changeCellsAndLayout(rows.count == 1 ? "Hide Row" : "Hide Rows", cells: []) {
             activeSheet.hiddenRows.formUnion(rows)
         }
     }
 
     public func unhideRows(_ rows: ClosedRange<Int>) {
+        guard !refuseIfReadOnly() else { return }
         guard activeSheet.hiddenRows.contains(where: rows.contains) else { return }
         changeCellsAndLayout("Unhide Rows", cells: []) {
             activeSheet.hiddenRows.subtract(rows)
@@ -220,12 +225,14 @@ extension SpreadsheetDocument {
     // MARK: - Hidden columns
 
     public func hideColumns(_ columns: ClosedRange<Int>) {
+        guard !refuseIfReadOnly() else { return }
         changeCellsAndLayout(columns.count == 1 ? "Hide Column" : "Hide Columns", cells: []) {
             activeSheet.hiddenColumns.formUnion(columns)
         }
     }
 
     public func unhideColumns(_ columns: ClosedRange<Int>) {
+        guard !refuseIfReadOnly() else { return }
         guard activeSheet.hiddenColumns.contains(where: columns.contains) else { return }
         changeCellsAndLayout("Unhide Columns", cells: []) {
             activeSheet.hiddenColumns.subtract(columns)

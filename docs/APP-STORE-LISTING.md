@@ -26,7 +26,7 @@ Rules this text follows:
 
 Can be changed at any time without a new build.
 
-    Open Excel files, work them with 158 functions, then chart and pivot the results, in an app that starts in under a second. One purchase covers Mac and iPad.
+    Open Excel files, work them with 158 functions, then chart and pivot the results, in an app that starts in under a second. Free for 14 days; one unlock covers Mac and iPad.
 
 ## Keywords (100)
 
@@ -74,9 +74,12 @@ resubmit.
     Open files from iCloud Drive, On My iPad and other locations, and edit them in place; SimpleSpread saves as you go. Tap to select, double-tap to edit, drag the handles to grow a selection, and pinch to zoom. With a keyboard and trackpad, it works just as it does on the Mac.
 
     PRIVATE
-    No account, no analytics, no ads. SimpleSpread never connects to the internet.
+    No account, no analytics, no ads. Apart from the App Store itself, SimpleSpread never connects to the internet.
 
-    SimpleSpread is made by MZ Industries in Toronto, and it's open source. One purchase covers both Mac and iPad.
+    FREE TO TRY
+    Everything works free for 14 days. After that, SimpleSpread stays useful as a reader: open, view, copy, sort and filter any spreadsheet. A one-time unlock brings back editing and saving for good, on both Mac and iPad. No subscription.
+
+    SimpleSpread is made by MZ Industries in Toronto, and it's open source.
 
 ## What's New
 
@@ -95,8 +98,10 @@ words of what changed for the user.
 - Age rating: none of the content applies, so 4+.
 - App Privacy: Data Not Collected.
 - Copyright: 2026 1001494310 ONTARIO INC.
-- Price: $14.99 (USD), all countries.
+- Price: Free, with In-App Purchases: "Unlock" US$9.99 and "14-day Trial"
+  (free). From 2.4.0; before that the app was $14.99. See
+  docs/APP-STORE-TRIAL.md for the setup and the release order.
 
 ## Notes for App Review
 
-    SimpleSpread needs no account or sign-in. To try it, choose File › New on the Mac, or Create Document in the browser on iPad, type numbers and a formula such as =SUM(A1:A3), then save. Insert › Chart and Insert › PivotTable work on any selected table of numbers.
+    SimpleSpread needs no account or sign-in. At first launch, choose Start 14-Day Free Trial in the window that appears (it's a free in-app purchase). To try it, choose File › New on the Mac, or Create Document in the browser on iPad, type numbers and a formula such as =SUM(A1:A3), then save. Insert › Chart and Insert › PivotTable work on any selected table of numbers.

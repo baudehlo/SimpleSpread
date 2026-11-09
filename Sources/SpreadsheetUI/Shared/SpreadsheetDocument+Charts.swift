@@ -63,6 +63,7 @@ extension SpreadsheetDocument {
     /// selected. False, with a notice, when there's nothing to chart.
     @discardableResult
     public func insertChart(_ kind: SheetChart.Kind, grouping: SheetChart.Grouping = .standard) -> Bool {
+        guard !refuseIfReadOnly() else { return false }
         commitPendingEdit()
         let sheet = activeSheet
         var range = sheet.expandedForMerges(selection.range)
@@ -149,6 +150,7 @@ extension SpreadsheetDocument {
     /// the chart's sheet), with or without `=` and `$`. Series are made
     /// from it the way Insert makes them; colours stay with their series.
     public func setChartData(_ id: String, range text: String, inRows: Bool? = nil) -> Bool {
+        guard !refuseIfReadOnly() else { return false }
         guard let chart = activeCharts.first(where: { $0.id == id }), var settings = chart.settings else { return false }
         var formula = text.trimmingCharacters(in: .whitespaces)
         if formula.hasPrefix("=") { formula.removeFirst() }
@@ -176,6 +178,7 @@ extension SpreadsheetDocument {
     /// undo step that puts back the carried parts and the chart selection.
     @discardableResult
     func changeCharts(actionName: String, registerUndo: Bool = true, _ edit: () -> Bool) -> Bool {
+        guard !refuseIfReadOnly() else { return false }
         let before = workbook.carriedContent
         let selectedBefore = selectedChartID
         guard edit() else { return false }

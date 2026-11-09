@@ -134,6 +134,7 @@ extension SpreadsheetDocument {
     /// change depends on where a cell is, as borders do).
     func applyStyle(to range: CellRange, actionName: String, addressDependent: Bool,
                     _ mutate: (CellAddress, inout CellStyle) -> Void) {
+        guard !refuseIfReadOnly() else { return }
         if !addressDependent, let lines = wholeLines(of: range) {
             restyle(lines, actionName: actionName) { mutate(range.start, &$0) }
             return
@@ -175,6 +176,7 @@ extension SpreadsheetDocument {
     /// crossing cell takes both. Work and undo record are bounded by the
     /// styled cells, not the size of the selection.
     func restyle(_ lines: WholeLines, actionName: String, _ mutate: (inout CellStyle) -> Void) {
+        guard !refuseIfReadOnly() else { return }
         let sheet = activeSheet
         let rowStylesBefore = sheet.rowStyles, columnStylesBefore = sheet.columnStyles
         var mapped: [Int: Int] = [:]

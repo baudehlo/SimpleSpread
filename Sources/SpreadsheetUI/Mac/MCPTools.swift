@@ -245,6 +245,12 @@ public final class MCPTools {
         }
     }
 
+    /// The tools that work in reader mode: they read, select or close.
+    static let readerTools: Set<String> = [
+        "list_documents", "read_range", "screenshot", "select_range", "close_document",
+        "list_charts", "list_pivot_tables",
+    ]
+
     func has(_ name: String) -> Bool {
         Self.all.contains { $0.name == name }
     }
@@ -254,6 +260,14 @@ public final class MCPTools {
     func call(_ name: String, arguments: JSONValue) async -> JSONValue {
         guard let tool = Self.all.first(where: { $0.name == name }) else {
             return Self.toolResult("Unknown tool: \(name)", isError: true)
+        }
+        // Reader mode (the App Store trial is over): only the tools that
+        // look, not the ones that change or save documents.
+        if !AppLicense.shared.allowsEditing, !Self.readerTools.contains(name) {
+            return Self.toolResult("SimpleSpread is in reader mode: its free trial has ended, so documents can be "
+                + "read but not changed or saved. Ask the user to unlock SimpleSpread (SimpleSpread menu ▸ "
+                + "Unlock SimpleSpread…). These tools still work: "
+                + Self.readerTools.sorted().joined(separator: ", ") + ".", isError: true)
         }
         do {
             guard case .object = arguments else { throw ToolError("Arguments must be an object.") }
@@ -500,6 +514,7 @@ public final class MCPTools {
                     return .object(info)
                 }),
             ]
+            if doc.isReadOnly { entry["reader_mode"] = true }
             if let url = doc.fileURL { entry["path"] = .string(url.path) }
             return .object(entry)
         })

@@ -72,7 +72,7 @@ final class SpreadsheetFile: UIDocument {
     /// Tell UIDocument whether there is something to autosave.
     @MainActor func refreshSaveState() {
         guard let doc = openDocument else { return }
-        let unsaved = doc.isModified && Self.maySave(doc)
+        let unsaved = doc.isModified && Self.maySave(doc) && !doc.isReadOnly
         lock.withLock { unsavedChanges = unsaved }
         if unsaved { updateChangeCount(.done) }
     }

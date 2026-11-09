@@ -19,7 +19,10 @@ public struct DocumentWindowView: View {
     public var body: some View {
         HStack(spacing: 0) {
             mainColumn
-            if let chart = document.selectedChart, document.isChartPanelVisible {
+            // Reader mode has no panels: everything in them edits.
+            if document.isReadOnly {
+                EmptyView()
+            } else if let chart = document.selectedChart, document.isChartPanelVisible {
                 Divider()
                 ChartPanel(document: document, chart: chart)
                     .id(chart.id)
@@ -47,6 +50,10 @@ public struct DocumentWindowView: View {
         VStack(spacing: 0) {
             formatBar
             Divider()
+            if document.isReadOnly {
+                ReaderModeBanner()
+                Divider()
+            }
             formulaBar
             Divider()
             GridContainer(document: document, revision: gridRevision) {
@@ -83,7 +90,7 @@ public struct DocumentWindowView: View {
         .background(DocumentWindowHook(document: document))
         .focusedSceneValue(\.spreadsheetDocument, document)
         .navigationTitle(document.displayName)
-        .windowSubtitle(document.isModified ? "— Edited" : "")
+        .windowSubtitle(document.isReadOnly ? "— Reader Mode" : document.isModified ? "— Edited" : "")
     }
 
     // MARK: Find bar
@@ -178,13 +185,17 @@ public struct DocumentWindowView: View {
             HStack(spacing: 6) {
                 historyGroup
                 toolbarDivider
-                numberGroup
-                toolbarDivider
-                fontGroup
-                toolbarDivider
-                colorGroup
-                toolbarDivider
-                alignmentGroup
+                // Reader mode: only undo, sorting and filtering.
+                Group {
+                    numberGroup
+                    toolbarDivider
+                    fontGroup
+                    toolbarDivider
+                    colorGroup
+                    toolbarDivider
+                    alignmentGroup
+                }
+                .disabled(document.isReadOnly)
                 toolbarDivider
                 dataGroup
             }
@@ -217,9 +228,11 @@ public struct DocumentWindowView: View {
                 refocusGrid()
             }
             .tip("Format painter: copy this formatting, then select cells to apply it (Esc cancels)")
+            .disabled(document.isReadOnly)
             toolButton("eraser", help: "Clear formatting (⌘\\)") {
                 document.clearFormattingInSelection()
             }
+            .disabled(document.isReadOnly)
         }
     }
 
@@ -397,6 +410,7 @@ public struct DocumentWindowView: View {
             .fixedSize()
             .tip("Sort & Filter")
             autoSumMenu
+                .disabled(document.isReadOnly)
         }
     }
 
@@ -624,6 +638,7 @@ public struct DocumentWindowView: View {
             })
             .textFieldStyle(.plain)
             .font(.system(size: 12, design: .monospaced))
+            .disabled(document.isReadOnly)
             .accessibilityIdentifier("formulaBar")
             .accessibilityLabel("Formula")
             .onSubmit {
@@ -659,6 +674,7 @@ public struct DocumentWindowView: View {
             }
             .buttonStyle(.borderless)
             .padding(.horizontal, 8)
+            .disabled(document.isReadOnly)
             .tip("Add sheet")
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -670,6 +686,8 @@ public struct DocumentWindowView: View {
             }
             Spacer()
             statusText
+            TrialBadge()
+                .padding(.leading, 14)
             zoomControl
                 .padding(.leading, 14)
                 .padding(.trailing, 10)
@@ -731,11 +749,12 @@ public struct DocumentWindowView: View {
                     renameText = sheet.name
                     renamingSheetID = sheet.id
                 }
+                .disabled(document.isReadOnly)
                 Button("Delete", role: .destructive) {
                     document.selectSheet(withID: sheet.id)
                     document.deleteActiveSheet()
                 }
-                .disabled(document.workbook.sheets.count <= 1)
+                .disabled(document.workbook.sheets.count <= 1 || document.isReadOnly)
             }
             .popover(isPresented: Binding(
                 get: { renamingSheetID == sheet.id },

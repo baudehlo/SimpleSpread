@@ -81,6 +81,15 @@ public final class SpreadsheetDocument: ObservableObject {
     /// The user has saved without it once (Save Anyway, or a copy).
     public internal(set) var unsupportedContentAccepted = false
     @Published public private(set) var isModified = false
+    /// Reader mode: the App Store trial is over (AppLicense). Viewing,
+    /// copying, finding, sorting and filtering still work; every edit is
+    /// refused, and nothing marks the document as needing a save.
+    @Published public internal(set) var isReadOnly = false {
+        didSet {
+            // Undoing an edit made before would change what can't be saved.
+            if isReadOnly, !oldValue { undoManager.removeAllActions() }
+        }
+    }
     /// Incremented whenever cell content/layout changes; grid views observe it.
     @Published public private(set) var revision = 0
     /// Incremented by every change to the document's content (not by
@@ -136,6 +145,7 @@ public final class SpreadsheetDocument: ObservableObject {
         // Each operation forms its own undo group (see withUndoGroup) rather
         // than one group per run-loop turn.
         undoManager.groupsByEvent = false
+        AppLicense.shared.adopt(self)
     }
 
     /// A document around a workbook whose engine was built elsewhere (a
@@ -147,6 +157,7 @@ public final class SpreadsheetDocument: ObservableObject {
         // Each operation forms its own undo group (see withUndoGroup) rather
         // than one group per run-loop turn.
         undoManager.groupsByEvent = false
+        AppLicense.shared.adopt(self)
     }
 
     public var activeSheet: Sheet {
@@ -237,7 +248,8 @@ public final class SpreadsheetDocument: ObservableObject {
     /// `layoutOnly`: only row heights or column widths changed, which no
     /// chart's data depends on (so charts aren't read again).
     func markChanged(layoutOnly: Bool = false) {
-        isModified = true
+        // Reader mode: a sort or a filter changes the view, not the file.
+        if !isReadOnly { isModified = true }
         revision += 1
         changeCount += 1
         if !layoutOnly { chartInputsRevision += 1 }
@@ -351,6 +363,15 @@ public final class SpreadsheetDocument: ObservableObject {
     // MARK: - Pivot table protection
 
     /// Pivot tables on the active sheet that `range` touches.
+    /// Refuse an edit in reader mode, offering the unlock. Returns true
+    /// when the edit must not go ahead. Every editing command checks this;
+    /// sorting, filtering and freezing panes don't.
+    func refuseIfReadOnly() -> Bool {
+        guard isReadOnly else { return false }
+        AppLicense.shared.editRefused()
+        return true
+    }
+
     private func pivotTables(touching range: CellRange) -> [PivotTable] {
         workbook.pivotTables(intersecting: range, onSheet: activeSheetID)
     }
@@ -446,6 +467,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// cells written.
     @discardableResult
     func commitInputs(_ inputs: [(CellAddress, String)], sheetID: Int, actionName: String) -> Int {
+        guard !refuseIfReadOnly() else { return 0 }
         guard let sheet = workbook.sheet(withID: sheetID) else { return 0 }
         let changed = inputs.filter { $0.1 != editString(at: $0.0, sheetID: sheetID) }
         guard !changed.isEmpty else { return 0 }
@@ -479,6 +501,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Delete: clear contents, keeping formatting. Like Excel, rows the
     /// filter hides are left alone (`skippingFiltered`); a cut clears all.
     public func clearSelectionContents(skippingFiltered: Bool = true) {
+        guard !refuseIfReadOnly() else { return }
         commitPendingEdit()
         let touched = pivotTables(touching: selection.range)
         if !touched.isEmpty {
@@ -588,6 +611,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Set the font size and, like Excel's auto-height rows, grow any selected
     /// row too short for the new size (rows never shrink). One undo step.
     public func setFontSize(_ size: Double) {
+        guard !refuseIfReadOnly() else { return }
         let stored = size == CellStyle.defaultFontSize ? nil : size
         let needed = Self.rowHeight(forFontSize: size)
         let sheet = activeSheet
@@ -631,6 +655,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Increase/Decrease Decimal. A General cell starts from the decimals it
     /// currently shows, as in Excel.
     public func adjustDecimals(by delta: Int) {
+        guard !refuseIfReadOnly() else { return }
         let current = style(at: selection.activeCell).numberFormat
         var base = current
         if current.isGeneral {
@@ -655,6 +680,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// (else to its left) in `function`. With a range, total each column in
     /// the range's empty bottom row, or in the row below it. One undo step.
     public func autoSum(_ function: String = "SUM") {
+        guard !refuseIfReadOnly() else { return }
         let range = selection.range
         let sheet = activeSheet
         func isNumber(_ addr: CellAddress) -> Bool {
@@ -713,6 +739,7 @@ public final class SpreadsheetDocument: ObservableObject {
     @Published public private(set) var formatPainterStyles: [[CellStyle]]?
 
     public func beginFormatPainter() {
+        guard !refuseIfReadOnly() else { return }
         let range = selection.range
         // Bound the copy: a whole-column selection copies its used part.
         let lastRow = min(range.end.row, range.start.row + 999)
@@ -728,6 +755,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Called when a mouse selection ends while the painter is armed.
     public func applyFormatPainter() {
+        guard !refuseIfReadOnly() else { return }
         guard let styles = formatPainterStyles, let firstRow = styles.first, !firstRow.isEmpty else { return }
         formatPainterStyles = nil
         var range = selection.range
@@ -758,6 +786,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     public func insertRows(at index: Int, count: Int = 1) {
         commitPendingEdit()
+        guard !refuseIfReadOnly() else { return }
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: count) else { return }
         performStructuralEdit(StructuralChange(sheetID: activeSheetID, axisIsRow: true, index: index,
                                                count: count))
@@ -766,6 +795,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     public func deleteRows(at index: Int, count: Int = 1) {
         commitPendingEdit()
+        guard !refuseIfReadOnly() else { return }
         guard !refuseStructuralEdit(axisIsRow: true, index: index, count: -count) else { return }
         performStructuralEdit(StructuralChange(sheetID: activeSheetID, axisIsRow: true, index: index,
                                                count: -count))
@@ -776,6 +806,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     public func insertColumns(at index: Int, count: Int = 1) {
         commitPendingEdit()
+        guard !refuseIfReadOnly() else { return }
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: count) else { return }
         performStructuralEdit(StructuralChange(sheetID: activeSheetID, axisIsRow: false, index: index,
                                                count: count))
@@ -784,6 +815,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     public func deleteColumns(at index: Int, count: Int = 1) {
         commitPendingEdit()
+        guard !refuseIfReadOnly() else { return }
         guard !refuseStructuralEdit(axisIsRow: false, index: index, count: -count) else { return }
         performStructuralEdit(StructuralChange(sheetID: activeSheetID, axisIsRow: false, index: index,
                                                count: -count))
@@ -814,6 +846,7 @@ public final class SpreadsheetDocument: ObservableObject {
     private var lastResizeStep: ResizeStep?
 
     private func resize(isRow: Bool, index: Int, to size: CGFloat, actionName: String) {
+        guard !refuseIfReadOnly() else { return }
         let sheet = activeSheet
         let current = isRow ? sheet.rowHeight(index) : sheet.columnWidth(index)
         guard current != size else { return }
@@ -849,6 +882,7 @@ public final class SpreadsheetDocument: ObservableObject {
     // MARK: - Sheets
 
     public func addSheet() {
+        guard !refuseIfReadOnly() else { return }
         commitPendingEdit()
         let before = takeSnapshot()
         let sheet = workbook.addSheet()
@@ -862,6 +896,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func deleteActiveSheet() {
+        guard !refuseIfReadOnly() else { return }
         commitPendingEdit()
         guard workbook.sheets.count > 1 else { return }
         let before = takeSnapshot()
@@ -876,6 +911,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func renameActiveSheet(to name: String) {
+        guard !refuseIfReadOnly() else { return }
         commitPendingEdit()
         // Not just the name: formulas and defined names that refer to the
         // sheet are rewritten, so undo puts them back and rebuilds too.
@@ -895,6 +931,7 @@ public final class SpreadsheetDocument: ObservableObject {
     }
 
     public func moveSheet(withID id: Int, to index: Int) {
+        guard !refuseIfReadOnly() else { return }
         commitPendingEdit()
         let before = takeSnapshot()
         workbook.moveSheet(withID: id, to: index)
@@ -1037,6 +1074,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// references by the distance from the payload's origin; cut pastes
     /// formulas verbatim.
     public func paste(payload: ClipboardPayload) {
+        guard !refuseIfReadOnly() else { return }
         commitPendingEdit()
         let target = selection.range.start
         // Single-cell source replicates across a multi-cell target selection.
@@ -1093,6 +1131,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// cell). Each field goes through input parsing (formulas allowed — user
     /// action).
     public func paste(text: String) {
+        guard !refuseIfReadOnly() else { return }
         commitPendingEdit()
         let grid = CSV.parse(text, delimiter: "\t")
         guard !grid.isEmpty else { return }
@@ -1137,6 +1176,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Fill Down/Right): values/styles copy, formulas adjust per destination
     /// offset. Rows the filter hides are left alone, as in Excel.
     public func fill(from source: CellRange, to targetRange: CellRange) {
+        guard !refuseIfReadOnly() else { return }
         commitPendingEdit()
         guard targetRange.end.isValid else { return }
         // Only the cells being written matter (the source may sit in a pivot).
@@ -1225,6 +1265,7 @@ public final class SpreadsheetDocument: ObservableObject {
     /// Clear Formatting (⌘\): reset every selected cell to the default style,
     /// leaving values and formulas intact.
     public func clearFormattingInSelection() {
+        guard !refuseIfReadOnly() else { return }
         // Whole columns or rows: their own formats go too.
         if let lines = wholeLines(of: selection.range) {
             restyle(lines, actionName: "Clear Formatting") { style in
@@ -1727,6 +1768,7 @@ public final class SpreadsheetDocument: ObservableObject {
 
     /// Add a CSV file read by `readCSVSheet` as a new sheet (main thread).
     func importCSVSheet(_ read: ImportedCSV) {
+        guard !refuseIfReadOnly() else { return }
         // Taken once the file has been read: an unreadable file leaves no undo step.
         let before = takeSnapshot()
         let imported = read.workbook

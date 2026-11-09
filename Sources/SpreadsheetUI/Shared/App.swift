@@ -23,6 +23,13 @@ public final class DocumentStore: ObservableObject {
 
     /// Sample content for screenshots/smoke tests.
     static func seedDemoContent(_ doc: SpreadsheetDocument) {
+        // Seeded even in reader mode (screenshots of the trial's states).
+        let readOnly = doc.isReadOnly
+        doc.isReadOnly = false
+        defer {
+            doc.isReadOnly = readOnly
+            doc.undoManager.removeAllActions()
+        }
         func put(_ a1: String, _ text: String) {
             doc.commitInput(text, at: CellAddress(a1: a1)!)
         }

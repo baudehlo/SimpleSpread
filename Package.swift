@@ -35,7 +35,11 @@ let package = Package(
                 dependencies: ["SpreadsheetCore", "SpreadsheetFiles"] + (appStore ? [] : [
                     .product(name: "Sparkle", package: "Sparkle", condition: .when(platforms: [.macOS])),
                 ]),
-                swiftSettings: appStore ? [.define("APP_STORE")] : []),
+                // STORE_LICENSE: the App Store's trial and unlock (AppLicense):
+                // every iPad build, and the Mac App Store build. The open
+                // source Mac build has neither.
+                swiftSettings: [.define("STORE_LICENSE", .when(platforms: [.iOS]))]
+                    + (appStore ? [.define("APP_STORE"), .define("STORE_LICENSE")] : [])),
         // Thin app entry point.
         .executableTarget(name: "SimpleSpread", dependencies: ["SpreadsheetUI"]),
         // Big-file load timing (`swift run -c release spreadsheet-bench <file>`);

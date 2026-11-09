@@ -102,6 +102,9 @@ schemes:
         SimpleSpreadiPad: all
     run:
       config: Debug
+      # Local purchases for the trial and the unlock (Debug ▸ StoreKit ▸
+      # Manage Transactions to reset them). See docs/APP-STORE-TRIAL.md.
+      storeKitConfiguration: StoreKit/SimpleSpread.storekit
     test:
       config: Debug
       targets:

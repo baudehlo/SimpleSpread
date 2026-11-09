@@ -1,0 +1,51 @@
+{
+  "identifier" : "5F1D7C2A",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+    {
+      "displayPrice" : "9.99",
+      "familyShareable" : false,
+      "internalID" : "6755000001",
+      "localizations" : [
+        {
+          "description" : "Edit and save spreadsheets for good, on Mac and iPad.",
+          "displayName" : "Unlock SimpleSpread",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.kikiplan.simplespread.unlock",
+      "referenceName" : "Unlock",
+      "type" : "NonConsumable"
+    },
+    {
+      "displayPrice" : "0.0",
+      "familyShareable" : false,
+      "internalID" : "6755000002",
+      "localizations" : [
+        {
+          "description" : "Use every feature free for 14 days.",
+          "displayName" : "14-day Trial",
+          "locale" : "en_US"
+        }
+      ],
+      "productID" : "com.kikiplan.simplespread.trial",
+      "referenceName" : "14-day Trial",
+      "type" : "NonConsumable"
+    }
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+
+  ],
+  "version" : {
+    "major" : 3,
+    "minor" : 0
+  }
+}

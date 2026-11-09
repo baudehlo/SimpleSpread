@@ -114,7 +114,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         FontChoices.prepare()
-        MainActor.assumeIsolated { AppearanceSetting.shared.apply() }
+        MainActor.assumeIsolated {
+            AppearanceSetting.shared.apply()
+            AppLicense.shared.start()
+        }
         // The MCP server for AI agents, if the user turned it on (never for
         // the headless hooks, which may run beside the real app).
         let env = ProcessInfo.processInfo.environment
@@ -232,10 +235,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 /// App-menu items: "Check for Updates…" plus the automatic-check toggle,
 /// placed just under "About SimpleSpread". Backed by Sparkle.
 #if APP_STORE
-/// The App Store build has no updater of its own.
+/// The App Store build has no updater of its own; it has the trial's
+/// unlock instead.
 struct AppInfoCommands: Commands {
+    @ObservedObject private var license = AppLicense.shared
+
     var body: some Commands {
-        CommandGroup(after: .appInfo) {}
+        CommandGroup(after: .appInfo) {
+            Button("Unlock SimpleSpread…") { license.presentUnlock() }
+                .disabled(!license.isUnlockAvailable)
+        }
     }
 }
 #else
@@ -267,6 +276,8 @@ struct FileCommands: Commands {
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             Button("New") {
+                // Reader mode (the trial is over): nothing to type into.
+                guard AppLicense.shared.allowsEditing else { return AppLicense.shared.presentUnlock() }
                 openWindow(value: DocumentStore.shared.create())
             }
             .keyboardShortcut("n", modifiers: .command)
@@ -360,6 +371,7 @@ struct FileCommands: Commands {
     @MainActor private func importCSV() {
         guard let document else { return }
         document.commitPendingEdit()
+        guard !document.refuseIfReadOnly() else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.commaSeparatedText, .tabSeparatedText, .plainText]
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -371,6 +383,7 @@ struct FileCommands: Commands {
     @MainActor private func exportCSV() {
         guard let document else { return }
         document.commitPendingEdit()
+        guard !document.refuseIfReadOnly() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.nameFieldStringValue = document.activeSheet.name + ".csv"

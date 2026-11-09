@@ -23,6 +23,7 @@ extension SpreadsheetDocument {
 
     /// Run a structural edit as one undo step.
     func performStructuralEdit(_ change: StructuralChange) {
+        guard !refuseIfReadOnly() else { return }
         let activeBefore = activeSheetID
         let selectionBefore = selection
         guard let edit = WorkbookOperations.apply(change, to: workbook) else { return }

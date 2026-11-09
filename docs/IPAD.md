@@ -160,7 +160,8 @@ don't block, so the command asks and then runs again if the user agrees
   both are **one App Store record and one purchase**.
 - In App Store Connect, open the Mac app and use **Add Platform › iOS**.
 - Consequences:
-  - One price buys both.
+  - One purchase buys both: since 2.4.0 the unlock in-app purchase, and
+    the 14-day trial too (docs/APP-STORE-TRIAL.md).
   - Once both platforms are approved, a platform can't be removed.
   - The description and screenshots are per platform.
 - **iPad only, or iPhone too:** Apple's wording ("to offer the app on

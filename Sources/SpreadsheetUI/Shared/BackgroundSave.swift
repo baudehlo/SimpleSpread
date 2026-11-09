@@ -150,6 +150,8 @@ enum BackgroundSaver {
     /// save starts once that one is over.
     static func save(_ document: SpreadsheetDocument, to url: URL, in window: HostWindow?,
                      completion: @escaping (SaveOutcome) -> Void) {
+        // Reader mode (the trial is over): nothing is written.
+        guard !document.refuseIfReadOnly() else { return completion(.cancelled) }
         let key = ObjectIdentifier(document)
         if jobs[key] != nil {
             whenIdle(document) { save(document, to: url, in: window, completion: completion) }

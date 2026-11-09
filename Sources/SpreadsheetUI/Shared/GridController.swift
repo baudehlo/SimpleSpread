@@ -133,6 +133,8 @@ final class GridController {
         guard let document else { return nil }
         var decorations = decorations
         decorations.pendingFillTarget = pendingFillTarget
+        // Reader mode: nothing to fill with.
+        if document.isReadOnly { decorations.fillHandle = false }
         decorations.selectedChart = document.selectedChart?.id
         decorations.movingChart = movingChart
         return GridRenderer(document: document, geometry: geometry, pivotBands: pivotBands,
@@ -167,7 +169,8 @@ final class GridController {
         case .columnHeader:
             let content = geometry.contentPoint(point)
             let col = l.column(atX: content.x)
-            if let resizeCol = geometry.columnBoundary(near: content.x, slop: hitSlop) {
+            // Reader mode (the trial is over): no resizing, moving or filling.
+            if !document.isReadOnly, let resizeCol = geometry.columnBoundary(near: content.x, slop: hitSlop) {
                 dragMode = .resizeColumn(index: resizeCol, startWidth: l.columnWidth(resizeCol),
                                          startX: point.x)
                 if clickCount == 2 {
@@ -192,7 +195,7 @@ final class GridController {
         case .rowHeader:
             let content = geometry.contentPoint(point)
             let row = l.row(atY: content.y)
-            if let resizeRow = geometry.rowBoundary(near: content.y, slop: hitSlop) {
+            if !document.isReadOnly, let resizeRow = geometry.rowBoundary(near: content.y, slop: hitSlop) {
                 dragMode = .resizeRow(index: resizeRow, startHeight: l.rowHeight(resizeRow),
                                       startY: point.y)
                 return .none
@@ -212,7 +215,7 @@ final class GridController {
 
         case .cells:
             // Charts sit above the cells: the selected one's handles, then any chart.
-            if let hit = chartHandleHit(at: point) {
+            if !document.isReadOnly, let hit = chartHandleHit(at: point) {
                 dragMode = .resizeChart(id: hit.chart.id, handle: hit.handle, start: point, original: hit.frame)
                 return .none
             }
@@ -220,14 +223,14 @@ final class GridController {
                 document.selectChart(hit.chart.id)
                 if clickCount == 2 { document.isChartPanelVisible = true }
                 // A chart in a group moves only with the group.
-                if !hit.chart.isGrouped {
+                if !hit.chart.isGrouped, !document.isReadOnly {
                     dragMode = .moveChart(id: hit.chart.id, start: point, original: hit.frame)
                 }
                 stateChanged()
                 return .none
             }
             if document.selectedChartID != nil { document.selectChart(nil) }
-            if fillHandleHit(at: point, geometry: geometry) {
+            if !document.isReadOnly, fillHandleHit(at: point, geometry: geometry) {
                 dragMode = .fillHandle(source: document.selection.range)
                 return .none
             }
@@ -876,7 +879,7 @@ final class GridController {
     }
 
     func cut() {
-        guard let document else { return }
+        guard let document, !document.refuseIfReadOnly() else { return }
         if let chart = document.selectedChart {
             document.copyChartToPasteboard(chart)
             document.deleteChart(chart.id)
@@ -925,7 +928,7 @@ final class GridController {
     /// Begin in-place editing. `.enter` = typing replaced content (arrows
     /// commit); `.edit` = F2/double-click (arrows move the caret).
     func beginEditing(mode: EditMode, initialText: String?) {
-        guard let document else { return }
+        guard let document, !document.refuseIfReadOnly() else { return }
         if document.selectedChartID != nil {
             document.selectChart(nil)
             host?.gridNeedsDisplay()

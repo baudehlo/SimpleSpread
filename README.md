@@ -19,9 +19,11 @@ touch, with a trackpad or mouse, and with a hardware keyboard. See
 
 ## Getting it
 
-- **[App Store](https://apps.apple.com/app/simplespread/id6824562767)**: one
-  purchase covers Mac and iPad, with updates through the App Store. It's the
-  same app, and buying it supports the work on it.
+- **[App Store](https://apps.apple.com/app/simplespread/id6824562767)**: free
+  to try for 14 days, then a one-time unlock covers Mac and iPad (without it,
+  the app stays a reader: open, view, copy, sort and filter). Updates come
+  through the App Store, and buying it supports the work on it. See
+  [docs/APP-STORE-TRIAL.md](docs/APP-STORE-TRIAL.md).
 - **[GitHub Releases](https://github.com/baudehlo/SimpleSpread/releases/latest)**:
   a free download for the Mac (macOS 14 or later) that updates itself.
 

@@ -24,6 +24,9 @@ struct DocumentCommand: Identifiable {
     var symbol: String?
     var shortcut: Shortcut?
     var isEnabled: (SpreadsheetDocument?) -> Bool = { $0 != nil }
+    /// Works in reader mode (after the App Store trial): finding, viewing,
+    /// sorting and filtering. Every other command is disabled there.
+    var inReaderMode = false
     /// Run on the document. `perform` commits pending typing first.
     let run: (SpreadsheetDocument) -> Void
 
@@ -32,7 +35,8 @@ struct DocumentCommand: Identifiable {
     nonisolated let id: String
 
     init(_ menu: String, _ section: Int, _ title: String, submenu: String? = nil, symbol: String? = nil,
-         shortcut: Shortcut? = nil, enabled: @escaping (SpreadsheetDocument?) -> Bool = { $0 != nil },
+         shortcut: Shortcut? = nil, reader: Bool = false,
+         enabled: @escaping (SpreadsheetDocument?) -> Bool = { $0 != nil },
          _ run: @escaping (SpreadsheetDocument) -> Void) {
         self.menu = menu
         self.section = section
@@ -42,12 +46,14 @@ struct DocumentCommand: Identifiable {
         self.submenu = submenu
         self.symbol = symbol
         self.shortcut = shortcut
-        isEnabled = enabled
+        isEnabled = { enabled($0) && (reader || $0?.isReadOnly != true) }
+        inReaderMode = reader
         self.run = run
     }
 
     init(_ menu: String, _ section: Int, dynamicTitle: @escaping (SpreadsheetDocument?) -> String,
-         shortcut: Shortcut? = nil, enabled: @escaping (SpreadsheetDocument?) -> Bool = { $0 != nil },
+         shortcut: Shortcut? = nil, reader: Bool = false,
+         enabled: @escaping (SpreadsheetDocument?) -> Bool = { $0 != nil },
          _ run: @escaping (SpreadsheetDocument) -> Void) {
         self.menu = menu
         self.section = section
@@ -55,7 +61,8 @@ struct DocumentCommand: Identifiable {
         name = dynamicTitle(nil)
         id = [menu, "", name].joined(separator: "/")
         self.shortcut = shortcut
-        isEnabled = enabled
+        isEnabled = { enabled($0) && (reader || $0?.isReadOnly != true) }
+        inReaderMode = reader
         self.run = run
     }
 
@@ -69,24 +76,24 @@ struct DocumentCommand: Identifiable {
     static let edit: [DocumentCommand] = [
         DocumentCommand("Edit", 0, "Fill Down", shortcut: .key("d", .command)) { $0.fillDown() },
         DocumentCommand("Edit", 0, "Fill Right", shortcut: .key("r", .command)) { $0.fillRight() },
-        DocumentCommand("Edit", 1, "Find…", shortcut: .key("f", .command)) { $0.presentFind() },
-        DocumentCommand("Edit", 1, "Find Next", shortcut: .key("g", .command),
+        DocumentCommand("Edit", 1, "Find…", shortcut: .key("f", .command), reader: true) { $0.presentFind() },
+        DocumentCommand("Edit", 1, "Find Next", shortcut: .key("g", .command), reader: true,
                         enabled: { !($0?.findMatches.isEmpty ?? true) }) { $0.findNext() },
-        DocumentCommand("Edit", 1, "Find Previous", shortcut: .key("g", [.command, .shift]),
+        DocumentCommand("Edit", 1, "Find Previous", shortcut: .key("g", [.command, .shift]), reader: true,
                         enabled: { !($0?.findMatches.isEmpty ?? true) }) { $0.findPrevious() },
     ]
 
     static let view: [DocumentCommand] = [
-        DocumentCommand("View", 0, "Zoom In", shortcut: .key("=", .command)) { $0.zoomIn() },
-        DocumentCommand("View", 0, "Zoom Out", shortcut: .key("-", .command)) { $0.zoomOut() },
-        DocumentCommand("View", 0, "Actual Size", shortcut: .key("0", .command)) { $0.resetZoom() },
-        DocumentCommand("View", 1, "Freeze Panes",
+        DocumentCommand("View", 0, "Zoom In", shortcut: .key("=", .command), reader: true) { $0.zoomIn() },
+        DocumentCommand("View", 0, "Zoom Out", shortcut: .key("-", .command), reader: true) { $0.zoomOut() },
+        DocumentCommand("View", 0, "Actual Size", shortcut: .key("0", .command), reader: true) { $0.resetZoom() },
+        DocumentCommand("View", 1, "Freeze Panes", reader: true,
                         enabled: { $0 != nil && $0?.selection.activeCell != CellAddress(row: 0, column: 0) }) {
             $0.freezePanesAtSelection()
         },
-        DocumentCommand("View", 1, "Freeze Top Row") { $0.freezePanes(rows: 1, columns: 0) },
-        DocumentCommand("View", 1, "Freeze First Column") { $0.freezePanes(rows: 0, columns: 1) },
-        DocumentCommand("View", 1, "Unfreeze Panes", enabled: { $0?.hasFrozenPanes == true }) {
+        DocumentCommand("View", 1, "Freeze Top Row", reader: true) { $0.freezePanes(rows: 1, columns: 0) },
+        DocumentCommand("View", 1, "Freeze First Column", reader: true) { $0.freezePanes(rows: 0, columns: 1) },
+        DocumentCommand("View", 1, "Unfreeze Panes", reader: true, enabled: { $0?.hasFrozenPanes == true }) {
             $0.freezePanes(rows: 0, columns: 0)
         },
     ]
@@ -116,20 +123,20 @@ struct DocumentCommand: Identifiable {
         DocumentCommand("Insert", 3, choice.name, submenu: "Chart", symbol: choice.symbol) { $0.insertChart(choice.kind) }
     } + [
         // The keyboard's way to a chart (Tab then goes chart to chart).
-        DocumentCommand("Insert", 3, "Select Next Chart", shortcut: .key("j", [.command, .option]),
+        DocumentCommand("Insert", 3, "Select Next Chart", shortcut: .key("j", [.command, .option]), reader: true,
                         enabled: { !($0?.activeCharts.isEmpty ?? true) }) { $0.selectNextChart() },
     ]
 
     static let data: [DocumentCommand] = [
-        DocumentCommand("Data", 0, "Sort A to Z") { $0.quickSort(ascending: true) },
-        DocumentCommand("Data", 0, "Sort Z to A") { $0.quickSort(ascending: false) },
-        DocumentCommand("Data", 0, "Custom Sort…") { $0.isSortPresented = true },
+        DocumentCommand("Data", 0, "Sort A to Z", reader: true) { $0.quickSort(ascending: true) },
+        DocumentCommand("Data", 0, "Sort Z to A", reader: true) { $0.quickSort(ascending: false) },
+        DocumentCommand("Data", 0, "Custom Sort…", reader: true) { $0.isSortPresented = true },
         DocumentCommand("Data", 1, dynamicTitle: { $0?.activeAutoFilter == nil ? "Filter" : "Remove Filter" },
-                        shortcut: .key("l", [.command, .shift])) { $0.toggleAutoFilter() },
-        DocumentCommand("Data", 1, "Clear Filters", enabled: { !($0?.activeAutoFilter?.columns.isEmpty ?? true) }) {
+                        shortcut: .key("l", [.command, .shift]), reader: true) { $0.toggleAutoFilter() },
+        DocumentCommand("Data", 1, "Clear Filters", reader: true, enabled: { !($0?.activeAutoFilter?.columns.isEmpty ?? true) }) {
             $0.clearAllFilters()
         },
-        DocumentCommand("Data", 1, "Reapply Filter", enabled: { $0?.activeAutoFilter != nil }) { $0.reapplyAutoFilter() },
+        DocumentCommand("Data", 1, "Reapply Filter", reader: true, enabled: { $0?.activeAutoFilter != nil }) { $0.reapplyAutoFilter() },
         DocumentCommand("Data", 2, "Refresh", shortcut: .refresh(.option), enabled: { $0?.activePivotIndex != nil }) { d in
             if let pivot = d.activePivotIndex { d.refreshPivot(pivot) }
         },

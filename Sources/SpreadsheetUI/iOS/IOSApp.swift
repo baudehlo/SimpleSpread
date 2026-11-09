@@ -21,6 +21,7 @@ public enum SimpleSpreadApp {
 struct SimpleSpreadAppMain: App {
     init() {
         FontChoices.prepare()
+        AppLicense.shared.start()
     }
 
     var body: some Scene {
@@ -244,7 +245,9 @@ final class BrowserModel: ObservableObject {
     }
 
     private func show(_ file: OpenFile) {
-        session = file
+        // The document covers the window, which UIKit won't do while the
+        // unlock sheet is up: take that down first.
+        UnlockPresenter.dismiss { [weak self] in self?.session = file }
     }
 
     /// The open document closed (back to the browser).
@@ -302,6 +305,12 @@ struct DocumentBrowser: UIViewControllerRepresentable {
         func documentBrowser(_ controller: UIDocumentBrowserViewController,
                              didRequestDocumentCreationWithHandler importHandler: @escaping (URL?, UIDocumentBrowserViewController.ImportMode) -> Void) {
             documentLog.info("create requested")
+            // Reader mode (the trial is over): no new documents.
+            guard AppLicense.shared.allowsEditing else {
+                importHandler(nil, .none)
+                AppLicense.shared.presentUnlock()
+                return
+            }
             creationRequested = Date()
             do {
                 importHandler(try BrowserModel.makeBlankFile(), .copy)
@@ -407,9 +416,18 @@ final class OpenFile: ObservableObject, Identifiable {
         file.refreshSaveState()
     }
 
+    /// Reader mode (the trial is over): no saving, copies or CSV; offer the
+    /// unlock instead. True when refused.
+    private func refuseInReaderMode() -> Bool {
+        guard document.isReadOnly else { return false }
+        AppLicense.shared.presentUnlock()
+        return true
+    }
+
     /// ⌘S: save now (it saves by itself anyway).
     func save() {
         document.commitPendingEdit()
+        guard !refuseInReaderMode() else { return }
         guard !savingLosesContent else {
             askedAboutLoss = false
             documentChanged()
@@ -473,6 +491,7 @@ final class OpenFile: ObservableObject, Identifiable {
     /// Write the document to a new file the user places. `switching`: then
     /// edit the copy, leaving the original as it was.
     func saveCopy(switching: Bool, completion: @escaping (Bool) -> Void = { _ in }) {
+        guard !refuseInReaderMode() else { return completion(false) }
         let snapshot = document.makeSaveSnapshot()
         let name = switching || savingLosesContent
             ? DocumentSaving.copyName(for: document.saveFileName) : document.saveFileName
@@ -506,6 +525,7 @@ final class OpenFile: ObservableObject, Identifiable {
 
     func importCSV() {
         document.commitPendingEdit()
+        guard !refuseInReaderMode() else { return }
         DocumentPicker.pick([.commaSeparatedText, .tabSeparatedText, .plainText]) { [weak self] url in
             guard let self, let url else { return }
             BackgroundCSV.importSheet(into: self.document, from: url, in: nil) { error in
@@ -516,6 +536,7 @@ final class OpenFile: ObservableObject, Identifiable {
 
     func exportCSV() {
         document.commitPendingEdit()
+        guard !refuseInReaderMode() else { return }
         let temp = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: temp, withIntermediateDirectories: true)
@@ -532,6 +553,7 @@ final class OpenFile: ObservableObject, Identifiable {
 /// and the file commands, over the same window content as on the Mac.
 struct EditorScreen: View {
     @ObservedObject var session: OpenFile
+    @ObservedObject private var license = AppLicense.shared
 
     var body: some View {
         NavigationStack {
@@ -553,6 +575,10 @@ struct EditorScreen: View {
                             Divider()
                             Button("Import CSV as Sheet…", systemImage: "square.and.arrow.down") { session.importCSV() }
                             Button("Export Sheet as CSV…", systemImage: "square.and.arrow.up") { session.exportCSV() }
+                            if license.isUnlockAvailable {
+                                Divider()
+                                Button("Unlock SimpleSpread…", systemImage: "lock.open") { license.presentUnlock() }
+                            }
                         } label: {
                             Label("File", systemImage: "ellipsis.circle")
                         }

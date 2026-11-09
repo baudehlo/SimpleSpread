@@ -67,6 +67,7 @@ extension SpreadsheetDocument {
     public func insertPivotTable(source: CellRange, destination: PivotDestination = .newSheet,
                                  actionName: String = "Insert PivotTable",
                                  configure: ((inout PivotDefinition, PivotCacheData) throws -> Void)? = nil) -> Bool {
+        guard !refuseIfReadOnly() else { return false }
         let sourceSheetID = activeSheetID
         // Everything that can fail or be refused happens before the workbook
         // changes, so a refusal leaves nothing to undo.
@@ -173,6 +174,7 @@ extension SpreadsheetDocument {
     /// Remove a pivot table and clear its cells, as one undoable step (what
     /// selecting all of it and pressing Delete does).
     public func deletePivotTable(_ index: Int, actionName: String = "Delete PivotTable") {
+        guard !refuseIfReadOnly() else { return }
         guard workbook.pivotTables.indices.contains(index) else { return }
         let before = takeSnapshot()
         let table = workbook.pivotTables[index]
@@ -197,6 +199,7 @@ extension SpreadsheetDocument {
     /// pivot table using it is redrawn.
     @discardableResult
     public func regroupPivot(_ index: Int, actionName: String, _ change: @escaping (Workbook) throws -> Void) -> Bool {
+        guard !refuseIfReadOnly() else { return false }
         guard workbook.pivotTables.indices.contains(index) else { return false }
         let cacheID = workbook.pivotTables[index].cacheID
         let tables = workbook.pivotTables.indices.filter { workbook.pivotTables[$0].cacheID == cacheID }
@@ -219,6 +222,7 @@ extension SpreadsheetDocument {
     @discardableResult
     public func editPivot(_ index: Int, actionName: String,
                           _ change: @escaping (inout PivotDefinition, PivotCacheData) -> Void) -> Bool {
+        guard !refuseIfReadOnly() else { return false }
         guard workbook.pivotTables.indices.contains(index) else { return false }
         if let blocker = pivotEditBlocker(index) {
             notice = DocumentNotice(message: "This pivot table can’t be changed in SimpleSpread.",
@@ -239,6 +243,7 @@ extension SpreadsheetDocument {
     /// Refresh the cache behind a pivot table (and every table sharing it).
     @discardableResult
     public func refreshPivot(_ index: Int) -> Bool {
+        guard !refuseIfReadOnly() else { return false }
         guard workbook.pivotTables.indices.contains(index) else { return false }
         let cacheID = workbook.pivotTables[index].cacheID
         return refresh(cacheIDs: [cacheID])
@@ -247,6 +252,7 @@ extension SpreadsheetDocument {
     /// Refresh every pivot table in the workbook that can be refreshed.
     @discardableResult
     public func refreshAllPivots() -> Bool {
+        guard !refuseIfReadOnly() else { return false }
         let refreshable = Set(workbook.pivotTables.indices.filter { pivotEditBlocker($0) == nil }
             .map { workbook.pivotTables[$0].cacheID })
         guard !refreshable.isEmpty else {

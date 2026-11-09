@@ -18,6 +18,8 @@ extension DocumentSaving {
     /// during a long save writes once more, not three times.
     static func save(_ document: SpreadsheetDocument, as forceAs: Bool = false,
                      in window: NSWindow?, completion: @escaping (Bool) -> Void = { _ in }) {
+        // Reader mode (the trial is over): offer the unlock instead.
+        guard !document.refuseIfReadOnly() else { return completion(false) }
         if BackgroundSaver.isSaving(document) {
             BackgroundSaver.whenIdle(document) {
                 if !forceAs, !document.isModified, !document.hasPendingEdit,
