@@ -82,12 +82,29 @@ extension DocumentSaving {
         if let note { panel.message = note }
         let finish: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .OK, let url = panel.url else { return completion(false) }
+            // As Excel: two windows saving to one file would overwrite each other.
+            if DocumentWindowHook.window(showingFileAt: url, except: document) != nil {
+                alertFileOpenElsewhere(url, in: window)
+                return completion(false)
+            }
             write(document, to: url, in: window, completion: completion)
         }
         if let window {
             panel.beginSheetModal(for: window, completionHandler: finish)
         } else {
             finish(panel.runModal())
+        }
+    }
+
+    private static func alertFileOpenElsewhere(_ url: URL, in window: NSWindow?) {
+        let alert = NSAlert()
+        alert.messageText = "“\(url.lastPathComponent)” is open in another window"
+        alert.informativeText = "Close that window first, or save with a different name."
+        if let window {
+            // The save panel sheet is still on its way down.
+            DispatchQueue.main.async { alert.beginSheetModal(for: window) }
+        } else {
+            alert.runModal()
         }
     }
 
@@ -311,6 +328,14 @@ struct DocumentWindowHook: NSViewRepresentable {
     static func window(showing document: SpreadsheetDocument) -> NSWindow? {
         HookView.all.allObjects.first { $0.document === document && ($0.window?.isVisible == true
             || $0.window?.isMiniaturized == true) }?.window
+    }
+
+    /// The visible (or minimized) window already showing the file at `url`,
+    /// other than `document`'s own.
+    @MainActor
+    static func window(showingFileAt url: URL, except document: SpreadsheetDocument? = nil) -> NSWindow? {
+        windowDocuments().first { $0 !== document && $0.fileURL?.refersToSameFile(as: url) == true }
+            .flatMap { window(showing: $0) }
     }
 
     /// The documents in visible (or minimized) windows, front-most first.

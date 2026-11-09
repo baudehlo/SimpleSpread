@@ -31,6 +31,13 @@ struct SimpleSpreadAppMain: App {
                     // windows opened N copies.
                     for request in requests where request.claim() {
                         let url = request.url
+                        // Already open: bring its window forward, not a second copy.
+                        if let window = DocumentWindowHook.window(showingFileAt: url) {
+                            if window.isMiniaturized { window.deminiaturize(nil) }
+                            window.makeKeyAndOrderFront(nil)
+                            RecentFilesManager.shared.record(url)
+                            continue
+                        }
                         // Loads in the background, with progress for big files.
                         FileLoader.open(url) { doc in
                             RecentFilesManager.shared.record(url)

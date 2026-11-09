@@ -110,3 +110,17 @@ enum FileLoader {
         }
     }
 }
+
+extension URL {
+    /// The same file on disk, even through a symlink, a different case on a
+    /// case-insensitive volume, or a hard link.
+    func refersToSameFile(as other: URL) -> Bool {
+        let a = standardizedFileURL.resolvingSymlinksInPath()
+        let b = other.standardizedFileURL.resolvingSymlinksInPath()
+        if a.path == b.path { return true }
+        let key: Set<URLResourceKey> = [.fileResourceIdentifierKey]
+        guard let idA = try? a.resourceValues(forKeys: key).fileResourceIdentifier,
+              let idB = try? b.resourceValues(forKeys: key).fileResourceIdentifier else { return false }
+        return idA.isEqual(idB)
+    }
+}
