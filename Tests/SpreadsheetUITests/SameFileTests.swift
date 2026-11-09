@@ -31,8 +31,14 @@ struct SameFileTests {
         #expect(symlink.refersToSameFile(as: file))
         #expect(hardLink.refersToSameFile(as: file))
         #expect(!file.refersToSameFile(as: other))
-        // The default APFS volume is case-insensitive.
-        #expect(dir.appendingPathComponent("budget.XLSX").refersToSameFile(as: file))
+        // Where names are case-insensitive (the Mac's default APFS), another
+        // case is the same file. The iPad simulator looks names up
+        // case-sensitively, whatever its volume says, so ask the file system.
+        let otherCase = dir.appendingPathComponent("budget.XLSX")
+        #expect(otherCase.refersToSameFile(as: file) == FileManager.default.fileExists(atPath: otherCase.path))
+        #if os(macOS)
+        #expect(otherCase.refersToSameFile(as: file))
+        #endif
         // A file that doesn't exist matches only itself.
         let missing = dir.appendingPathComponent("missing.xlsx")
         #expect(missing.refersToSameFile(as: missing))

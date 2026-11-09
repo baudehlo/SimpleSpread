@@ -174,8 +174,12 @@ struct ReaderModeTests {
         #expect(AppLicense.daysLeft(until: now.addingTimeInterval(-60), now: now) == 0)
     }
 
-    @Test func openSourceBuildIsUnlocked() {
+    /// The Mac tests run the open source build; the iPad build always has
+    /// the store code, which allows editing until the App Store says otherwise.
+    @Test func editingIsAllowedByDefault() {
+        #if os(macOS)
         #expect(AppLicense.shared.status == .openSource)
+        #endif
         #expect(AppLicense.shared.allowsEditing)
         #expect(SpreadsheetDocument().isReadOnly == false)
     }
