@@ -26,7 +26,7 @@ Rules this text follows:
 
 Can be changed at any time without a new build.
 
-    Open Excel files, work them with 158 functions, then chart and pivot the results, in an app that starts in under a second. Free for 14 days; one unlock covers Mac and iPad.
+    Open Excel files, work them with 158 functions, chart and pivot the results, in an app that starts in under a second. Free for 14 days; one unlock covers Mac and iPad.
 
 ## Keywords (100)
 
