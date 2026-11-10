@@ -153,6 +153,7 @@ struct UnlockView: View {
             let days = license.trialDaysLeft()
             return days == 1 ? "Your free trial ends today." : "\(days) days left in your free trial."
         case .expired: return "Unlock SimpleSpread to edit and save again."
+        case .checking: return "SimpleSpread couldn’t check your purchase with the App Store. Restore Purchases asks again."
         default: return nil
         }
     }

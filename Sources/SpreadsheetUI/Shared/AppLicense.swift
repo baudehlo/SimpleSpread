@@ -1,5 +1,6 @@
 import Foundation
 #if STORE_LICENSE
+import os
 import StoreKit
 #endif
 
@@ -50,7 +51,8 @@ public final class AppLicense: ObservableObject {
     public var isUnlockAvailable: Bool {
         switch status {
         case .trial, .trialAvailable, .expired: true
-        case .checking, .openSource, .paidApp, .purchased: false
+        case .checking: checkFailed
+        case .openSource, .paidApp, .purchased: false
         }
     }
 
@@ -80,6 +82,10 @@ public final class AppLicense: ObservableObject {
     /// Why the last purchase or restore didn't go through, for the unlock
     /// window to show.
     @Published public var message: String?
+    /// The App Store couldn't say whether this copy was bought. The status
+    /// stays `.checking` (editing allowed) and the check is retried; the
+    /// unlock window offers Restore Purchases, which asks it again.
+    @Published public private(set) var checkFailed = false
 
     // MARK: Paid-app customers
 
@@ -202,7 +208,10 @@ public final class AppLicense: ObservableObject {
             schedulePrompt()
         }
         NotificationCenter.default.addObserver(forName: Self.becameActive, object: nil, queue: .main) { _ in
-            MainActor.assumeIsolated { AppLicense.shared.trialClockTicked() }
+            MainActor.assumeIsolated {
+                AppLicense.shared.trialClockTicked()
+                if AppLicense.shared.checkFailed { Task { await AppLicense.shared.recheck() } }
+            }
         }
     }
 
@@ -215,17 +224,17 @@ public final class AppLicense: ObservableObject {
     /// Work out the status from the App Store's records.
     func refresh() async {
         guard override == nil else { return }
-        var purchased = false
-        var trialStart: Date?
-        for await result in Transaction.currentEntitlements {
-            guard case .verified(let transaction) = result, transaction.revocationDate == nil else { continue }
-            switch transaction.productID {
-            case Self.unlockProductID: purchased = true
-            case Self.trialProductID: trialStart = min(trialStart ?? .distantFuture, transaction.originalPurchaseDate)
-            default: break
-            }
+        let owned = await Self.answer(within: 20, otherwise: nil) { await Self.entitlements() }
+        let purchased = owned?.purchased ?? false
+        let trialStart = owned?.trialStart
+        var (paidApp, failure) = await Self.answer(within: 20, otherwise: (nil, "The App Store didn’t answer.")) {
+            await Self.paidAppCheck()
         }
-        let paidApp = await boughtAsPaidApp()
+        if owned == nil {
+            Self.log.error("Transaction.currentEntitlements: no answer in 20 s")
+            (paidApp, failure) = (nil, failure ?? "The App Store didn’t list your purchases.")
+        }
+        if let failure { lastCheckFailure = failure }
         if purchased {
             set(.purchased)
         } else if paidApp == true {
@@ -236,20 +245,93 @@ public final class AppLicense: ObservableObject {
         } else if paidApp == false {
             set(.trialAvailable)
         }
-        // paidApp == nil: the App Store couldn't say. Keep what we had.
+        // paidApp == nil: the App Store couldn't say. Keep what we had,
+        // and if that's nothing, ask again in a while.
+        checkFailed = status == .checking
+        if checkFailed { scheduleRetry() } else { retryCount = 0 }
     }
 
-    /// Whether the original download was of the paid app; nil if unknown.
-    private func boughtAsPaidApp() async -> Bool? {
+    private var refreshing = false
+    private var retryCount = 0
+    private var retryTask: Task<Void, Never>?
+    /// Why the last paid-app check failed, for the unlock window.
+    private var lastCheckFailure: String?
+
+    /// Check again after 30 seconds, 2 minutes, then every 10 minutes
+    /// (and whenever the app becomes active) until the App Store answers.
+    private func scheduleRetry() {
+        guard retryTask == nil else { return }
+        let delays: [Double] = [30, 120, 600]
+        let delay = delays[min(retryCount, delays.count - 1)]
+        retryCount += 1
+        retryTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delay))
+            self?.retryTask = nil
+            await self?.recheck()
+        }
+    }
+
+    fileprivate func recheck() async {
+        guard status == .checking, !refreshing else { return }
+        refreshing = true
+        defer { refreshing = false }
+        await refresh()
+        if products.isEmpty { await loadProducts() }
+        schedulePrompt()
+    }
+
+    nonisolated private static let log = Logger(subsystem: "com.kikiplan.simplespread", category: "license")
+
+    /// Whether the original download was of the paid app; nil and the
+    /// reason if the App Store couldn't say.
+    nonisolated private static func paidAppCheck() async -> (Bool?, String?) {
         do {
-            guard case .verified(let app) = try await AppTransaction.shared else { return false }
-            // Outside the App Store (TestFlight, Xcode) the original version
-            // is always "1.0": test the trial there, not the paid-app path.
-            guard app.environment == .production else { return false }
-            return Self.boughtWhenPaid(originalAppVersion: app.originalAppVersion,
-                                       originalPurchaseDate: app.originalPurchaseDate)
+            switch try await AppTransaction.shared {
+            case .verified(let app):
+                log.info("AppTransaction \(app.environment.rawValue, privacy: .public): original \(app.originalAppVersion, privacy: .public), \(String(describing: app.originalPurchaseDate), privacy: .public)")
+                // Outside the App Store (TestFlight, Xcode) the original
+                // version is always "1.0": test the trial there, not the
+                // paid-app path.
+                guard app.environment == .production else { return (false, nil) }
+                return (boughtWhenPaid(originalAppVersion: app.originalAppVersion,
+                                       originalPurchaseDate: app.originalPurchaseDate), nil)
+            case .unverified(_, let error):
+                log.error("AppTransaction unverified: \(String(describing: error), privacy: .public)")
+                return (false, nil)
+            }
         } catch {
-            return nil
+            log.error("AppTransaction failed: \(String(describing: error), privacy: .public)")
+            return (nil, error.localizedDescription)
+        }
+    }
+
+    /// What this Apple Account owns: the unlock, and when the trial began.
+    nonisolated private static func entitlements() async -> (purchased: Bool, trialStart: Date?)? {
+        var purchased = false
+        var trialStart: Date?
+        for await result in Transaction.currentEntitlements {
+            guard case .verified(let transaction) = result, transaction.revocationDate == nil else { continue }
+            switch transaction.productID {
+            case unlockProductID: purchased = true
+            case trialProductID: trialStart = min(trialStart ?? .distantFuture, transaction.originalPurchaseDate)
+            default: break
+            }
+        }
+        log.info("Entitlements: unlock \(purchased, privacy: .public), trial \(String(describing: trialStart), privacy: .public)")
+        return (purchased, trialStart)
+    }
+
+    /// The App Store's answer, or `otherwise` if it takes longer than
+    /// `seconds` to give one.
+    nonisolated private static func answer<T: Sendable>(within seconds: Double, otherwise: T,
+                                                        _ ask: @escaping @Sendable () async -> T) async -> T {
+        await withCheckedContinuation { (done: CheckedContinuation<T, Never>) in
+            let once = ResumeOnce(done)
+            Task { once.resume(await ask()) }
+            Task {
+                try? await Task.sleep(for: .seconds(seconds))
+                if once.resume(otherwise) { log.error("The App Store didn’t answer in \(seconds) s") }
+            }
         }
     }
 
@@ -355,7 +437,17 @@ public final class AppLicense: ObservableObject {
             message = error.localizedDescription
             return
         }
+        if checkFailed {
+            // Fetch the app's own record again (it may ask to sign in).
+            do { _ = try await AppTransaction.refresh() } catch {
+                Self.log.error("AppTransaction.refresh failed: \(String(describing: error), privacy: .public)")
+            }
+        }
         await refresh()
+        if checkFailed {
+            message = "SimpleSpread still couldn’t check your purchase with the App Store (\(lastCheckFailure ?? "no answer")). Editing stays on meanwhile."
+            return
+        }
         if !allowsEditing {
             message = "No purchase was found for this Apple Account."
         }
@@ -400,3 +492,21 @@ public final class AppLicense: ObservableObject {
     public func presentUnlock() {}
     #endif
 }
+
+#if STORE_LICENSE
+/// Resumes a continuation once, whichever of two tasks gets there first.
+private final class ResumeOnce<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<T, Never>?
+    init(_ continuation: CheckedContinuation<T, Never>) { self.continuation = continuation }
+    /// False if it had already been resumed.
+    @discardableResult func resume(_ value: T) -> Bool {
+        lock.lock()
+        let c = continuation
+        continuation = nil
+        lock.unlock()
+        c?.resume(returning: value)
+        return c != nil
+    }
+}
+#endif
