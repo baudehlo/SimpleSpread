@@ -167,6 +167,20 @@ struct ReaderModeTests {
         #expect(paid("beta", AppLicense.freeSince.addingTimeInterval(-60)))
     }
 
+    /// TestFlight on the Mac can't fetch the AppTransaction, but the error
+    /// says it came from the sandbox store.
+    @Test func sandboxErrorsAreRecognised() {
+        let storeKit = NSError(domain: "SKInternalErrorDomain", code: 13,
+                               userInfo: ["storefront-country-code": "CAN", "client-environment-type": "Sandbox"])
+        #expect(AppLicense.isSandbox(storeKit))
+        let wrapped = NSError(domain: "StoreKitError", code: 0, userInfo: [NSUnderlyingErrorKey: storeKit])
+        #expect(AppLicense.isSandbox(wrapped))
+        let production = NSError(domain: "SKInternalErrorDomain", code: 13,
+                                 userInfo: ["client-environment-type": "Production"])
+        #expect(!AppLicense.isSandbox(production))
+        #expect(!AppLicense.isSandbox(URLError(.notConnectedToInternet)))
+    }
+
     @Test func trialDaysCountToday() {
         let now = Date()
         #expect(AppLicense.daysLeft(until: now.addingTimeInterval(14 * 86_400), now: now) == 14)

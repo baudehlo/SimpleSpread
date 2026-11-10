@@ -85,6 +85,7 @@ struct UnlockView: View {
                     if let subtitle {
                         Text(subtitle)
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

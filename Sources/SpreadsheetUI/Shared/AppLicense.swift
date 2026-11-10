@@ -114,6 +114,20 @@ public final class AppLicense: ObservableObject {
         return padded.lexicographicallyPrecedes(firstFreeMacVersion)
     }
 
+    /// Whether a StoreKit error came from the sandbox store (TestFlight,
+    /// Xcode), from its own description or an underlying error's.
+    nonisolated static func isSandbox(_ error: Error) -> Bool {
+        var next: NSError? = error as NSError
+        var depth = 0
+        while let current = next, depth < 5 {
+            if (current.userInfo["client-environment-type"] as? String)?.lowercased() == "sandbox" { return true }
+            next = current.userInfo[NSUnderlyingErrorKey] as? NSError
+            depth += 1
+        }
+        let text = String(reflecting: error)
+        return text.contains("client-environment-type=Sandbox") || text.contains("client-environment-type\" = Sandbox")
+    }
+
     // MARK: Documents
 
     /// Open documents, so a purchase unlocks them and the trial's end locks them.
@@ -301,6 +315,10 @@ public final class AppLicense: ObservableObject {
             }
         } catch {
             log.error("AppTransaction failed: \(String(describing: error), privacy: .public)")
+            // TestFlight on the Mac fails here (SKInternalErrorDomain 13)
+            // but says which store it asked: the sandbox isn't the App
+            // Store, so treat it like the "1.0" case above.
+            if isSandbox(error) { return (false, nil) }
             return (nil, error.localizedDescription)
         }
     }
