@@ -141,6 +141,24 @@ public final class DocumentStore: ObservableObject {
         }
     }
 
+    /// Documents made for a window nobody asked for (the one at launch, or
+    /// a Dock-click reopen), as opposed to File ▸ New.
+    private var placeholders = Set<ObjectIdentifier>()
+
+    /// A blank document for a window the app opened on its own.
+    public func createPlaceholder() -> Int {
+        let id = create()
+        if let doc = documents[id] { placeholders.insert(ObjectIdentifier(doc)) }
+        return id
+    }
+
+    /// An automatically opened Untitled document the user hasn't touched:
+    /// opening a file replaces it, as in document-based Mac apps.
+    public func isUntouchedPlaceholder(_ document: SpreadsheetDocument) -> Bool {
+        placeholders.contains(ObjectIdentifier(document)) && document.fileURL == nil
+            && !document.isModified && !document.hasPendingEdit
+    }
+
     public func register(_ document: SpreadsheetDocument) -> Int {
         let id = nextID
         nextID += 1

@@ -41,12 +41,17 @@ struct SimpleSpreadAppMain: App {
                         // Loads in the background, with progress for big files.
                         FileLoader.open(url) { doc in
                             RecentFilesManager.shared.record(url)
+                            // Untouched Untitled windows the app opened by
+                            // itself give way to the file.
+                            let spare = DocumentWindowHook.windowDocuments()
+                                .filter(DocumentStore.shared.isUntouchedPlaceholder)
                             openWindow(value: DocumentStore.shared.register(doc))
+                            Self.close(spare, onceWindowShows: doc)
                         }
                     }
                 }
         } defaultValue: {
-            DocumentStore.shared.create()
+            DocumentStore.shared.createPlaceholder()
         }
         .defaultSize(width: 1100, height: 720)
         .commands {
@@ -61,6 +66,28 @@ struct SimpleSpreadAppMain: App {
         Settings {
             AppSettingsView()
         }
+    }
+
+    /// Close the `spare` placeholder windows once `opened` has a window of
+    /// its own (closing the last window first would quit the app). Each is
+    /// checked again in case the user typed into it meanwhile.
+    @MainActor
+    private static func close(_ spare: [SpreadsheetDocument], onceWindowShows opened: SpreadsheetDocument,
+                              attempts: Int = 40) {
+        guard !spare.isEmpty else { return }
+        guard DocumentWindowHook.window(showing: opened) != nil else {
+            if attempts > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    close(spare, onceWindowShows: opened, attempts: attempts - 1)
+                }
+            }
+            return
+        }
+        for doc in spare where DocumentStore.shared.isUntouchedPlaceholder(doc) {
+            DocumentWindowHook.window(showing: doc)?.close()
+        }
+        // The file's window comes forward.
+        DocumentWindowHook.window(showing: opened)?.makeKeyAndOrderFront(nil)
     }
 }
 
